@@ -1,0 +1,539 @@
+using System.Text.Json;
+using BrAIn.Browser.Drivers;
+
+namespace BrAIn.Browser.Cdp;
+
+/// <summary>
+/// Windows driver: full control via Chrome DevTools Protocol over the
+/// WebView2 --remote-debugging-port endpoint.
+/// </summary>
+public sealed class CdpDriver : DriverBase
+{
+    private readonly CdpClient _cdp;
+    private CdpSession? _session;
+    private TaskCompletionSource? _loadFired;
+    private string? _mainFrameId;
+    private readonly Dictionary<string, (string Method, string Url, string? Type)> _pendingRequests = new();
+
+    public CdpDriver(CdpClient cdp, BrowserTab tab, BrowserController controller)
+        : base(tab, controller)
+    {
+        _cdp = cdp;
+    }
+
+    public override string Name => "cdp";
+    public override bool SupportsEval => true;
+    public override bool SupportsScreenshot => true;
+    public override bool SupportsRealInput => true;
+    public override bool SupportsConsoleLog => true;
+    public override bool SupportsNetworkLog => true;
+    public override bool SupportsCookies => true;
+    public override bool SupportsViewportEmulation => true;
+
+    public override async Task InitializeAsync(BrowserController controller, CancellationToken ct)
+    {
+        // Bind to this tab's page target (all logical tabs share the one
+        // page target behind the main window).
+        var target = await FindTargetAsync(ct)
+            ?? throw new InvalidOperationException("Could not find the CDP page target for this window");
+        Tab.TargetId = target.TargetId;
+        _session = await _cdp.AttachToTargetAsync(target.TargetId, ct);
+        _cdp.EventReceived += OnCdpEvent;
+
+        await _session.SendAsync("Runtime.enable", null, ct);
+        await _session.SendAsync("Page.enable", null, ct);
+        await _session.SendAsync("Network.enable", null, ct);
+        await _session.SendAsync("Log.enable", null, ct);
+
+        // Inject helpers into every future document in this target.
+        var injectSource = Assets.BrainJs + "\n" + Assets.ChromeJs;
+        try
+        {
+            await _session.SendAsync("Page.addScriptToEvaluateOnNewDocument",
+                new { source = injectSource }, ct);
+        }
+        catch { /* older runtimes lack this method; controller reinjects anyway */ }
+
+        // And into the current document right away.
+        await Controller.EnsurePageHelpersAsync(Tab);
+    }
+
+    private async Task<CdpClient.TargetInfo?> FindTargetAsync(CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        var boundIds = Controller.Tabs.All.Select(t => t.TargetId).Where(x => x != null).ToHashSet();
+        while (DateTime.UtcNow < deadline)
+        {
+            var targets = await _cdp.GetTargetsAsync(ct);
+            var pages = targets.Where(t => t.Type == "page").ToList();
+
+            CdpClient.TargetInfo? pick = null;
+            if (Tab.IsMain)
+                pick = pages.FirstOrDefault(p => !boundIds.Contains(p.TargetId)) ?? pages.FirstOrDefault();
+            else if (Tab.LastUrl.Contains("braintab-"))
+            {
+                var marker = Tab.LastUrl.Split('#').Last();
+                pick = pages.FirstOrDefault(p => p.Url.Contains(marker));
+            }
+            else
+                pick = pages.FirstOrDefault(p => !boundIds.Contains(p.TargetId));
+
+            if (pick is not null) return pick;
+            await Task.Delay(250, ct);
+        }
+        return null;
+    }
+
+    private void OnCdpEvent(object? sender, (string? SessionId, string Method, JsonElement Params) e)
+    {
+        if (e.SessionId != _session?.SessionId) return;
+        try
+        {
+            switch (e.Method)
+            {
+                case "Runtime.consoleAPICalled":
+                    HandleConsoleApi(e.Params);
+                    break;
+                case "Runtime.exceptionThrown":
+                    HandleException(e.Params);
+                    break;
+                case "Log.entryAdded":
+                    HandleLogEntry(e.Params);
+                    break;
+                case "Network.requestWillBeSent":
+                    HandleRequestWillBeSent(e.Params);
+                    break;
+                case "Network.responseReceived":
+                    HandleResponse(e.Params);
+                    break;
+                case "Network.loadingFinished":
+                    HandleLoadingFinished(e.Params);
+                    break;
+                case "Network.loadingFailed":
+                    HandleLoadingFailed(e.Params);
+                    break;
+                case "Page.frameStartedLoading":
+                    if (IsMainFrame(e.Params)) RaiseLoadStarted();
+                    break;
+                case "Page.frameStoppedLoading":
+                    if (IsMainFrame(e.Params)) RaiseLoadCompleted();
+                    break;
+                case "Page.navigatedWithinDocument":
+                    // SPA navigation — URL/title may have changed.
+                    RaiseLoadCompleted();
+                    break;
+                case "Page.loadEventFired":
+                    // Only unblocks the navigate/reload wait — frameStoppedLoading
+                    // owns the LoadCompleted raise so the depth counter stays paired.
+                    _loadFired?.TrySetResult();
+                    break;
+                case "Page.javascriptDialogOpening":
+                    // Auto-accept blocking JS dialogs so automation can't hang.
+                    var accept = !string.Equals(
+                        e.Params.TryGetProperty("type", out var t) ? t.GetString() : null,
+                        "beforeunload", StringComparison.OrdinalIgnoreCase);
+                    _ = _session?.SendAsync("Page.handleJavaScriptDialog", new { accept });
+                    break;
+                case "Page.frameNavigated":
+                    if (e.Params.TryGetProperty("frame", out var fr))
+                    {
+                        if (!fr.TryGetProperty("parentId", out _))
+                            _mainFrameId = fr.TryGetProperty("id", out var fid) ? fid.GetString() : null;
+                        if (fr.TryGetProperty("url", out var fu))
+                            BrowserController.Log($"frameNavigated: {fu.GetString()}");
+                    }
+                    break;
+                case "Inspector.targetCrashed":
+                    BrowserController.Log("RENDERER CRASHED (Inspector.targetCrashed)");
+                    _loadFired?.TrySetResult();
+                    RaiseLoadCompleted();
+                    break;
+            }
+        }
+        catch { /* event handling must never throw into the reader */ }
+    }
+
+    /// <summary>True if the frame event params refer to the main frame.</summary>
+    private bool IsMainFrame(JsonElement p)
+    {
+        var id = p.TryGetProperty("frameId", out var f) ? f.GetString() : null;
+        // Before we learn the main frame id, treat all load events as main.
+        return _mainFrameId is null || id is null || id == _mainFrameId;
+    }
+
+    private void HandleConsoleApi(JsonElement p)
+    {
+        var type = p.TryGetProperty("type", out var t) ? t.GetString() ?? "log" : "log";
+        var parts = new List<string>();
+        if (p.TryGetProperty("args", out var args))
+            foreach (var a in args.EnumerateArray())
+                parts.Add(ArgToString(a));
+        var url = p.TryGetProperty("stackTrace", out var st) &&
+                  st.TryGetProperty("callFrames", out var cf) && cf.GetArrayLength() > 0
+            ? cf[0].TryGetProperty("url", out var u) ? u.GetString() : null
+            : null;
+        RaiseConsole(new ConsoleEntry(DateTime.Now, type, string.Join(' ', parts), url, null));
+    }
+
+    private static string ArgToString(JsonElement a)
+    {
+        if (a.TryGetProperty("value", out var v))
+            return v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : v.GetRawText();
+        if (a.TryGetProperty("description", out var d)) return d.GetString() ?? "";
+        if (a.TryGetProperty("unserializableValue", out var uv)) return uv.GetString() ?? "";
+        return a.GetProperty("type").GetString() ?? "";
+    }
+
+    private void HandleException(JsonElement p)
+    {
+        var d = p.GetProperty("exceptionDetails");
+        var text = d.TryGetProperty("exception", out var ex) &&
+                   ex.TryGetProperty("description", out var desc)
+            ? desc.GetString() ?? "JS exception"
+            : d.TryGetProperty("text", out var tt) ? tt.GetString() ?? "JS exception" : "JS exception";
+        var url = d.TryGetProperty("url", out var u) ? u.GetString() : null;
+        int? line = d.TryGetProperty("lineNumber", out var ln) ? ln.GetInt32() : null;
+        RaiseConsole(new ConsoleEntry(DateTime.Now, "error", text, url, line));
+    }
+
+    private void HandleLogEntry(JsonElement p)
+    {
+        var e = p.GetProperty("entry");
+        var level = e.TryGetProperty("level", out var l) ? l.GetString() ?? "log" : "log";
+        var text = e.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
+        var url = e.TryGetProperty("url", out var u) ? u.GetString() : null;
+        int? line = e.TryGetProperty("lineNumber", out var ln) ? ln.GetInt32() : null;
+        RaiseConsole(new ConsoleEntry(DateTime.Now, level, text, url, line));
+    }
+
+    private void HandleRequestWillBeSent(JsonElement p)
+    {
+        var id = p.GetProperty("requestId").GetString()!;
+        var req = p.GetProperty("request");
+        _pendingRequests[id] = (
+            req.TryGetProperty("method", out var m) ? m.GetString() ?? "GET" : "GET",
+            req.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "",
+            p.TryGetProperty("type", out var t) ? t.GetString() : null);
+        var (method, url, type) = _pendingRequests[id];
+        RaiseNetwork(new NetworkEntry(DateTime.Now, id, method, url, null, type, 0, null));
+    }
+
+    private void HandleResponse(JsonElement p)
+    {
+        var id = p.GetProperty("requestId").GetString()!;
+        var resp = p.GetProperty("response");
+        var url = resp.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+        var status = resp.TryGetProperty("status", out var s) ? s.GetInt32() : 0;
+        var method = _pendingRequests.TryGetValue(id, out var pend) ? pend.Method : "GET";
+        var type = p.TryGetProperty("type", out var t) ? t.GetString()
+            : _pendingRequests.TryGetValue(id, out pend) ? pend.Type : null;
+        RaiseNetwork(new NetworkEntry(DateTime.Now, id, method, url, status, type, 0, null));
+    }
+
+    private void HandleLoadingFinished(JsonElement p)
+    {
+        var id = p.GetProperty("requestId").GetString()!;
+        long bytes = p.TryGetProperty("encodedDataLength", out var b) ? (long)b.GetDouble() : 0;
+        if (_pendingRequests.TryGetValue(id, out var pend))
+        {
+            RaiseNetwork(new NetworkEntry(DateTime.Now, id, pend.Method, pend.Url,
+                null, pend.Type, bytes, null));
+            _pendingRequests.Remove(id);
+        }
+    }
+
+    private void HandleLoadingFailed(JsonElement p)
+    {
+        var id = p.GetProperty("requestId").GetString()!;
+        var err = p.TryGetProperty("errorText", out var e) ? e.GetString() : "failed";
+        var isDoc = _pendingRequests.TryGetValue(id, out var pend) && pend.Type == "Document";
+        if (pend.Method is not null)
+        {
+            RaiseNetwork(new NetworkEntry(DateTime.Now, id, pend.Method, pend.Url,
+                null, pend.Type, 0, err));
+            _pendingRequests.Remove(id);
+        }
+        else
+        {
+            RaiseNetwork(new NetworkEntry(DateTime.Now, id, "?", "", null, null, 0, err));
+        }
+        // A failed main-document load (DNS error, aborted nav) may never
+        // produce loadEventFired — clear the loading state anyway.
+        if (isDoc)
+        {
+            _loadFired?.TrySetResult();
+            RaiseLoadCompleted();
+        }
+    }
+
+    // ---------------- core primitives ----------------
+
+    public override async Task<JsonElement?> EvaluateAsync(string expression, bool awaitPromise, CancellationToken ct)
+    {
+        var session = _session ?? throw new InvalidOperationException("CDP session not attached");
+        var res = await session.SendAsync("Runtime.evaluate", new
+        {
+            expression,
+            returnByValue = true,
+            awaitPromise,
+            userGesture = true,
+            allowEvalByUser = true,
+        }, ct);
+
+        if (res.TryGetProperty("exceptionDetails", out var ex))
+        {
+            var msg = ex.TryGetProperty("exception", out var e) &&
+                      e.TryGetProperty("description", out var d)
+                ? d.GetString()
+                : ex.TryGetProperty("text", out var t) ? t.GetString() : "JS exception";
+            throw new JavaScriptException(msg ?? "JS exception");
+        }
+
+        if (!res.TryGetProperty("result", out var result)) return null;
+        if (result.TryGetProperty("value", out var value)) return value;
+        return null; // undefined / unserializable
+    }
+
+    public override async Task<NavigateResult> NavigateAsync(string url, CancellationToken ct)
+    {
+        var session = _session ?? throw new InvalidOperationException("CDP session not attached");
+        _loadFired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var res = await session.SendAsync("Page.navigate", new { url }, ct);
+        if (res.TryGetProperty("errorText", out var errEl))
+            return NavigateResult.Fail(url, errEl.GetString() ?? "navigation failed");
+
+        // Wait for load event, capped — SPA navigations may not produce one.
+        var waitTask = _loadFired.Task;
+        var done = await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromSeconds(15), ct)) == waitTask;
+        if (!done) await WaitForLoadAsync(ct, 8000); // fallback: poll readyState
+
+        var finalUrl = await GetUrlSafeAsync(ct);
+        return NavigateResult.Success(finalUrl, await GetTitleSafeAsync(ct));
+    }
+
+    public override async Task<(bool CanBack, bool CanFwd)> GetNavStateAsync(CancellationToken ct)
+    {
+        try
+        {
+            var hist = await _session!.SendAsync("Page.getNavigationHistory", null, ct);
+            var idx = hist.GetProperty("currentIndex").GetInt32();
+            var count = hist.GetProperty("entries").GetArrayLength();
+            return (idx > 0, idx < count - 1);
+        }
+        catch { return (false, false); }
+    }
+
+    public override async Task<NavigateResult> GoBackAsync(CancellationToken ct) =>
+        await NavigateHistoryAsync(-1, ct);
+
+    public override async Task<NavigateResult> GoForwardAsync(CancellationToken ct) =>
+        await NavigateHistoryAsync(+1, ct);
+
+    private async Task<NavigateResult> NavigateHistoryAsync(int delta, CancellationToken ct)
+    {
+        var session = _session!;
+        var hist = await session.SendAsync("Page.getNavigationHistory", null, ct);
+        var idx = hist.GetProperty("currentIndex").GetInt32();
+        var entries = hist.GetProperty("entries");
+        var targetIdx = idx + delta;
+        if (targetIdx < 0 || targetIdx >= entries.GetArrayLength())
+            return NavigateResult.Fail(await GetUrlSafeAsync(ct),
+                delta < 0 ? "no page to go back to" : "no page to go forward to");
+
+        var entryId = entries[targetIdx].GetProperty("id").GetInt32();
+        _loadFired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await session.SendAsync("Page.navigateToHistoryEntry", new { entryId }, ct);
+        await Task.WhenAny(_loadFired.Task, Task.Delay(15000, ct));
+        var url = await GetUrlSafeAsync(ct);
+        return NavigateResult.Success(url, await GetTitleSafeAsync(ct));
+    }
+
+    public override async Task<NavigateResult> ReloadAsync(bool ignoreCache, CancellationToken ct)
+    {
+        var session = _session!;
+        _loadFired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await session.SendAsync("Page.reload", new { ignoreCache }, ct);
+        await Task.WhenAny(_loadFired.Task, Task.Delay(15000, ct));
+        return NavigateResult.Success(await GetUrlSafeAsync(ct), await GetTitleSafeAsync(ct));
+    }
+
+    public override async Task<byte[]> ScreenshotAsync(RectD? clip, bool fullPage, CancellationToken ct)
+    {
+        var session = _session!;
+        object? clipParam = null;
+        if (clip is { } c)
+            clipParam = new { x = c.X, y = c.Y, width = c.Width, height = c.Height, scale = 1.0 };
+        // WebView2 rejects an explicit null clip — omit the property entirely.
+        var ps = new Dictionary<string, object?>
+        {
+            ["format"] = "png",
+            ["captureBeyondViewport"] = fullPage || clip is not null,
+        };
+        if (clipParam is not null) ps["clip"] = clipParam;
+        var res = await session.SendAsync("Page.captureScreenshot", ps, ct);
+        return Convert.FromBase64String(res.GetProperty("data").GetString()!);
+    }
+
+    // ---------------- input (real CDP events) ----------------
+
+    public override async Task ClickAtAsync(double x, double y, MouseButton button, int clickCount, CancellationToken ct)
+    {
+        var session = _session!;
+        var btn = button switch
+        {
+            MouseButton.Right => "right",
+            MouseButton.Middle => "middle",
+            _ => "left",
+        };
+        for (var i = 0; i < clickCount; i++)
+        {
+            await session.SendAsync("Input.dispatchMouseEvent", new
+            {
+                type = "mousePressed",
+                x, y,
+                button = btn,
+                clickCount = i + 1,
+            }, ct);
+            await session.SendAsync("Input.dispatchMouseEvent", new
+            {
+                type = "mouseReleased",
+                x, y,
+                button = btn,
+                clickCount = i + 1,
+            }, ct);
+        }
+    }
+
+    public override async Task MouseMoveAsync(double x, double y, CancellationToken ct)
+    {
+        await _session!.SendAsync("Input.dispatchMouseEvent",
+            new { type = "mouseMoved", x, y }, ct);
+    }
+
+    public override async Task MouseWheelAsync(double deltaX, double deltaY, CancellationToken ct)
+    {
+        await _session!.SendAsync("Input.dispatchMouseEvent",
+            new { type = "mouseWheel", x = 0, y = 0, deltaX, deltaY }, ct);
+    }
+
+    public override async Task KeyPressAsync(string key, KeyModifiers modifiers, CancellationToken ct)
+    {
+        var session = _session!;
+        var (code, vk, text) = CdpKeyMap.Lookup(key);
+        var mods = modifiers.ToCdpMask();
+        await session.SendAsync("Input.dispatchKeyEvent", new
+        {
+            type = text is null ? "rawKeyDown" : "keyDown",
+            key = key,
+            code,
+            windowsVirtualKeyCode = vk,
+            nativeVirtualKeyCode = vk,
+            modifiers = mods,
+            text,
+        }, ct);
+        await session.SendAsync("Input.dispatchKeyEvent", new
+        {
+            type = "keyUp",
+            key = key,
+            code,
+            windowsVirtualKeyCode = vk,
+            nativeVirtualKeyCode = vk,
+            modifiers = mods,
+        }, ct);
+    }
+
+    public override async Task InsertTextAsync(string text, CancellationToken ct)
+    {
+        await _session!.SendAsync("Input.insertText", new { text }, ct);
+    }
+
+    // ---------------- cookies ----------------
+
+    public override async Task<IReadOnlyList<CookieInfo>> GetCookiesAsync(CancellationToken ct)
+    {
+        // Browser-level Storage domain returns all cookies in the profile.
+        var res = await _cdp.SendAsync("Storage.getCookies", null, null, ct);
+        var list = new List<CookieInfo>();
+        foreach (var c in res.GetProperty("cookies").EnumerateArray())
+        {
+            list.Add(new CookieInfo(
+                c.GetProperty("name").GetString() ?? "",
+                c.GetProperty("value").GetString() ?? "",
+                c.TryGetProperty("domain", out var d) ? d.GetString() : null,
+                c.TryGetProperty("path", out var p) ? p.GetString() : null,
+                c.TryGetProperty("expires", out var e) && e.ValueKind == JsonValueKind.Number ? e.GetDouble() : null,
+                c.TryGetProperty("httpOnly", out var h) && h.GetBoolean(),
+                c.TryGetProperty("secure", out var s) && s.GetBoolean()));
+        }
+        return list;
+    }
+
+    public override async Task<bool> SetCookieAsync(CookieInfo cookie, CancellationToken ct)
+    {
+        var url = await GetUrlSafeAsync(ct);
+        var res = await _session!.SendAsync("Network.setCookie", new
+        {
+            name = cookie.Name,
+            value = cookie.Value,
+            url,
+            domain = cookie.Domain,
+            path = cookie.Path ?? "/",
+            httpOnly = cookie.HttpOnly,
+            secure = cookie.Secure,
+            expires = cookie.Expires,
+        }, ct);
+        return res.TryGetProperty("success", out var s) && s.GetBoolean();
+    }
+
+    public override async Task<bool> DeleteCookiesAsync(string? name, string? url, CancellationToken ct)
+    {
+        if (name is not null)
+        {
+            await _session!.SendAsync("Network.deleteCookies", new
+            {
+                name,
+                url = url ?? await GetUrlSafeAsync(ct),
+            }, ct);
+            return true;
+        }
+        await _session!.SendAsync("Network.clearBrowserCookies", null, ct);
+        return true;
+    }
+
+    // ---------------- viewport ----------------
+
+    public override async Task SetViewportAsync(int width, int height, double deviceScaleFactor, bool mobile, CancellationToken ct)
+    {
+        await _session!.SendAsync("Emulation.setDeviceMetricsOverride", new
+        {
+            width,
+            height,
+            deviceScaleFactor,
+            mobile,
+        }, ct);
+        Controller.SetWindowSize(Tab, width, height);
+    }
+
+    /// <summary>Page.printToPDF → saves to disk.</summary>
+    public async Task<string> PrintToPdfAsync(string outputPath, CancellationToken ct)
+    {
+        var res = await _session!.SendAsync("Page.printToPDF", new
+        {
+            printBackground = true,
+            preferCSSPageSize = true,
+        }, ct);
+        var data = Convert.FromBase64String(res.GetProperty("data").GetString()!);
+        await File.WriteAllBytesAsync(outputPath, data, ct);
+        return $"PDF saved to {outputPath} ({data.Length / 1024}KB)";
+    }
+
+    public override async ValueTask DisposeAsync()
+    {
+        if (_session is not null)
+        {
+            try { _cdp.EventReceived -= OnCdpEvent; } catch { }
+            try { await _cdp.SendAsync("Target.detachFromTarget", new { sessionId = _session.SessionId }, null, CancellationToken.None); } catch { }
+        }
+    }
+}
