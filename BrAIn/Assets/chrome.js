@@ -19,6 +19,7 @@
     var findOpen = false;  // find-in-page bar visible
     var lastScrollReport = 0;
     state.bmarks = []; state.bm = false; state.zoom = 100; state.topmost = false;
+    state.sess = 0; state.privActive = false;
 
     var SVG = {
         back: '<svg viewBox="0 0 16 16"><path d="M10.5 3.5 6 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -36,7 +37,11 @@
         dots: '<svg viewBox="0 0 16 16"><circle cx="8" cy="3.4" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="12.6" r="1.3" fill="currentColor"/></svg>',
         up: '<svg viewBox="0 0 16 16"><path d="M3.4 10.6 8 6l4.6 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
         dn: '<svg viewBox="0 0 16 16"><path d="M3.4 5.4 8 10l4.6-4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-        mag: '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10.4 10.4 3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'
+        mag: '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10.4 10.4 3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+        mask: '<svg viewBox="0 0 16 16"><path d="M8 2.6c-2 0-3.6.7-4.3 1.7L3 7.6h10l-.7-3.3C11.6 3.3 10 2.6 8 2.6z" fill="currentColor"/><path d="M3.4 8.4a4.6 4.6 0 0 0 9.2 0z" fill="currentColor" opacity=".75"/><circle cx="5.7" cy="9.6" r=".85" fill="#0b0b13"/><circle cx="10.3" cy="9.6" r=".85" fill="#0b0b13"/></svg>',
+        pin: '<svg viewBox="0 0 16 16"><path d="M9.4 2.2 13.8 6.6l-1.5.2-3.2 3.2-.2 3-1.7 1.7.6-3.9-3-3zM3.6 12.4 6 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M2.4 13.6l4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+        link: '<svg viewBox="0 0 16 16"><path d="M6.5 9.5a3 3 0 0 0 4.2.4l2-2a3 3 0 1 0-4.2-4.2l-1.1 1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9.5 6.5a3 3 0 0 0-4.2-.4l-2 2a3 3 0 1 0 4.2 4.2l1.1-1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+        copy: '<svg viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 5.5v-1a1.5 1.5 0 0 0-1.5-1.5H4.5A1.5 1.5 0 0 0 3 4.5V9a1.5 1.5 0 0 0 1.5 1.5h1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>'
     };
 
     function send(cmd) {
@@ -87,13 +92,96 @@
     }
 
     // ---------------- rendering ----------------
+    // Tab elements persist across state pushes (keyed by id) and are
+    // reconciled in place — adding a tab animates only the new pill, closing
+    // animates out before detach, favicons never re-fetch on unrelated pushes,
+    // and activation cross-fades via CSS transitions.
+
+    var tabEls = {};   // id -> live .tab element (reset on mount)
+    var firstRender = true; // tabs cascade in on mount (doc swap on tab switch)
+    // Boot state baked into the document by the host (window.__brainBoot) —
+    // applied once so the strip renders final state on first paint; only
+    // bootFresh (the just-created tab) animates. Without it every tab would
+    // flash in ~100ms later when the first push arrives.
+    var bootApplied = null, bootFresh = null;
+
+    function makeTabEl(sh, t) {
+        var el = document.createElement('div');
+        el.className = 'tab';
+        el.setAttribute('data-id', t.id);
+        el.innerHTML = '<span class="dot"></span><span class="t"></span>' +
+            '<span class="x" title="Close tab">' + SVG.close + '</span>';
+        el.draggable = true;
+        el.addEventListener('click', function (e) {
+            var x = e.target.closest && e.target.closest('.x');
+            if (x) { if (!el._pin) send('closetab:' + el.getAttribute('data-id')); e.stopPropagation(); return; }
+            send('switchtab:' + el.getAttribute('data-id'));
+        });
+        el.addEventListener('auxclick', function (e) {
+            if (e.button === 1 && !el._pin) { // middle-click closes the tab
+                e.preventDefault();
+                send('closetab:' + el.getAttribute('data-id'));
+            }
+        });
+        el.addEventListener('contextmenu', function (e) {
+            e.preventDefault(); e.stopPropagation();
+            showTabMenu(sh, e.clientX, e.clientY, el.getAttribute('data-id'));
+        });
+        el.addEventListener('dragstart', function (e) {
+            dragId = el.getAttribute('data-id');
+            el.classList.add('dragging');
+            try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId); } catch (err) { }
+        });
+        el.addEventListener('dragend', function () {
+            el.classList.remove('dragging');
+            clearDropMark(sh);
+            dragId = null;
+        });
+        return el;
+    }
+
+    function syncTabEl(el, t) {
+        el.classList.toggle('active', !!t.active);
+        el.classList.toggle('priv', !!t.priv);
+        el.classList.toggle('pin', !!t.pin);
+        el._pin = !!t.pin;
+        var h = hostOf(t.url);
+        var title = t.title || h;
+        if (el._title !== title || el._url !== t.url) {
+            el._title = title; el._url = t.url;
+            el.querySelector('.t').textContent = title;
+            el.title = (t.title || '') + '\n' + (t.url || '') +
+                (t.priv ? '\nPrivate — no history; site data wiped on close' : '');
+        }
+        var busy = t.active && state.loading;
+        var icon = t.icon || '';
+        var letter = (title || '?').trim().charAt(0).toUpperCase();
+        var faceSig = letter + '|' + icon + '|' + (busy ? 'B' : '') + (t.priv ? 'P' : '') + '|' + t.id;
+        if (el._face !== faceSig) {
+            el._face = faceSig;
+            var dot = el.querySelector('.dot');
+            if (busy) {
+                dot.className = 'dot spin';
+                dot.style.background = '';
+                dot.innerHTML = '';
+            } else if (t.priv) {
+                dot.className = 'dot mask';
+                dot.style.background = 'rgba(124,124,255,.16)';
+                dot.innerHTML = SVG.mask;
+            } else {
+                dot.className = 'dot';
+                dot.style.background = tabHue(t.id);
+                dot.innerHTML = esc(letter) +
+                    (icon ? '<img class="fav" src="' + esc(icon) + '" alt="" onerror="this.remove()">' : '');
+            }
+        }
+    }
 
     function render(sh) {
         var strip = sh.getElementById('tabs');
         if (!strip) return;
-        // Signature check: state pushes arrive on every load event, and an
-        // innerHTML rebuild mid-click eats the click + replays the tab-in
-        // animation. Only rebuild when something actually changed.
+        // Signature check: state pushes arrive on every load event; reconcile
+        // only when tab data actually changed.
         var sig = (state.loading ? 'L' : '.');
         for (var i = 0; i < state.tabs.length; i++) {
             var t0 = state.tabs[i];
@@ -101,53 +189,60 @@
         }
         if (sig === lastSig) { updateNav(sh); updateProg(sh); return; }
         lastSig = sig;
-        var html = '';
+
+        var seen = {};
+        var prev = null;
         for (var i = 0; i < state.tabs.length; i++) {
             var t = state.tabs[i];
-            var h = hostOf(t.url);
-            var busy = t.active && state.loading;
-            var face = busy
-                ? '<span class="dot spin"></span>'
-                : '<span class="dot" style="background:' + tabHue(t.id) + '">' +
-                  esc((t.title || h || '?').trim().charAt(0).toUpperCase()) +
-                  (t.icon ? '<img class="fav" src="' + esc(t.icon) + '" alt="" onerror="this.remove()">' : '') +
-                  '</span>';
-            html += '<div class="tab' + (t.active ? ' active' : '') + '" data-id="' + esc(t.id) + '" title="' + esc(t.title) + '\n' + esc(t.url) + '">' +
-                face +
-                '<span class="t">' + esc(t.title || h) + '</span>' +
-                '<span class="x" data-x="' + esc(t.id) + '" title="Close tab">' + SVG.close + '</span>' +
-                '</div>';
-        }
-        strip.innerHTML = html;
-
-        strip.querySelectorAll('.tab').forEach(function (el) {
-            el.draggable = true;
-            el.addEventListener('click', function (e) {
-                var x = e.target.closest && e.target.closest('.x');
-                if (x) { send('closetab:' + x.getAttribute('data-x')); e.stopPropagation(); return; }
-                send('switchtab:' + el.getAttribute('data-id'));
-            });
-            el.addEventListener('auxclick', function (e) {
-                if (e.button === 1) { // middle-click closes the tab
-                    e.preventDefault();
-                    send('closetab:' + el.getAttribute('data-id'));
+            seen[t.id] = 1;
+            var el = tabEls[t.id];
+            var fresh = !el || el.parentNode !== strip;
+            if (fresh) {
+                el = makeTabEl(sh, t);
+                tabEls[t.id] = el;               // .tab's tabin anim plays on insert
+                if (firstRender) {
+                    if (bootApplied) {
+                        // Boot state: strip appears instantly — suppress the
+                        // entrance anim on existing tabs; only the freshly
+                        // created one slides in.
+                        if (t.id !== bootFresh) {
+                            el.style.animation = 'none';
+                            (function (e2) {
+                                requestAnimationFrame(function () {
+                                    requestAnimationFrame(function () { e2.style.animation = ''; });
+                                });
+                            })(el);
+                        }
+                    }
+                    else el.style.animationDelay = Math.min(i * 40, 360) + 'ms';
                 }
-            });
-            el.addEventListener('contextmenu', function (e) {
-                e.preventDefault(); e.stopPropagation();
-                showTabMenu(sh, e.clientX, e.clientY, el.getAttribute('data-id'));
-            });
-            el.addEventListener('dragstart', function (e) {
-                dragId = el.getAttribute('data-id');
-                el.classList.add('dragging');
-                try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId); } catch (err) { }
-            });
-            el.addEventListener('dragend', function () {
-                el.classList.remove('dragging');
-                dragId = null;
-            });
-        });
-
+            }
+            syncTabEl(el, t);
+            var anchor = prev ? prev.nextSibling : strip.firstChild;
+            if (el !== anchor) strip.insertBefore(el, anchor); // move keeps the node
+            if (fresh) {
+                // reveal the new tab at the strip's edge, like real browsers
+                var l = el.offsetLeft, r = l + el.offsetWidth;
+                if (r > strip.scrollLeft + strip.clientWidth)
+                    strip.scrollTo({ left: r - strip.clientWidth, behavior: 'smooth' });
+                else if (l < strip.scrollLeft)
+                    strip.scrollTo({ left: l, behavior: 'smooth' });
+            }
+            prev = el;
+        }
+        // The empty render at mount must not consume the cascade — state
+        // arrives via the first push, which is when tabs actually appear.
+        if (state.tabs.length) firstRender = false;
+        for (var id in tabEls) {
+            if (seen[id]) continue;
+            var dead = tabEls[id];
+            delete tabEls[id];
+            if (dead.parentNode === strip) {
+                dead.classList.add('closing');
+                dead.draggable = false;
+                (function (d) { setTimeout(function () { d.remove(); }, 200); })(dead);
+            }
+        }
         updateNav(sh);
         updateProg(sh);
     }
@@ -156,16 +251,25 @@
 
     function showTabMenu(sh, x, y, id) {
         var m = sh.getElementById('tmenu');
+        var tb = null;
+        for (var i = 0; i < state.tabs.length; i++)
+            if (state.tabs[i].id === id) tb = state.tabs[i];
         var items = [
+            [tb && tb.pin ? 'unpin' : 'pin', tb && tb.pin ? 'Unpin tab' : 'Pin tab'],
+            ['newprivtab', 'New private tab'],
+            null,
             ['reloadtab', 'Reload'],
             ['dupetab', 'Duplicate'],
             ['closeothers', 'Close other tabs'],
             ['closeright', 'Close tabs to the right'],
-            ['closetab', 'Close'],
         ];
+        if (!(tb && tb.pin)) { items.push(null); items.push(['closetab', 'Close']); }
         var html = '';
-        for (var i = 0; i < items.length; i++)
-            html += '<div class="mi" data-c="' + items[i][0] + '">' + items[i][1] + '</div>';
+        for (var i = 0; i < items.length; i++) {
+            var it = items[i];
+            html += it === null ? '<div class="msep"></div>' :
+                '<div class="mi" data-c="' + it[0] + '">' + it[1] + '</div>';
+        }
         m.innerHTML = html;
         m.style.display = 'block';
         m.style.left = Math.min(x, window.innerWidth - 190) + 'px';
@@ -188,15 +292,44 @@
 
     var dragId = null;
 
+    function liveTabs(strip) {
+        // skip tabs mid close-animation — they're already gone logically
+        return Array.prototype.slice.call(strip.querySelectorAll('.tab:not(.closing)'));
+    }
+
+    function clearDropMark(sh) {
+        var strip = sh.getElementById('tabs');
+        if (!strip) return;
+        strip.querySelectorAll('.dropmark,.dropmark-r').forEach(function (el) {
+            el.classList.remove('dropmark', 'dropmark-r');
+        });
+    }
+
     function wireStripDnd(sh) {
         var strip = sh.getElementById('tabs');
         strip.addEventListener('dragover', function (e) {
-            if (dragId) e.preventDefault();
+            if (!dragId) return;
+            e.preventDefault();
+            var tabs = liveTabs(strip);
+            clearDropMark(sh);
+            var marked = false;
+            for (var i = 0; i < tabs.length; i++) {
+                var r = tabs[i].getBoundingClientRect();
+                if (e.clientX < r.left + r.width / 2) {
+                    tabs[i].classList.add('dropmark');
+                    marked = true; break;
+                }
+            }
+            if (!marked && tabs.length) tabs[tabs.length - 1].classList.add('dropmark-r');
+        });
+        strip.addEventListener('dragleave', function (e) {
+            if (!strip.contains(e.relatedTarget)) clearDropMark(sh);
         });
         strip.addEventListener('drop', function (e) {
             e.preventDefault();
             if (!dragId) return;
-            var tabs = Array.prototype.slice.call(strip.querySelectorAll('.tab'));
+            clearDropMark(sh);
+            var tabs = liveTabs(strip);
             var dragIdx = -1, idx = tabs.length;
             for (var i = 0; i < tabs.length; i++) {
                 if (tabs[i].getAttribute('data-id') === dragId) dragIdx = i;
@@ -349,6 +482,77 @@
         updateAddr(sh);
     }
 
+    // ---------------- page context menu ----------------
+    // WebView2 suppresses its own context menu when the page handles
+    // contextmenu, so our preventDefault fully replaces it. Editable fields
+    // are left alone — the native cut/copy/paste menu belongs there.
+
+    function showPageMenu(sh, x, y, link, hasSel) {
+        var m = sh.getElementById('pmenu');
+        var items = [];
+        if (link) {
+            items.push(['olink', 'Open link in new tab']);
+            items.push(['clink', 'Copy link address']);
+            items.push(null);
+        }
+        if (hasSel) { items.push(['copy', 'Copy']); items.push(null); }
+        items.push(['back', 'Back']);
+        items.push(['forward', 'Forward']);
+        items.push(['reload', 'Reload']);
+        items.push(null);
+        items.push(['newprivtab', 'New private tab']);
+        items.push(null);
+        items.push(['vsrc', 'View source']);
+        items.push(['help', 'How to use']);
+        var html = '';
+        for (var i = 0; i < items.length; i++)
+            html += items[i] === null ? '<div class="msep"></div>' :
+                '<div class="mi" data-c="' + items[i][0] + '">' + items[i][1] + '</div>';
+        m.innerHTML = html;
+        m.style.display = 'block';
+        // clamp against the menu's real size once rendered
+        var mw = m.offsetWidth, mh = m.offsetHeight;
+        m.style.left = Math.min(x, Math.max(0, window.innerWidth - mw - 8)) + 'px';
+        m.style.top = Math.min(y, Math.max(0, window.innerHeight - mh - 8)) + 'px';
+        m.querySelectorAll('.mi').forEach(function (el) {
+            el.addEventListener('mousedown', function (e) {
+                e.preventDefault(); e.stopPropagation();
+                m.style.display = 'none';
+                var c = el.getAttribute('data-c');
+                if (c === 'olink') send('newtab:' + link);
+                else if (c === 'clink') copyText(link);
+                else if (c === 'copy') copyText((getSelection() || '').toString());
+                else if (c === 'vsrc') send('newtab:view-source:' + location.href);
+                else if (c === 'help') send('newtab:about:help');
+                else send(c); // back/forward/reload/newprivtab
+            });
+        });
+        var off = function () {
+            m.style.display = 'none';
+            document.removeEventListener('mousedown', off, true);
+        };
+        setTimeout(function () { document.addEventListener('mousedown', off, true); }, 0);
+    }
+
+    function wirePageMenu() {
+        document.addEventListener('contextmenu', function (e) {
+            var sh = sh0(); if (!sh) return;
+            var t = e.target;
+            // events from inside our shadow chrome retarget to the host node —
+            // the tab strip/context menus handle those themselves
+            if (t && t.id === HOST_ID) return;
+            // editable fields keep the native editing menu
+            if (t && t.closest && t.closest('input,textarea,[contenteditable="true"],[contenteditable=""]')) return;
+            e.preventDefault(); e.stopPropagation();
+            var a = t && t.closest ? t.closest('a[href]') : null;
+            var href = null;
+            if (a) { href = a.getAttribute('href'); try { href = new URL(href, location.href).href; } catch (e2) { href = null; } }
+            var sel = '';
+            try { sel = (getSelection() || '').toString().trim(); } catch (e3) { }
+            showPageMenu(sh, e.clientX, e.clientY, href, !!sel);
+        }, true);
+    }
+
     // ---------------- link-hover status bubble ----------------
 
     function wireStatusBubble() {
@@ -455,12 +659,14 @@
     // ---------------- ⋮ browser menu ----------------
 
     function menuItems() {
-        return [
+        var items = [
             ['newtab', 'New tab', 'Ctrl+T'],
+            ['newpriv', 'New private tab', 'Ctrl+Shift+N'],
             ['reopen', 'Reopen closed tab', 'Ctrl+Shift+T'],
             null,
             ['find', 'Find in page', 'Ctrl+F'],
             ['bm', (state.bm ? 'Remove bookmark' : 'Bookmark this page'), 'Ctrl+D'],
+            ['copyurl', 'Copy link address', 'Ctrl+Shift+C'],
             null,
             ['zoomout', 'Zoom out', 'Ctrl+−'],
             ['zoomreset', 'Reset zoom — ' + state.zoom + '%', 'Ctrl+0'],
@@ -468,10 +674,17 @@
             null,
             ['print', 'Print', 'Ctrl+P'],
             ['viewsource', 'View source', 'Ctrl+U'],
-            null,
-            ['fullscreen', 'Fullscreen', 'F11'],
-            ['topmost', 'Always on top', state.topmost ? '✓' : ''],
         ];
+        if (state.sess > 0) {
+            items.push(null);
+            items.push(['restore', 'Restore last session (' + state.sess + ' tab' + (state.sess > 1 ? 's' : '') + ')', '']);
+        }
+        items.push(null);
+        items.push(['fullscreen', 'Fullscreen', 'F11']);
+        items.push(['topmost', 'Always on top', state.topmost ? '✓' : '']);
+        items.push(null);
+        items.push(['help', 'How to use', 'F1']);
+        return items;
     }
 
     function showMenu(sh) {
@@ -502,7 +715,23 @@
         if (c === 'find') { openFind(sh); return; }
         if (c === 'print') { try { window.print(); } catch (e) { } return; }
         if (c === 'viewsource') { send('newtab:view-source:' + location.href); return; }
+        if (c === 'help') { send('newtab:about:help'); return; }
+        if (c === 'newpriv') { send('newprivtab'); return; }
+        if (c === 'copyurl') { copyText(location.href); return; }
+        if (c === 'restore') { send('restoresession'); return; }
         send(c);
+    }
+
+    function copyText(text) {
+        try { navigator.clipboard.writeText(text); }
+        catch (e) {
+            try {
+                var ta = document.createElement('textarea');
+                ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+                document.body.appendChild(ta); ta.select();
+                document.execCommand('copy'); ta.remove();
+            } catch (e2) { }
+        }
     }
 
     // ---------------- scroll position reporting ----------------
@@ -524,7 +753,7 @@
     function updateStar(sh) {
         var s = sh.getElementById('star');
         if (!s) return;
-        var http = /^https?:/.test(location.href);
+        var http = /^https?:/.test(location.href) && !state.privActive;
         s.style.display = http ? 'grid' : 'none';
         s.innerHTML = state.bm ? SVG.starF : SVG.star;
         s.classList.toggle('yes', !!state.bm);
@@ -545,6 +774,12 @@
             } else if (mod && e.shiftKey && (k === 't' || k === 'T')) {
                 e.preventDefault(); e.stopPropagation();
                 send('reopen'); // Ctrl+Shift+T reopens the last closed tab
+            } else if (mod && e.shiftKey && (k === 'n' || k === 'N')) {
+                e.preventDefault(); e.stopPropagation();
+                send('newprivtab'); // Ctrl+Shift+N — incognito-style tab
+            } else if (mod && e.shiftKey && (k === 'c' || k === 'C')) {
+                e.preventDefault(); e.stopPropagation();
+                copyText(location.href); // Ctrl+Shift+C copies the page URL
             } else if (mod && (k === 't' || k === 'T')) {
                 e.preventDefault(); e.stopPropagation();
                 send('newtab');
@@ -586,6 +821,9 @@
             } else if (e.key === 'F6') {
                 e.preventDefault(); e.stopPropagation();
                 startEditing(sh);
+            } else if (e.key === 'F1') {
+                e.preventDefault(); e.stopPropagation();
+                send('newtab:about:help');
             } else if (e.key === 'F11') {
                 e.preventDefault(); e.stopPropagation();
                 send('fullscreen');
@@ -617,6 +855,44 @@
         if (next) send('switchtab:' + next.id);
     }
 
+    // Applies window.__brainBoot (baked in by the host before first paint)
+    // exactly once — deferred past head-parse so an embedded <script> on
+    // internal pages overrides a stale injected payload. Falls back cleanly
+    // to the normal push path when absent.
+    function applyBoot() {
+        var b = null;
+        try { b = window.__brainBoot; } catch (e) { }
+        if (!b || b === bootApplied || b.b !== 9 || !Array.isArray(b.tabs)) return;
+        bootApplied = b;
+        try { window.__brainBoot = null; } catch (e) { }
+        bootFresh = b.fresh || null;
+        state.tabs = b.tabs;
+        state.loading = !!b.loading;
+        state.canBack = b.canBack !== false;
+        state.canFwd = !!b.canFwd;
+        state.hist = Array.isArray(b.hist) ? b.hist : [];
+        state.bmarks = Array.isArray(b.bmarks) ? b.bmarks : [];
+        state.bm = !!b.bm;
+        state.zoom = b.zoom || 100;
+        state.topmost = !!b.topmost;
+        state.sess = b.sess || 0;
+        state.privActive = !!b.privActive;
+        window.__brainState = state;
+        var s = sh0();
+        if (s) {
+            render(s);
+            updateStar(s);
+            updateAddr(s);
+            var om = s.getElementById('omni');
+            if (om) om.classList.toggle('priv', !!state.privActive);
+        }
+        // Pages (newtab tiles) render from this event — fire after listeners
+        // have had a chance to attach during parse.
+        setTimeout(function () {
+            try { document.dispatchEvent(new CustomEvent('brain-state', { detail: state })); } catch (e) { }
+        }, 0);
+    }
+
     // ---------------- mount ----------------
 
     function mount() {
@@ -638,13 +914,14 @@
             'box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 8px 28px rgba(0,0,0,.4);' +
             'font:12px/1.45 "Segoe UI Variable Text",system-ui,-apple-system,"Segoe UI",sans-serif;color:#c9c9dc;' +
             'user-select:none;-webkit-user-select:none;' +
-            'animation:slidein .28s cubic-bezier(.2,.9,.3,1)}' +
-            '@keyframes slidein{from{transform:translateY(-10px);opacity:0}to{transform:none;opacity:1}}' +
-            '#prog{position:absolute;left:0;right:0;bottom:-1px;height:2px;overflow:hidden;opacity:0;transition:opacity .3s}' +
+            'animation:slidein .24s cubic-bezier(.16,1,.3,1)}' +
+            '@keyframes slidein{from{transform:translateY(-8px);opacity:0}to{transform:none;opacity:1}}' +
+            '@keyframes pop{from{transform:scale(.94) translateY(-4px);opacity:0}to{transform:none;opacity:1}}' +
+            '#prog{position:absolute;left:0;right:0;bottom:-1px;height:2px;overflow:hidden;opacity:0;transition:opacity .35s}' +
             '#prog.on{opacity:1}' +
             '#prog i{position:absolute;top:0;bottom:0;width:38%;border-radius:2px;' +
             'background:linear-gradient(90deg,#7c7cff,#4ec9b0);' +
-            'box-shadow:0 0 10px rgba(124,124,255,.6);animation:sweep 1.15s ease-in-out infinite}' +
+            'box-shadow:0 0 10px rgba(124,124,255,.6);animation:sweep 1.2s cubic-bezier(.45,0,.55,1) infinite}' +
             '@keyframes sweep{0%{left:-40%}55%{left:62%}100%{left:105%}}' +
             '.nav{display:flex;gap:1px;flex:none;padding:3px;border-radius:999px;' +
             'background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.05)}' +
@@ -658,9 +935,16 @@
             '#tabs::-webkit-scrollbar{display:none}' +
             '.tab{display:flex;align-items:center;gap:8px;height:34px;padding:0 10px 0 8px;min-width:46px;max-width:184px;' +
             'border-radius:11px;cursor:pointer;color:#9c9cb6;border:1px solid transparent;' +
-            'transition:background .15s,color .15s,border-color .15s,box-shadow .15s;' +
-            'animation:tabin .18s cubic-bezier(.2,.9,.3,1)}' +
-            '@keyframes tabin{from{transform:scale(.8) translateY(-2px);opacity:0}to{transform:scale(1) translateY(0);opacity:1}}' +
+            'position:relative;overflow:hidden;' +
+            'transition:background .2s,color .2s,border-color .2s,box-shadow .2s;' +
+            'animation:tabin .22s cubic-bezier(.16,1,.3,1) backwards}' +
+            '@keyframes tabin{from{transform:scale(.75);opacity:0;max-width:0;padding-left:0;padding-right:0}' +
+            '60%{transform:scale(1.03)}to{transform:scale(1);opacity:1;max-width:184px}}' +
+            '.tab.closing{pointer-events:none;animation:tabout .19s cubic-bezier(.4,0,.7,1) forwards}' +
+            '@keyframes tabout{to{transform:scale(.7);opacity:0;max-width:0;padding-left:0;padding-right:0;border-width:0}}' +
+            '.tab.dropmark::before,.tab.dropmark-r::after{content:"";position:absolute;top:6px;bottom:6px;width:2.5px;' +
+            'border-radius:2px;background:linear-gradient(180deg,#9c9cff,#4ec9b0)}' +
+            '.tab.dropmark::before{left:2px}.tab.dropmark-r::after{right:2px}' +
             '.tab:hover{background:rgba(255,255,255,.06);color:#d8d8ec}' +
             '.tab.active{background:linear-gradient(180deg,rgba(124,124,255,.22),rgba(124,124,255,.1));' +
             'color:#ececff;border-color:rgba(140,140,255,.4);' +
@@ -673,22 +957,35 @@
             'border:2px solid rgba(124,124,255,.2);border-top-color:#9c9cff;animation:rot .65s linear infinite}' +
             '@keyframes rot{to{transform:rotate(360deg)}}' +
             '.tab .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;font-weight:500}' +
-            '.tab .x{width:18px;height:18px;border-radius:999px;display:none;place-items:center;color:#8a8aa4;flex:none;transition:background .12s,color .12s}' +
+            '.tab .x{width:18px;height:18px;border-radius:999px;display:grid;place-items:center;color:#8a8aa4;flex:none;' +
+            'opacity:0;transition:opacity .15s,background .12s,color .12s,transform .15s}' +
             '.tab .x svg{width:10px;height:10px}' +
-            '.tab:hover .x{display:grid}' +
-            '.tab .x:hover{background:rgba(255,255,255,.16);color:#fff}' +
+            '.tab:hover .x{opacity:1}' +
+            '.tab .x:hover{background:rgba(255,255,255,.16);color:#fff;transform:scale(1.15)}' +
             '.tab.dragging{opacity:.4}' +
-            '#tmenu{position:fixed;min-width:190px;display:none;z-index:30;' +
+            '.tab.priv{background:rgba(109,63,160,.18);color:#b8a3d9}' +
+            '.tab.priv:hover{background:rgba(109,63,160,.28);color:#d9c4f5}' +
+            '.tab.priv.active{background:linear-gradient(180deg,rgba(150,80,220,.32),rgba(109,63,160,.18));' +
+            'color:#eadcff;border-color:rgba(178,132,255,.45);' +
+            'box-shadow:0 2px 10px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.08),0 0 20px rgba(150,80,220,.18)}' +
+            '.tab .dot.mask{color:#b8a3ff;box-shadow:none}' +
+            '.tab .dot.mask svg{width:15px;height:15px}' +
+            '.tab.pin{padding:0 9px;min-width:0;gap:0}' +
+            '.tab.pin .t,.tab.pin .x{display:none}' +
+            '#tmenu,#pmenu{position:fixed;min-width:190px;display:none;z-index:30;' +
             'background:rgba(22,22,34,.96);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);' +
             'border:1px solid rgba(255,255,255,.1);border-radius:13px;padding:5px;' +
-            'box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);font:12px/1.4 system-ui,sans-serif}' +
+            'transform-origin:top left;' +
+            'box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);font:12px/1.4 system-ui,sans-serif;' +
+            'animation:pop .16s cubic-bezier(.16,1,.3,1)}' +
             '.mi{padding:7px 12px;border-radius:8px;color:#c9c9dc;cursor:pointer;transition:background .1s,color .1s}' +
             '.mi:hover{background:rgba(124,124,255,.18);color:#fff}' +
             '.plus{width:30px;height:34px;flex:none;display:grid;place-items:center;border:0;border-radius:10px;' +
             'background:transparent;color:#8a8aa4;cursor:pointer;transition:background .14s,color .14s,transform .1s}' +
             '.plus:hover{background:rgba(124,124,255,.18);color:#c9c9ff}' +
             '.plus:active{transform:scale(.9)}' +
-            '.plus svg{width:14px;height:14px}' +
+            '.plus svg{width:14px;height:14px;transition:transform .3s cubic-bezier(.16,1,.3,1)}' +
+            '.plus:hover svg{transform:rotate(90deg)}' +
             '.omni{flex:1;min-width:120px;display:flex;align-items:center;gap:8px;height:34px;padding:0 14px;' +
             'border-radius:999px;background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.08);' +
             'box-shadow:inset 0 1px 2px rgba(0,0,0,.25);cursor:text;position:relative;' +
@@ -696,6 +993,8 @@
             '.omni:hover{background:rgba(255,255,255,.08)}' +
             '.omni:focus-within{background:rgba(255,255,255,.1);border-color:rgba(124,124,255,.55);' +
             'box-shadow:0 0 0 4px rgba(124,124,255,.14),inset 0 1px 2px rgba(0,0,0,.2)}' +
+            '.omni.priv{background:rgba(109,63,160,.14);border-color:rgba(178,132,255,.3)}' +
+            '.omni.priv #lock{color:#b8a3ff}' +
             '#lock{width:13px;height:13px;color:#6fd8a8;flex:none}' +
             '#lock.bad{color:#e8b45c}' +
             '#lock svg{width:100%;height:100%}' +
@@ -707,7 +1006,9 @@
             '#drops{position:absolute;top:40px;left:6px;right:6px;display:none;z-index:5;' +
             'background:rgba(20,20,32,.97);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);' +
             'border:1px solid rgba(255,255,255,.1);border-radius:13px;overflow:hidden;' +
-            'box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.05);padding:5px}' +
+            'transform-origin:top center;' +
+            'box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.05);padding:5px;' +
+            'animation:pop .16s cubic-bezier(.16,1,.3,1)}' +
             '.drop{display:flex;align-items:center;gap:10px;padding:7px 11px;border-radius:9px;color:#b9b9d0;cursor:pointer;' +
             'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:background .1s,color .1s}' +
             '.drop .fav{width:15px;height:15px;border-radius:4px;flex:none}' +
@@ -719,7 +1020,9 @@
             'backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);' +
             'color:#9a9ab8;font:11.5px/1.4 system-ui,sans-serif;' +
             'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:none;pointer-events:none;' +
-            'box-shadow:0 6px 20px rgba(0,0,0,.45);transition:opacity .15s}' +
+            'box-shadow:0 6px 20px rgba(0,0,0,.45);' +
+            'animation:statusin .18s cubic-bezier(.16,1,.3,1)}' +
+            '@keyframes statusin{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}' +
             '#status.on{display:block}' +
             '#star{width:22px;height:22px;border-radius:999px;display:none;place-items:center;color:#8a8aa4;flex:none;cursor:pointer;transition:background .12s,color .12s}' +
             '#star:hover{background:rgba(255,255,255,.12);color:#d8d8ec}' +
@@ -730,7 +1033,9 @@
             '#menu{position:fixed;top:44px;right:8px;min-width:236px;display:none;z-index:31;' +
             'background:rgba(22,22,34,.97);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);' +
             'border:1px solid rgba(255,255,255,.1);border-radius:13px;padding:5px;' +
-            'box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);font:12px/1.4 system-ui,sans-serif}' +
+            'transform-origin:top right;' +
+            'box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);font:12px/1.4 system-ui,sans-serif;' +
+            'animation:pop .16s cubic-bezier(.16,1,.3,1)}' +
             '#menu.on{display:block}' +
             '#menu .mi{display:flex;justify-content:space-between;align-items:center;gap:22px}' +
             '#menu .sc{color:#63637e;font-size:11px;flex:none}' +
@@ -740,7 +1045,9 @@
             'background:rgba(22,22,34,.97);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);' +
             'border:1px solid rgba(255,255,255,.1);' +
             'box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);' +
-            'color:#a5a5c2;font:12px/1.4 system-ui,sans-serif}' +
+            'color:#a5a5c2;font:12px/1.4 system-ui,sans-serif;' +
+            'transform-origin:top right;' +
+            'animation:pop .16s cubic-bezier(.16,1,.3,1)}' +
             '#fbar.on{display:flex}' +
             '#fbar>svg{width:13px;height:13px;flex:none}' +
             '#fin{width:190px;background:transparent;border:0;outline:0;color:#ececff;' +
@@ -753,10 +1060,12 @@
             '.fb:hover{background:rgba(255,255,255,.1);color:#fff}' +
             '.fb svg{width:11px;height:11px}' +
             '.brand{flex:none;display:flex;align-items:center;gap:6px;padding:0 6px;' +
-            'font-weight:800;font-size:12.5px;letter-spacing:.5px;' +
+            'font-weight:800;font-size:12.5px;letter-spacing:.5px;transition:filter .25s;' +
             'background:linear-gradient(115deg,#9c9cff 20%,#4ec9b0 90%);' +
             '-webkit-background-clip:text;background-clip:text;color:transparent}' +
-            '.brand svg{width:14px;height:14px;color:#9c9cff}' +
+            '.brand:hover{filter:brightness(1.25)}' +
+            '.brand svg{width:14px;height:14px;color:#9c9cff;transition:transform .4s cubic-bezier(.16,1,.3,1)}' +
+            '.brand:hover svg{transform:rotate(180deg)}' +
             '</style>' +
             '<div class="bar">' +
             '<div class="nav">' +
@@ -776,6 +1085,7 @@
             '</div>' +
             '<div id="status"></div>' +
             '<div id="tmenu"></div>' +
+            '<div id="pmenu"></div>' +
             '<div id="menu"></div>' +
             '<div id="fbar">' + SVG.mag +
             '<input id="fin" spellcheck="false" placeholder="Find in page">' +
@@ -878,12 +1188,18 @@
             wireShortcuts();
             wireStatusBubble();
             wireLinkGestures();
+            wirePageMenu();
             wireScrollReport();
+            // Embedded __brainBoot (internal pages) lands during head parse —
+            // retry at DOMContentLoaded in case the 0ms timer beat it.
+            document.addEventListener('DOMContentLoaded', applyBoot);
             // Keep the omnibox in sync with in-page (SPA) navigation.
             setInterval(function () { var s = sh0(); if (s) updateAddr(s); }, 1000);
         }
         wireStripDnd(sh); // strip node is recreated each mount
         lastSig = '';     // force a fresh strip render for the new shadow
+        tabEls = {};      // new shadow — the old tab elements are gone
+        firstRender = true;
         editing = false; dirty = false; dropIdx = -1; // remount kills the old omnibox
 
         // window.external bridge is only injected on real documents; when the
@@ -891,6 +1207,10 @@
         try {
             window.external && window.external.receiveMessage(function (m) {
                 try {
+                    // Consume any pending boot state BEFORE the push renders —
+                    // the push can beat the deferred applyBoot and trigger the
+                    // whole-strip cascade (visible as the new-tab flicker).
+                    applyBoot();
                     var j = JSON.parse(m);
                     if (j && j.b === 9 && Array.isArray(j.tabs)) {
                         state.tabs = j.tabs;
@@ -902,9 +1222,13 @@
                         state.bm = !!j.bm;
                         state.zoom = j.zoom || 100;
                         state.topmost = !!j.topmost;
+                        state.sess = j.sess || 0;
+                        state.privActive = !!j.privActive;
                         window.__brainState = state;
                         render(sh);
                         updateStar(sh);
+                        var om = sh.getElementById('omni');
+                        if (om) om.classList.toggle('priv', !!state.privActive);
                         if (editing) renderDrops(sh);
                         try {
                             document.dispatchEvent(new CustomEvent('brain-state', { detail: state }));
@@ -917,10 +1241,14 @@
         render(sh);
         updateAddr(sh);
         send('tabs');
+        // Boot state render is deferred one tick so an embedded page script
+        // can overwrite a stale injected payload before we consume it.
+        setTimeout(applyBoot, 0);
     }
 
     window.__brainChrome = {
         mount: mount,
+        applyBoot: applyBoot,
         hide: function () {
             var h = document.getElementById(HOST_ID);
             if (h) h.style.display = 'none';

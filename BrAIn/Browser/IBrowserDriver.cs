@@ -61,5 +61,16 @@ public interface IBrowserDriver : IAsyncDisposable
     Task<bool> SetCookieAsync(CookieInfo cookie, CancellationToken ct);
     Task<bool> DeleteCookiesAsync(string? name, string? url, CancellationToken ct);
 
+    /// <summary>Wipe all stored site data (cookies, localStorage, caches) for
+    /// an origin — used when a private tab closes. Best-effort no-op where
+    /// the platform can't reach it.</summary>
+    Task ClearSiteDataAsync(string origin, CancellationToken ct);
+
+    /// <summary>Bake the current chrome state into the NEXT document via
+    /// window.__brainBoot (page-created script). Lets the toolbar render its
+    /// final state on first paint instead of popping in after the state
+    /// round-trip — kills the new-tab flicker. No-op where unsupported.</summary>
+    Task SetBootStateAsync(string stateJson, CancellationToken ct);
+
     Task SetViewportAsync(int width, int height, double deviceScaleFactor, bool mobile, CancellationToken ct);
 }

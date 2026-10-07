@@ -471,17 +471,19 @@ public sealed class BrowserTools(BrowserController browser)
     public Task<string> Tabs(CancellationToken ct = default)
     {
         var lines = browser.Tabs.All.Select(t =>
-            $"{(ReferenceEquals(t, browser.Tabs.Active) ? "* " : "  ")}{t.Id.ToString()[..8]}  {t.LastTitle ?? "?"}  <{t.LastUrl}>");
+            $"{(ReferenceEquals(t, browser.Tabs.Active) ? "* " : "  ")}{t.Id.ToString()[..8]}" +
+            $"{(t.IsPrivate ? " [private]" : "")}{(t.IsPinned ? " [pinned]" : "")}  {t.LastTitle ?? "?"}  <{t.LastUrl}>");
         return Task.FromResult("Tabs:\n" + string.Join('\n', lines));
     }
 
-    [McpServerTool(Name = "browser_new_tab"), Description("Open a new tab.")]
+    [McpServerTool(Name = "browser_new_tab"), Description("Open a new tab. Private tabs keep no history and wipe site data on close.")]
     public async Task<string> NewTab(
         [Description("URL to open (default: new tab page)")] string? url = null,
+        [Description("Open as a private tab")] bool priv = false,
         CancellationToken ct = default)
     {
-        var tab = await browser.NewTabAsync(url, ct);
-        return $"new tab {tab.Id.ToString()[..8]} opened → {tab.LastUrl}";
+        var tab = await browser.NewTabAsync(url, ct, priv);
+        return $"new {(priv ? "private " : "")}tab {tab.Id.ToString()[..8]} opened → {tab.LastUrl}";
     }
 
     [McpServerTool(Name = "browser_switch_tab"), Description("Switch the browser to a tab by id or id-prefix.")]

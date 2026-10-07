@@ -212,6 +212,11 @@ public abstract class DriverBase : IBrowserDriver
         return el?.ValueKind == JsonValueKind.True;
     }
 
+    /// <summary>No origin-scoped wipe on this transport — CDP overrides it.</summary>
+    public virtual Task ClearSiteDataAsync(string origin, CancellationToken ct) => Task.CompletedTask;
+
+    public virtual Task SetBootStateAsync(string stateJson, CancellationToken ct) => Task.CompletedTask;
+
     // ---------------- viewport ----------------
 
     public virtual Task SetViewportAsync(int width, int height, double deviceScaleFactor, bool mobile, CancellationToken ct)

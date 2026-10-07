@@ -31,6 +31,18 @@
   @keyframes drift1 { from { transform: translate(0,0) scale(1); } to { transform: translate(70px,40px) scale(1.12); } }
   @keyframes drift2 { from { transform: translate(0,0) scale(1.05); } to { transform: translate(-60px,-50px) scale(.95); } }
 
+  /* staggered entrance */
+  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+  .clock, .date, .logo, .tag, form, #recent, .hint {
+    animation: rise .7s cubic-bezier(.16,1,.3,1) both;
+  }
+  .date { animation-delay: .05s; }
+  .logo { animation-delay: .11s; }
+  .tag { animation-delay: .18s; }
+  form { animation-delay: .25s; }
+  #recent { animation-delay: .34s; }
+  .hint { animation-delay: .45s; }
+
   .clock { font-size: 64px; font-weight: 200; letter-spacing: 1px; color: #f2f2fc;
     font-variant-numeric: tabular-nums; line-height: 1; margin-bottom: 4px; }
   .date { font-size: 13px; color: #7a7a96; margin-bottom: 42px; letter-spacing: .3px; }
@@ -82,6 +94,7 @@
     backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
     transition: transform .15s, border-color .15s, background .15s, color .15s;
     overflow: hidden; white-space: nowrap;
+    animation: rise .4s cubic-bezier(.16,1,.3,1) both;
   }
   .tile:hover {
     transform: translateY(-2px); background: rgba(255,255,255,.07);
@@ -100,6 +113,13 @@
     max-width: 620px; text-align: center; line-height: 1.7; padding: 0 20px; }
   .hint code { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08);
     border-radius: 6px; padding: 1px 7px; color: #9a9ab8; }
+  .help {
+    display: inline-block; margin-top: 8px; padding: 6px 16px; cursor: pointer;
+    border-radius: 999px; border: 1px solid rgba(255,255,255,.09);
+    background: rgba(255,255,255,.05); color: #8f8fb0; font-size: 12px; font-weight: 600;
+    transition: background .15s, color .15s, border-color .15s;
+  }
+  .help:hover { background: rgba(124,124,255,.12); border-color: rgba(124,124,255,.35); color: #c9c9ff; }
 </style>
 </head>
 <body>
@@ -116,7 +136,8 @@
   <div id="recent"><h2>Recent</h2><div id="tiles"></div></div>
   <div class="hint">
     Connect an MCP client to this process over <code>stdio</code> and the agent
-    can navigate, click, type, snapshot and screenshot this browser.
+    can navigate, click, type, snapshot and screenshot this browser.<br/>
+    <span class="help" id="help">How to use &rarr;</span>
   </div>
 <script>
   function send(cmd) {
@@ -126,6 +147,9 @@
     e.preventDefault();
     var v = document.getElementById('q').value.trim();
     if (v) send('navigate:' + v);
+  });
+  document.getElementById('help').addEventListener('click', function () {
+    send('navigate:about:help');
   });
 
   function tick() {
@@ -156,7 +180,7 @@
       var u = typeof it === 'string' ? it : it.u;
       var icon = typeof it === 'object' ? it.i : null;
       var h = hostOf(u);
-      html += '<div class="tile" data-u="' + u.replace(/"/g, '&quot;') + '" title="' + u.replace(/"/g, '&quot;') + '">' +
+      html += '<div class="tile" style="animation-delay:' + (i * 45) + 'ms" data-u="' + u.replace(/"/g, '&quot;') + '" title="' + u.replace(/"/g, '&quot;') + '">' +
         '<span class="ic" style="background:' + hue(h) + '">' +
         (h.charAt(0) || '?').toUpperCase() +
         (icon ? '<img src="' + icon.replace(/"/g, '&quot;') + '" alt="" onerror="this.remove()">' : '') +

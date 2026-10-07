@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>How to use — BrAIn</title>
+<script>
+  // Served via LoadRawString — flags itself so the host maps the tab to
+  // about:help instead of the literal about:blank that location.href reports.
+  window.__brainHelp = 1;
+</script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    min-height: 100vh; background: #0b0b13; color: #e8e8f0;
+    font-family: "Segoe UI Variable Text", system-ui, -apple-system, "Segoe UI", sans-serif;
+    position: relative; padding: 96px 24px 80px;
+  }
+  .orb { position: fixed; border-radius: 50%; filter: blur(90px); opacity: .45; pointer-events: none; }
+  .orb.a { width: 520px; height: 520px; top: -200px; left: -140px;
+    background: radial-gradient(circle, #4a3fb8, transparent 70%); }
+  .orb.b { width: 440px; height: 440px; bottom: -180px; right: -120px;
+    background: radial-gradient(circle, #1f7a68, transparent 70%); }
+
+  /* staggered entrance */
+  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+  .wrap > * { animation: rise .6s cubic-bezier(.16,1,.3,1) both; }
+
+  .wrap { max-width: 760px; margin: 0 auto; position: relative; }
+  .logo {
+    font-size: 44px; font-weight: 800; letter-spacing: 2px; margin-bottom: 6px;
+    background: linear-gradient(120deg, #9c9cff, #4ec9b0);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .sub { color: #8a8aa0; font-size: 15px; margin-bottom: 40px; line-height: 1.6; }
+  .sub b { color: #4ec9b0; font-weight: 600; }
+
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 1.6px; text-transform: uppercase;
+    color: #5f5f7c; margin: 38px 0 14px; display: flex; align-items: center; gap: 12px;
+  }
+  h2::after { content: ""; flex: 1; height: 1px; background: rgba(255,255,255,.07); }
+
+  .card {
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 16px; padding: 20px 22px;
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 10px 34px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.05);
+    margin-bottom: 14px;
+  }
+  .card p { color: #b9b9cf; font-size: 14px; line-height: 1.75; }
+  .card p + p { margin-top: 10px; }
+  .card b { color: #ececfd; font-weight: 600; }
+  .card code, .keys code {
+    background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.09);
+    border-radius: 6px; padding: 1px 7px; color: #9a9ab8; font-size: 12.5px;
+    font-family: "Cascadia Code", Consolas, monospace; white-space: nowrap;
+  }
+
+  /* config snippet */
+  .cfg {
+    position: relative; margin-top: 14px;
+    background: #0d0d17; border: 1px solid rgba(255,255,255,.09); border-radius: 12px;
+    padding: 16px 18px; overflow-x: auto;
+  }
+  .cfg pre {
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px;
+    line-height: 1.7; color: #a8e6d4; white-space: pre;
+  }
+  .cfg .k { color: #9c9cff; } .cfg .s { color: #e6c78a; }
+  .copy {
+    position: absolute; top: 10px; right: 10px;
+    padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,.1);
+    background: rgba(255,255,255,.06); color: #b9b9cf; font-size: 11.5px;
+    font-weight: 600; cursor: pointer; font-family: inherit;
+    transition: background .15s, color .15s;
+  }
+  .copy:hover { background: rgba(255,255,255,.11); color: #fff; }
+
+  /* shortcuts grid */
+  .keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 9px 22px; }
+  .keys .row { display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    padding: 8px 2px; font-size: 13px; color: #b9b9cf; }
+  .keys .row span:last-child { flex: none; }
+
+  /* tool chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .chip {
+    padding: 6px 13px; border-radius: 999px; font-size: 12px; color: #a8e6d4;
+    background: rgba(78,201,176,.08); border: 1px solid rgba(78,201,176,.18);
+    font-family: "Cascadia Code", Consolas, monospace;
+  }
+
+  .steps { counter-reset: s; }
+  .steps .st { display: flex; gap: 14px; padding: 8px 0; font-size: 14px; color: #b9b9cf; line-height: 1.6; }
+  .steps .st::before {
+    counter-increment: s; content: counter(s);
+    width: 24px; height: 24px; flex: none; border-radius: 50%;
+    background: linear-gradient(120deg, #7c7cff, #4ec9b0); color: #fff;
+    font-size: 12px; font-weight: 700; display: grid; place-items: center; margin-top: 1px;
+  }
+
+  .foot { margin-top: 44px; text-align: center; color: #4c4c62; font-size: 12.5px; line-height: 1.8; }
+  a { color: #9c9cff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="orb a"></div><div class="orb b"></div>
+  <div class="wrap">
+    <div class="logo">BrAIn</div>
+    <div class="sub">A browser your <b>AI</b> can drive. One process, a real desktop
+      window, and a built-in MCP server exposing every part of the browser as tools.</div>
+
+    <h2>Browse like normal</h2>
+    <div class="card"><p>
+      BrAIn works like any browser: type a <b>URL or search</b> in the address bar,
+      <b>middle-click links</b> for new tabs, <b>right-click tabs</b> for their menu,
+      <b>drag tabs</b> to reorder, and use the <b>⋮ menu</b> for find, zoom,
+      bookmarks, print, view-source, fullscreen and always-on-top.
+      Bookmarks and history persist between launches.</p></div>
+
+    <h2>Keyboard shortcuts</h2>
+    <div class="card keys">
+      <div class="row"><span>New tab</span><code>Ctrl+T</code></div>
+      <div class="row"><span>New private tab</span><code>Ctrl+Shift+N</code></div>
+      <div class="row"><span>Close tab</span><code>Ctrl+W</code></div>
+      <div class="row"><span>Reopen closed tab</span><code>Ctrl+Shift+T</code></div>
+      <div class="row"><span>Next / prev tab</span><code>Ctrl+Tab</code></div>
+      <div class="row"><span>Jump to tab 1–9</span><code>Ctrl+1…9</code></div>
+      <div class="row"><span>Address bar</span><code>Ctrl+L / F6</code></div>
+      <div class="row"><span>Back / Forward</span><code>Alt+← / →</code></div>
+      <div class="row"><span>Reload / Stop</span><code>F5 / Esc</code></div>
+      <div class="row"><span>Find in page</span><code>Ctrl+F</code></div>
+      <div class="row"><span>Next / prev match</span><code>F3 / Shift+F3</code></div>
+      <div class="row"><span>Bookmark page</span><code>Ctrl+D</code></div>
+      <div class="row"><span>Copy link address</span><code>Ctrl+Shift+C</code></div>
+      <div class="row"><span>Zoom in / out / reset</span><code>Ctrl + − 0</code></div>
+      <div class="row"><span>Print</span><code>Ctrl+P</code></div>
+      <div class="row"><span>View source</span><code>Ctrl+U</code></div>
+      <div class="row"><span>Fullscreen</span><code>F11</code></div>
+      <div class="row"><span>This page</span><code>F1</code></div>
+    </div>
+
+    <h2>Connect an AI via MCP</h2>
+    <div class="card">
+      <p>BrAIn hosts an <b>MCP server over stdio</b> — the AI client launches
+        <code>BrAIn.exe</code> itself. Point your client's MCP config at the exe:</p>
+      <div class="steps">
+        <div class="st">Open your client's MCP settings — Claude Desktop: <code>%APPDATA%\Claude\claude_desktop_config.json</code>, Cursor: <code>~/.cursor/mcp.json</code>.</div>
+        <div class="st">Add the <code>brain</code> server block shown below, with the path to your <code>BrAIn.exe</code>.</div>
+        <div class="st">Restart the client — a BrAIn window opens and the agent sees all <code>browser_*</code> tools.</div>
+        <div class="st">Ask things like <i>"open github, find my unread notifications"</i> — the agent navigates, reads the page and clicks for you.</div>
+      </div>
+      <div class="cfg">
+        <button class="copy" id="copy">Copy</button>
+<pre>{
+  <span class="k">"mcpServers"</span>: {
+    <span class="k">"brain"</span>: {
+      <span class="k">"command"</span>: <span class="s">"C:\\path\\to\\BrAIn.exe"</span>
+    }
+  }
+}</pre>
+      </div>
+      <p>Optional args: <code>"args": ["https://example.com"]</code> opens a start page,
+        <code>"--cdp-port", "9333"</code> pins the DevTools port,
+        <code>"--no-toolbar"</code> hides the browser chrome.</p>
+      <p><b>Each client spawns its own BrAIn window</b> — disconnecting the client
+        (closing stdin) shuts that browser down cleanly.</p>
+    </div>
+
+    <h2>What the AI can do</h2>
+    <div class="card">
+      <p>The server exposes ~35 tools covering the whole browser:</p>
+      <div class="chips">
+        <span class="chip">navigate / back / forward / reload</span>
+        <span class="chip">accessibility snapshot</span>
+        <span class="chip">click · type · hover · scroll</span>
+        <span class="chip">screenshots · PDF</span>
+        <span class="chip">tabs: new / switch / close</span>
+        <span class="chip">window &amp; viewport control</span>
+        <span class="chip">zoom</span>
+        <span class="chip">run JavaScript</span>
+        <span class="chip">console log</span>
+        <span class="chip">network requests</span>
+        <span class="chip">cookies</span>
+      </div>
+      <p>Typical agent flow: <code>browser_navigate</code> → <code>browser_snapshot</code>
+        (gives element refs like <code>e5</code>) → <code>browser_click</code> /
+        <code>browser_type</code> → <code>browser_screenshot</code> to verify.</p>
+    </div>
+
+    <div class="foot">
+      Internal page · <a href="#" id="back">← Back to new tab</a>
+    </div>
+  </div>
+<script>
+  function send(cmd) {
+    try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
+  }
+  document.getElementById('back').addEventListener('click', function (e) {
+    e.preventDefault(); send('navigate:about:newtab');
+  });
+  // stagger the section entrance — capped so later cards don't wait forever
+  Array.prototype.forEach.call(document.querySelectorAll('.wrap > *'), function (el, i) {
+    el.style.animationDelay = Math.min(i * 45, 450) + 'ms';
+  });
+  document.getElementById('copy').addEventListener('click', function () {
+    var t = document.querySelector('.cfg pre').innerText;
+    var b = this;
+    try {
+      navigator.clipboard.writeText(t).then(function () {
+        b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500);
+      });
+    } catch (e) { }
+  });
+</script>
+</body>
+</html>

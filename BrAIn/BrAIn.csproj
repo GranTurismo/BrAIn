@@ -23,6 +23,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Assets\brain.js" LogicalName="BrAIn.Assets.brain.js" />
     <EmbeddedResource Include="Assets\newtab.html" LogicalName="BrAIn.Assets.newtab.html" />
+    <EmbeddedResource Include="Assets\help.html" LogicalName="BrAIn.Assets.help.html" />
     <EmbeddedResource Include="Assets\chrome.js" LogicalName="BrAIn.Assets.chrome.js" />
     <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

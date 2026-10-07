@@ -13,6 +13,7 @@ public sealed class CdpDriver : DriverBase
     private CdpSession? _session;
     private TaskCompletionSource? _loadFired;
     private string? _mainFrameId;
+    private static readonly string _injectSource = Assets.BrainJs + "\n" + Assets.ChromeJs;
     private readonly Dictionary<string, (string Method, string Url, string? Type)> _pendingRequests = new();
 
     public CdpDriver(CdpClient cdp, BrowserTab tab, BrowserController controller)
@@ -45,17 +46,69 @@ public sealed class CdpDriver : DriverBase
         await _session.SendAsync("Network.enable", null, ct);
         await _session.SendAsync("Log.enable", null, ct);
 
-        // Inject helpers into every future document in this target.
-        var injectSource = Assets.BrainJs + "\n" + Assets.ChromeJs;
+        // Paint the page background dark during the doc teardown/paint gap —
+        // without this WebView2 strobes white on every tab switch/new tab.
         try
         {
-            await _session.SendAsync("Page.addScriptToEvaluateOnNewDocument",
-                new { source = injectSource }, ct);
+            await _session.SendAsync("Emulation.setDefaultBackgroundColorOverride",
+                new { color = new { r = 11, g = 13, b = 18, a = 255 } }, ct);
+        }
+        catch { }
+
+        // Inject helpers into every future document in this target.
+        try
+        {
+            var res = await _session.SendAsync("Page.addScriptToEvaluateOnNewDocument",
+                new { source = _injectSource }, ct);
+            if (res.ValueKind == JsonValueKind.Object &&
+                res.TryGetProperty("identifier", out var idEl) &&
+                idEl.GetString() is { } id)
+                _injectIds.Add(id);
         }
         catch { /* older runtimes lack this method; controller reinjects anyway */ }
 
         // And into the current document right away.
         await Controller.EnsurePageHelpersAsync(Tab);
+    }
+
+    /// <summary>Re-register the new-document script with a fresh
+    /// window.__brainBoot payload so the toolbar paints final state on the
+    /// next navigation instead of empty → pop-in.</summary>
+    private readonly SemaphoreSlim _bootLock = new(1, 1);
+    private readonly List<string> _injectIds = new();
+
+    public override async Task SetBootStateAsync(string stateJson, CancellationToken ct)
+    {
+        if (_session is null) return;
+        // Concurrent calls (NavigateAsync + LoadStarted) serialize here.
+        await _bootLock.WaitAsync(ct);
+        try
+        {
+            // ADD first, THEN prune older scripts — a document committing
+            // mid-rotation still sees at least one inject script (never a
+            // gap), and scripts evaluate in registration order so the newest
+            // __brainBoot always wins.
+            var src = "window.__brainBoot=" + stateJson + ";\n" + _injectSource;
+            var res = await _session.SendAsync("Page.addScriptToEvaluateOnNewDocument",
+                new { source = src }, ct);
+            if (res.ValueKind == JsonValueKind.Object &&
+                res.TryGetProperty("identifier", out var idEl) &&
+                idEl.GetString() is { } newId)
+                _injectIds.Add(newId);
+            // Prune every older registration — failures retry next call.
+            for (var i = _injectIds.Count - 2; i >= 0; i--)
+            {
+                try
+                {
+                    await _session.SendAsync("Page.removeScriptToEvaluateOnNewDocument",
+                        new { identifier = _injectIds[i] }, ct);
+                    _injectIds.RemoveAt(i);
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex) { BrowserController.Log("boot inject failed: " + ex.Message); }
+        finally { _bootLock.Release(); }
     }
 
     private async Task<CdpClient.TargetInfo?> FindTargetAsync(CancellationToken ct)
@@ -499,6 +552,16 @@ public sealed class CdpDriver : DriverBase
         }
         await _session!.SendAsync("Network.clearBrowserCookies", null, ct);
         return true;
+    }
+
+    /// <summary>Closing a private tab wipes that origin's cookies, storage and
+    /// caches — the closest a shared WebView2 profile gets to incognito.</summary>
+    public override async Task ClearSiteDataAsync(string origin, CancellationToken ct)
+    {
+        var s = _session;
+        if (s is null) return;
+        await s.SendAsync("Storage.clearDataForOrigin",
+            new { origin, storageTypes = "all" }, ct);
     }
 
     // ---------------- viewport ----------------

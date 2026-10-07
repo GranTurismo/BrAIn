@@ -52,10 +52,19 @@ public sealed class BrowserController : IAsyncDisposable
     // Browser-level state shared across tabs (one window = one zoom level).
     private int _zoom = 100;
     private bool _topmost;
+    // 8-char id prefix of the tab that was just created — baked into the next
+    // document's boot state so only it plays the slide-in animation.
+    private string? _pendingFresh;
     private static readonly int[] ZoomSteps = [25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500];
 
     private readonly List<(string Url, string? Title, string? Icon)> _bookmarks = new();
     private const int BookmarkCap = 100;
+
+    // URLs open when the previous run exited — offered via "Restore session".
+    // The file is continuously overwritten while running, so keep the startup
+    // copy here and never reload it.
+    private List<string> _savedSession = new();
+    private int _sessionDirty;
 
     /// <summary>%LOCALAPPDATA%\BrAIn — parent of the per-process profile dirs,
     /// shared across runs so bookmarks/history persist.</summary>
@@ -122,8 +131,32 @@ public sealed class BrowserController : IAsyncDisposable
                         el.GetProperty("u").GetString() ?? "",
                         el.TryGetProperty("i", out var i) ? i.GetString() : null));
             }
+            var sPath = Path.Combine(_storeDir, "session.json");
+            if (File.Exists(sPath))
+            {
+                _savedSession = JsonDocument.Parse(File.ReadAllText(sPath)).RootElement
+                    .EnumerateArray().Select(e => e.GetString() ?? "")
+                    .Where(u => u.Length > 0).ToList();
+            }
         }
         catch { /* corrupt/absent store — start fresh */ }
+    }
+
+    /// <summary>Persist the open non-private tab URLs ~800ms after the last
+    /// mutation — nav/reorder churn shouldn't hammer the disk.</summary>
+    private void SaveSessionSoon()
+    {
+        if (Interlocked.Exchange(ref _sessionDirty, 1) != 0) return;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(800);
+            Interlocked.Exchange(ref _sessionDirty, 0);
+            var urls = Tabs.All
+                .Where(t => !t.IsClosed && !t.IsPrivate &&
+                    t.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                .Select(t => t.LastUrl).ToList();
+            SaveStore("session.json", urls);
+        });
     }
 
     private void SaveStore(string name, object rows)
@@ -244,7 +277,7 @@ public sealed class BrowserController : IAsyncDisposable
         if (_initialUrl is not null && NormalizeUrl(_initialUrl) != "about:newtab")
             window.Load(new Uri(NormalizeUrl(_initialUrl)));
         else
-            window.LoadRawString(Assets.NewTabHtml);
+            window.LoadRawString(InjectBootState(Assets.NewTabHtml));
         return window;
     }
 
@@ -293,6 +326,10 @@ public sealed class BrowserController : IAsyncDisposable
         {
             Interlocked.Increment(ref _loadDepth);
             PushChromeStateAll();
+            // A document is being created — refresh the boot payload it will
+            // carry (covers back/forward and page-initiated navigations where
+            // NavigateAsync isn't on the path).
+            _ = driver.SetBootStateAsync(BuildChromeStateJson(null), CancellationToken.None);
         };
         driver.LoadCompleted += async (_, _) =>
         {
@@ -354,16 +391,21 @@ public sealed class BrowserController : IAsyncDisposable
         // Navigating a tab implies making it the shown/active one.
         if (Tabs.Active?.Id != tab.Id) Tabs.Activate(tab.Id);
         url = NormalizeUrl(url);
-        if (url == "about:newtab")
+        if (url is "about:newtab" or "about:help")
         {
-            InvokeOnUi(() => tab.Window.LoadRawString(Assets.NewTabHtml));
+            var nt = url == "about:newtab";
+            var html = InjectBootState(nt ? Assets.NewTabHtml : Assets.HelpHtml);
+            InvokeOnUi(() => tab.Window.LoadRawString(html));
             tab.LastUrl = url;
-            tab.LastTitle = "New Tab";
+            tab.LastTitle = nt ? "New Tab" : "How to use";
             try { await EnsurePageHelpersAsync(tab); } catch { }
             PushChromeStateAll();
-            return NavigateResult.Success(url, "New Tab");
+            return NavigateResult.Success(url, tab.LastTitle);
         }
         var driver = await DriverOrThrowAsync(tab, ct);
+        // Bake chrome state into the next document so the toolbar renders
+        // final tab state on first paint (no empty-strip flash).
+        try { await driver.SetBootStateAsync(BuildChromeStateJson(ConsumeFresh()), ct); } catch { }
         var result = await driver.NavigateAsync(url, ct);
         if (result.Ok) tab.LastUrl = result.Url;
         return result;
@@ -408,16 +450,19 @@ public sealed class BrowserController : IAsyncDisposable
     // ---------------- tabs / windows ----------------
 
     /// <summary>Opens a new logical tab in the (single) browser window and
-    /// navigates it to <paramref name="url"/>.</summary>
-    public async Task<BrowserTab> NewTabAsync(string? url, CancellationToken ct = default)
+    /// navigates it to <paramref name="url"/>. Private tabs leave no history,
+    /// never join the session/reopen state and wipe site data on close.</summary>
+    public async Task<BrowserTab> NewTabAsync(string? url, CancellationToken ct = default, bool priv = false)
     {
         await _windowCreated.Task.WaitAsync(ct);
         var main = _mainWindow ?? throw new InvalidOperationException("Browser window not initialized");
-        var tab = new BrowserTab { Id = Guid.NewGuid(), IsMain = false, Window = main };
+        var tab = new BrowserTab { Id = Guid.NewGuid(), IsMain = false, Window = main, IsPrivate = priv };
         Tabs.Add(tab);
         Tabs.Activate(tab.Id);
+        _pendingFresh = tab.Id.ToString("N")[..8]; // consumed by boot state
         await NavigateAsync(url ?? "newtab", tab, ct);
         PushChromeStateAll();
+        SaveSessionSoon();
         return tab;
     }
 
@@ -441,11 +486,20 @@ public sealed class BrowserController : IAsyncDisposable
     public async Task<bool> CloseWindowAsync(string idOrPrefix, CancellationToken ct = default)
     {
         var tab = Tabs.FindByPrefix(idOrPrefix) ?? throw new InvalidOperationException($"No such tab '{idOrPrefix}'");
+        if (tab.IsPinned) return false; // pinned tabs resist close — unpin first
         var wasActive = Tabs.Active?.Id == tab.Id;
         var idx = Tabs.IndexOf(tab.Id);
-        if (tab.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        if (tab.IsPrivate)
+        {
+            // Never resurface private tabs via reopen — and wipe their site
+            // data so cookies/logins from the private session don't leak.
+            if (tab.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                _ = ClearPrivateSiteDataAsync(tab.LastUrl);
+        }
+        else if (tab.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
             _closedTabs.Push((tab.LastUrl, tab.LastIcon));
         Tabs.Remove(tab.Id);
+        SaveSessionSoon();
         var remaining = Tabs.All;
         if (remaining.Count == 0)
         {
@@ -462,6 +516,18 @@ public sealed class BrowserController : IAsyncDisposable
             await ActivateWindowAsync(next.Id.ToString("N")[..8], ct);
         }
         return true;
+    }
+
+    /// <summary>Best-effort origin wipe after a private tab closes.</summary>
+    private async Task ClearPrivateSiteDataAsync(string url)
+    {
+        try
+        {
+            var origin = new Uri(url).GetLeftPart(UriPartial.Authority);
+            var d = _driverTab?.Driver;
+            if (d is not null) await d.ClearSiteDataAsync(origin, CancellationToken.None);
+        }
+        catch { /* profile teardown in flight — ignore */ }
     }
 
     /// <summary>Closes every window — called when the MCP host stops (stdio
@@ -545,6 +611,7 @@ public sealed class BrowserController : IAsyncDisposable
 
     private void ToggleBookmark(BrowserTab tab)
     {
+        if (tab.IsPrivate) return; // bookmarking a private tab defeats the point
         if (!tab.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return;
         lock (_bookmarks)
         {
@@ -567,8 +634,9 @@ public sealed class BrowserController : IAsyncDisposable
         if (bar <= 0) return;
         var url = arg[..bar];
         var same = url.Equals(tab.LastUrl, StringComparison.OrdinalIgnoreCase)
-            // the start page reports about:blank but is stored as about:newtab
-            || (url == "about:blank" && tab.LastUrl == "about:newtab");
+            // internal pages are served via LoadRawString and report about:blank
+            // while being stored under their logical about:* URL
+            || (url == "about:blank" && tab.LastUrl.StartsWith("about:", StringComparison.Ordinal));
         if (!same) return;
         var xy = arg[(bar + 1)..].Split(',');
         if (xy.Length == 2 &&
@@ -668,6 +736,25 @@ public sealed class BrowserController : IAsyncDisposable
                             break;
                         case "home": await NavigateAsync("newtab", active); break;
                         case "newtab": await NewTabAsync(string.IsNullOrEmpty(arg) ? null : arg, default); break;
+                        case "newprivtab": await NewTabAsync(string.IsNullOrEmpty(arg) ? null : arg, default, priv: true); break;
+                        case "pin":
+                            if (Tabs.FindByPrefix(arg) is { } pt)
+                            {
+                                pt.IsPinned = !pt.IsPinned;
+                                // pinned tabs cluster at the strip's left edge
+                                Tabs.Move(pt.Id, pt.IsPinned ? Tabs.PinnedCount - 1 : Tabs.PinnedCount);
+                                PushChromeStateAll();
+                                SaveSessionSoon();
+                            }
+                            break;
+                        case "restoresession":
+                            {
+                                var urls = _savedSession;
+                                _savedSession = new List<string>();
+                                foreach (var u in urls) await NewTabAsync(u, default);
+                                PushChromeStateAll();
+                                break;
+                            }
                         case "switchtab": if (arg.Length > 0) await ActivateWindowAsync(arg); break;
                         case "closetab": if (arg.Length > 0) await CloseWindowAsync(arg); break;
                         case "movetab":
@@ -741,18 +828,21 @@ public sealed class BrowserController : IAsyncDisposable
         }
     }
 
-    /// <summary>Push current tab/URL state to a window's injected chrome bar.</summary>
-    public void PushChromeState(BrowserTab tab)
+    /// <summary>Serialize the chrome state payload (b:9) shared by pushes and
+    /// document boot state. <paramref name="fresh"/> marks a just-created tab
+    /// id prefix — only that pill animates on first paint.</summary>
+    private string BuildChromeStateJson(string? fresh)
     {
-        if (_noToolbar || tab.IsClosed) return;
         var activeId = Tabs.Active?.Id;
         var tabs = Tabs.All.Where(t => !t.IsClosed).Select(t => new
         {
             id = t.Id.ToString("N")[..8],
-            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl),
+            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl),
             url = t.LastUrl,
             icon = t.LastIcon,
             active = t.Id == activeId,
+            priv = t.IsPrivate,
+            pin = t.IsPinned,
         }).ToList();
         object[] hist;
         lock (_history)
@@ -764,7 +854,7 @@ public sealed class BrowserController : IAsyncDisposable
         bool isBm;
         lock (_bookmarks)
             isBm = activeUrl is not null && _bookmarks.Any(b => b.Url == activeUrl);
-        var json = JsonSerializer.Serialize(new
+        return JsonSerializer.Serialize(new
         {
             b = 9,
             tabs,
@@ -776,9 +866,40 @@ public sealed class BrowserController : IAsyncDisposable
             bm = isBm,
             zoom = _zoom,
             topmost = _topmost,
+            privActive = Tabs.Active?.IsPrivate == true,
+            sess = _savedSession.Count,
+            fresh,
         });
+    }
+
+    /// <summary>Push current tab/URL state to a window's injected chrome bar.</summary>
+    public void PushChromeState(BrowserTab tab)
+    {
+        if (_noToolbar || tab.IsClosed) return;
+        var json = BuildChromeStateJson(null);
         try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
         catch { /* window mid-close */ }
+    }
+
+    /// <summary>Embed the boot state AND the helper libs directly into an
+    /// internal page's HTML. NavigateToString docs don't get
+    /// addScriptToEvaluateOnNewDocument, so this is the only way the chrome
+    /// bar mounts before first paint on about: pages (zero-gap = no flicker).</summary>
+    private string InjectBootState(string html)
+    {
+        // '<' inside a <script> would break parsing — escape it in the JSON.
+        var json = BuildChromeStateJson(ConsumeFresh()).Replace("<", "\\u003c");
+        var lib = _noToolbar ? Assets.BrainJs : Assets.BrainJs + "\n" + Assets.ChromeJs;
+        return html.Replace("</head>",
+            "<script>window.__brainBoot=" + json + ";</script>" +
+            "<script>" + lib + "</script></head>");
+    }
+
+    private string? ConsumeFresh()
+    {
+        var f = _pendingFresh;
+        _pendingFresh = null;
+        return f;
     }
 
     public void PushChromeStateAll()
@@ -791,7 +912,10 @@ public sealed class BrowserController : IAsyncDisposable
     /// <summary>Inject brain.js (+ toolbar) into the tab's current document if absent.</summary>
     public async Task EnsurePageHelpersAsync(BrowserTab tab)
     {
-        var driver = tab.Driver;
+        // Logical tabs share one webview — always drive through the bound
+        // driver, not tab.Driver (null on non-main logical tabs, which made
+        // internal about: pages lose the chrome bar entirely).
+        var driver = tab.Driver ?? _driverTab?.Driver;
         if (driver is null || !driver.SupportsEval) return;
         try
         {
@@ -811,14 +935,15 @@ public sealed class BrowserController : IAsyncDisposable
 
     public async Task RefreshTabInfoAsync(BrowserTab tab)
     {
-        var driver = tab.Driver;
+        var driver = tab.Driver ?? _driverTab?.Driver;
         if (driver is null || !driver.SupportsEval) return;
         try
         {
             var info = await driver.EvaluateAsync(
                 """
                 JSON.stringify({
-                  u: location.href, t: document.title, n: !!window.__brainNewTab,
+                  u: location.href, t: document.title,
+                  n: !!window.__brainNewTab, h: !!window.__brainHelp,
                   i: (document.querySelector("link[rel~='icon']") || document.querySelector("link[rel='shortcut icon']") || {}).href || ''
                 })
                 """, false, CancellationToken.None);
@@ -830,12 +955,14 @@ public sealed class BrowserController : IAsyncDisposable
                 // reads about:blank — the doc flags itself so tab switching
                 // reloads the start page instead of a literal blank page.
                 var isNt = root.TryGetProperty("n", out var n) && n.GetBoolean();
-                tab.LastUrl = isNt ? "about:newtab" : root.GetProperty("u").GetString() ?? tab.LastUrl;
-                tab.LastTitle = isNt ? "New Tab" : root.GetProperty("t").GetString();
+                var isHelp = root.TryGetProperty("h", out var h) && h.GetBoolean();
+                tab.LastUrl = isNt ? "about:newtab" : isHelp ? "about:help" : root.GetProperty("u").GetString() ?? tab.LastUrl;
+                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : root.GetProperty("t").GetString();
                 var icon = root.GetProperty("i").GetString();
                 if (!string.IsNullOrEmpty(icon)) tab.LastIcon = icon;
                 (_canBack, _canFwd) = await driver.GetNavStateAsync(CancellationToken.None);
-                RecordHistory(tab.LastUrl, tab.LastIcon);
+                if (!tab.IsPrivate) RecordHistory(tab.LastUrl, tab.LastIcon);
+                SaveSessionSoon();
                 var title = string.IsNullOrWhiteSpace(tab.LastTitle) ? "BrAIn" : tab.LastTitle + " — BrAIn";
                 InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.Title = title; });
                 PushChromeStateAll();
@@ -927,6 +1054,8 @@ public sealed class BrowserController : IAsyncDisposable
         if (url.Equals("newtab", StringComparison.OrdinalIgnoreCase) ||
             url.Equals("home", StringComparison.OrdinalIgnoreCase))
             return "about:newtab";
+        if (url.Equals("help", StringComparison.OrdinalIgnoreCase))
+            return "about:help";
         if (!url.Contains("://") && !url.StartsWith("about:") && !url.StartsWith("file:") &&
             !url.StartsWith("data:") && !url.StartsWith("javascript:"))
         {
@@ -986,9 +1115,11 @@ internal static class Assets
     private static readonly Lazy<string> _brainJs = new(() => Load("BrAIn.Assets.brain.js"));
     private static readonly Lazy<string> _chromeJs = new(() => Load("BrAIn.Assets.chrome.js"));
     private static readonly Lazy<string> _newTab = new(() => Load("BrAIn.Assets.newtab.html"));
+    private static readonly Lazy<string> _help = new(() => Load("BrAIn.Assets.help.html"));
 
     public static string BrainJs => _brainJs.Value;
     public static string ChromeJs => _chromeJs.Value;
     public static string NewTabHtml => _newTab.Value;
+    public static string HelpHtml => _help.Value;
     public const int BrainJsVersion = 1;
 }

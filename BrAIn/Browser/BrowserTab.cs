@@ -36,6 +36,14 @@ public sealed class BrowserTab
     public int? ScrollX { get; set; }
     public int? ScrollY { get; set; }
 
+    /// <summary>Private tab: no history, never joins the reopen stack or the
+    /// persisted session, and its site data is wiped on close.</summary>
+    public bool IsPrivate { get; set; }
+
+    /// <summary>Pinned tab: compact icon-only pill pinned to the strip's left
+    /// edge; immune to close/middle-click until unpinned.</summary>
+    public bool IsPinned { get; set; }
+
     public bool IsClosed { get; set; }
 
     public override string ToString() => $"{Id.ToString()[..8]} {(IsMain ? "(main) " : "")}{LastTitle ?? "?"} <{LastUrl}>";
@@ -84,6 +92,16 @@ public sealed class BrowserTabRegistry
     public int IndexOf(Guid id)
     {
         lock (_orderLock) return _order.IndexOf(id);
+    }
+
+    /// <summary>Pinned tabs cluster at the strip's left edge.</summary>
+    public int PinnedCount
+    {
+        get
+        {
+            lock (_orderLock)
+                return _order.Count(id => _tabs.TryGetValue(id, out var t) && t.IsPinned);
+        }
     }
 
     public BrowserTab? Active =>

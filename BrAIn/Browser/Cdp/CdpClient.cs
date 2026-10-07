@@ -18,6 +18,7 @@ public sealed class CdpClient : IAsyncDisposable
     private readonly ClientWebSocket _ws = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new();
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
     private int _nextId;
     private Task? _reader;
 
@@ -115,7 +116,20 @@ public sealed class CdpClient : IAsyncDisposable
         if (sessionId is not null) msg["sessionId"] = sessionId;
 
         var bytes = JsonSerializer.SerializeToUtf8Bytes(msg);
-        await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+        // ClientWebSocket allows exactly ONE outstanding SendAsync — sends can
+        // arrive from the event-dispatch thread (LoadStarted → boot refresh)
+        // concurrently with request-path sends; serialize them.
+        await _sendLock.WaitAsync(ct);
+        try
+        {
+            await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+        }
+        catch
+        {
+            _pending.TryRemove(key, out _);
+            throw;
+        }
+        finally { _sendLock.Release(); }
 
         return await tcs.Task;
     }
