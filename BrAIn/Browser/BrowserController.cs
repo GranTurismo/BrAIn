@@ -277,7 +277,7 @@ public sealed class BrowserController : IAsyncDisposable
         if (_initialUrl is not null && NormalizeUrl(_initialUrl) != "about:newtab")
             window.Load(new Uri(NormalizeUrl(_initialUrl)));
         else
-            window.LoadRawString(InjectBootState(Assets.NewTabHtml));
+            window.LoadRawString(InjectBootState(Assets.NewTabHtml, animate: true));
         return window;
     }
 
@@ -891,15 +891,19 @@ public sealed class BrowserController : IAsyncDisposable
     /// <summary>Embed the boot state AND the helper libs directly into an
     /// internal page's HTML. NavigateToString docs don't get
     /// addScriptToEvaluateOnNewDocument, so this is the only way the chrome
-    /// bar mounts before first paint on about: pages (zero-gap = no flicker).</summary>
-    private string InjectBootState(string html)
+    /// bar mounts before first paint on about: pages (zero-gap = no flicker).
+    /// <paramref name="animate"/> plays the page's entrance rise — first
+    /// launch only; tab opens/switches paint final state instantly.</summary>
+    private string InjectBootState(string html, bool animate = false)
     {
         // '<' inside a <script> would break parsing — escape it in the JSON.
         var json = BuildChromeStateJson(ConsumeFresh(), "emb").Replace("<", "\\u003c");
         var lib = _noToolbar ? Assets.BrainJs : Assets.BrainJs + "\n" + Assets.ChromeJs;
         return html.Replace("</head>",
             "<script>window.__brainBoot=" + json +
-            ";try{window.__brainChrome&&__brainChrome.applyBoot()}catch(e){}</script>" +
+            ";window.__brainPageAnim=" + (animate ? "true" : "false") +
+            (animate ? ";document.documentElement.className+=' anim'" : "") + ";" +
+            "try{window.__brainChrome&&__brainChrome.applyBoot()}catch(e){}</script>" +
             "<script>" + lib + "</script></head>");
     }
 

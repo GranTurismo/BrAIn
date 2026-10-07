@@ -31,17 +31,20 @@
   @keyframes drift1 { from { transform: translate(0,0) scale(1); } to { transform: translate(70px,40px) scale(1.12); } }
   @keyframes drift2 { from { transform: translate(0,0) scale(1.05); } to { transform: translate(-60px,-50px) scale(.95); } }
 
-  /* staggered entrance */
+  /* Staggered entrance — only on the app's first launch (html.anim). Opening
+     or switching tabs re-renders this page and replaying the rise reads as
+     flicker, so those loads paint final state instantly. */
   @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
-  .clock, .date, .logo, .tag, form, #recent, .hint {
+  html.anim .clock, html.anim .date, html.anim .logo, html.anim .tag,
+  html.anim form, html.anim #recent, html.anim .hint {
     animation: rise .7s cubic-bezier(.16,1,.3,1) both;
   }
-  .date { animation-delay: .05s; }
-  .logo { animation-delay: .11s; }
-  .tag { animation-delay: .18s; }
-  form { animation-delay: .25s; }
-  #recent { animation-delay: .34s; }
-  .hint { animation-delay: .45s; }
+  html.anim .date { animation-delay: .05s; }
+  html.anim .logo { animation-delay: .11s; }
+  html.anim .tag { animation-delay: .18s; }
+  html.anim form { animation-delay: .25s; }
+  html.anim #recent { animation-delay: .34s; }
+  html.anim .hint { animation-delay: .45s; }
 
   .clock { font-size: 64px; font-weight: 200; letter-spacing: 1px; color: #f2f2fc;
     font-variant-numeric: tabular-nums; line-height: 1; margin-bottom: 4px; }
@@ -94,8 +97,8 @@
     backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
     transition: transform .15s, border-color .15s, background .15s, color .15s;
     overflow: hidden; white-space: nowrap;
-    animation: rise .4s cubic-bezier(.16,1,.3,1) both;
   }
+  html.anim .tile { animation: rise .4s cubic-bezier(.16,1,.3,1) both; }
   .tile:hover {
     transform: translateY(-2px); background: rgba(255,255,255,.07);
     border-color: rgba(124,124,255,.4); color: #f0f0fc;
