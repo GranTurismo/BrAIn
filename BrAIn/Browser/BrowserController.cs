@@ -937,6 +937,11 @@ public sealed class BrowserController : IAsyncDisposable
                             break;
                         case "bm": ToggleBookmark(active); break;
                         case "scroll": RecordScroll(DocTab ?? active, arg); break;
+                        // DevTools panel feed + REPL
+                        case "dtget": PushDevTools(tab); break;
+                        case "dtclearc": _console.Clear(); break;
+                        case "dtclearn": _network.Clear(); break;
+                        case "dteval": await DevToolsEvalAsync(active, arg); break;
                     }
                 }
                 catch (Exception ex) { Log($"toolbar cmd '{verb}' failed: {ex.Message}"); }
@@ -1056,6 +1061,61 @@ public sealed class BrowserController : IAsyncDisposable
         // All logical tabs share the single window — one push updates chrome.
         var t = Tabs.Main ?? Tabs.All.FirstOrDefault();
         if (t is not null) PushChromeState(t);
+    }
+
+    // ------------------------------------------------------------------
+    // DevTools feed — the in-window panel polls (dtget) and the REPL
+    // evals through the driver (CSP-safe unlike page-side eval()).
+    // ------------------------------------------------------------------
+
+    private void PushDevTools(BrowserTab tab)
+    {
+        if (_noToolbar || tab.IsClosed || !_driverReady.Task.IsCompleted) return;
+        // Windows gets console events from both CDP and the brain.js hook —
+        // collapse identical entries the double feed produces (levels differ:
+        // hook says "warn", Log.entryAdded says "warning" — normalize first).
+        static string NormLevel(string l) => l is "warning" ? "warn" : l is "verbose" ? "debug" : l;
+        var all = _console.TakeLast(200).ToArray();
+        var con = all.Where((c, i) =>
+        {
+            for (var k = Math.Max(0, i - 10); k < i; k++)
+                if (NormLevel(c.Level) == NormLevel(all[k].Level) && c.Text == all[k].Text &&
+                    Math.Abs((c.Time - all[k].Time).TotalSeconds) < 2)
+                    return false;
+            return true;
+        }).Select(c => (object)new
+        {
+            l = NormLevel(c.Level),
+            t = c.Time.ToString("HH:mm:ss"),
+            x = c.Text.Length > 2000 ? c.Text[..2000] : c.Text,
+            u = c.Url,
+        }).ToArray();
+        var net = _network.TakeLast(300).Select(n => (object)new
+        {
+            m = n.Method, u = n.Url.Length > 400 ? n.Url[..400] : n.Url,
+            st = n.Status, ty = n.ResourceType, sz = n.BytesReceived, er = n.Error,
+        }).ToArray();
+        var json = JsonSerializer.Serialize(new { b = 10, con, net });
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { /* window mid-close */ }
+    }
+
+    private async Task DevToolsEvalAsync(BrowserTab tab, string expr)
+    {
+        if (string.IsNullOrWhiteSpace(expr)) return;
+        string json;
+        try
+        {
+            var driver = await DriverOrThrowAsync(tab, CancellationToken.None);
+            var v = await driver.EvaluateAsync(expr, awaitPromise: true, CancellationToken.None);
+            json = JsonSerializer.Serialize(new { b = 11, ok = true, v });
+        }
+        catch (Exception ex)
+        {
+            json = JsonSerializer.Serialize(new { b = 11, ok = false, e = ex.Message });
+        }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { }
     }
 
     /// <summary>Inject brain.js (+ toolbar) into the tab's current document if absent.</summary>

@@ -783,6 +783,7 @@
             null,
             ['print', 'Print', 'Ctrl+P'],
             ['viewsource', 'View source', 'Ctrl+U'],
+            ['devtools', 'Developer tools', 'F12'],
         ];
         if (state.sess > 0) {
             items.push(null);
@@ -824,6 +825,7 @@
         // On the start-page overlay, page-scoped actions would hit the hidden document.
         if (state.ov && (c === 'find' || c === 'print' || c === 'viewsource' || c === 'copyurl' || c === 'bm')) return;
         if (c === 'find') { openFind(sh); return; }
+        if (c === 'devtools') { toggleDt(sh); return; }
         if (c === 'print') { try { window.print(); } catch (e) { } return; }
         if (c === 'viewsource') { send('newtab:view-source:' + location.href); return; }
         if (c === 'help') { send('newtab:about:help'); return; }
@@ -892,6 +894,9 @@
             } else if (mod && e.shiftKey && (k === 'c' || k === 'C')) {
                 e.preventDefault(); e.stopPropagation();
                 if (!state.ov) copyText(location.href); // Ctrl+Shift+C copies the page URL
+            } else if (mod && e.shiftKey && (k === 'i' || k === 'I')) {
+                e.preventDefault(); e.stopPropagation();
+                toggleDt(sh); // Ctrl+Shift+I
             } else if (mod && (k === 't' || k === 'T')) {
                 e.preventDefault(); e.stopPropagation();
                 openNewTab(false);
@@ -939,6 +944,9 @@
             } else if (e.key === 'F11') {
                 e.preventDefault(); e.stopPropagation();
                 send('fullscreen');
+            } else if (e.key === 'F12') {
+                e.preventDefault(); e.stopPropagation();
+                toggleDt(sh);
             } else if (e.key === 'F3') {
                 e.preventDefault(); e.stopPropagation();
                 if (findOpen) findStep(sh, e.shiftKey); else openFind(sh);
@@ -952,7 +960,9 @@
                 e.preventDefault(); e.stopPropagation();
                 send('forward');
             } else if (e.key === 'Escape') {
-                if (findOpen) closeFind(sh);
+                if (dtPicking) setPick(sh, false);
+                else if (dtOpen) toggleDt(sh);
+                else if (findOpen) closeFind(sh);
                 else if (!editing && state.loading) send('stop');
             }
         }, true);
@@ -997,6 +1007,139 @@
         if (w) w.style.display = state.wc ? 'flex' : 'none';
         var mb = s.getElementById('wmaxb');
         if (mb) { mb.innerHTML = state.w ? SVG.wres : SVG.wmax; mb.title = state.w ? 'Restore down' : 'Maximize'; }
+    }
+
+    // ---------------- devtools panel ----------------
+    var dtOpen = false, dtTab = 'con', dtH = 340;
+    var dtConSig = '', dtNetSig = '', dtPicking = false, dtReplBusy = false;
+    var dtScrollPin = true; // console auto-scrolls only when parked at bottom
+
+    function toggleDt(sh, tab) {
+        var p = sh.getElementById('dt');
+        if (!p) return;
+        dtOpen = !dtOpen;
+        if (dtOpen && tab) dtTab = tab;
+        p.style.display = dtOpen ? 'flex' : 'none';
+        if (dtOpen) { p.style.height = dtH + 'px'; syncDtTabs(sh); send('dtget'); }
+        if (!dtOpen && dtPicking) setPick(sh, false);
+    }
+
+    function syncDtTabs(sh) {
+        sh.querySelectorAll('.dtab').forEach(function (b) {
+            b.classList.toggle('on', b.getAttribute('data-t') === dtTab);
+        });
+        ['con', 'net', 'ins'].forEach(function (t) {
+            var p = sh.getElementById('dtp' + t);
+            if (p) p.classList.toggle('on', t === dtTab);
+        });
+    }
+
+    function fmtBytes(n) {
+        n = +n || 0;
+        return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' :
+            n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B';
+    }
+
+    // b:10 payload — rebuild a pane only when (count,last-entry) changes.
+    function renderDt(sh, j) {
+        var con = j.con || [], net = j.net || [];
+        var cs = con.length + '|' + (con.length ? con[con.length - 1].t + con[con.length - 1].x : '');
+        if (cs !== dtConSig) {
+            dtConSig = cs;
+            var list = sh.getElementById('dtlist');
+            if (list) {
+                var h = '';
+                for (var i = 0; i < con.length; i++) {
+                    var c = con[i];
+                    h += '<div class="crow ' + (c.l === 'error' ? 'err' : c.l === 'warn' ? 'warn' : '') + '">' +
+                        '<span class="ct">' + esc(c.t || '') + '</span><span>' + esc(c.x || '') + '</span></div>';
+                }
+                var pinned = list.scrollTop + list.clientHeight >= list.scrollHeight - 30;
+                list.innerHTML = h;
+                if (pinned && dtScrollPin) list.scrollTop = list.scrollHeight;
+            }
+        }
+        var ns = net.length + '|' + (net.length ? net[net.length - 1].u + net[net.length - 1].st : '');
+        if (ns !== dtNetSig) {
+            dtNetSig = ns;
+            var nl = sh.getElementById('dtnet');
+            if (nl) {
+                var h2 = '';
+                for (var k = 0; k < net.length; k++) {
+                    var n = net[k];
+                    var st = n.er ? 'ERR' : (n.st || '…');
+                    var cls = n.er ? 's0' : 's' + String(n.st || 0)[0];
+                    h2 += '<div class="dnetr"><span class="' + cls + '">' + st + '</span>' +
+                        '<span>' + esc(n.m || '') + '</span><span style="color:#77779a">' + esc(n.ty || '') + '</span>' +
+                        '<span style="color:#77779a">' + (n.sz ? fmtBytes(n.sz) : '') + '</span>' +
+                        '<span class="u" title="' + esc(n.u || '') + '">' + esc(n.u || '') + '</span></div>';
+                }
+                nl.innerHTML = h2;
+            }
+        }
+    }
+
+    // Console REPL — echo the input, host evals through the driver
+    // (Runtime.evaluate / evaluateJavaScript — not subject to page CSP).
+    function dtReplRun(sh, expr) {
+        var list = sh.getElementById('dtlist');
+        if (list) {
+            var d = document.createElement('div');
+            d.className = 'crow out';
+            d.innerHTML = '<span class="ct">›</span><span style="color:#b9b9ff">' + esc(expr) + '</span>';
+            list.appendChild(d);
+            list.scrollTop = list.scrollHeight;
+        }
+        dtReplBusy = true;
+        send('dteval:' + expr);
+    }
+
+    // b:11 — eval result line.
+    function dtEvalResult(sh, j) {
+        dtReplBusy = false;
+        var list = sh.getElementById('dtlist');
+        if (!list) return;
+        var d = document.createElement('div');
+        d.className = 'crow ' + (j.ok ? 'in' : 'err');
+        var v;
+        try {
+            v = j.ok ? (typeof j.v === 'string' ? j.v : JSON.stringify(j.v) ?? 'undefined')
+                     : 'Uncaught ' + (j.e || 'error');
+        } catch (e) { v = String(j.v); }
+        d.innerHTML = '<span class="ct">←</span><span>' + esc(v) + '</span>';
+        list.appendChild(d);
+        list.scrollTop = list.scrollHeight;
+    }
+
+    // Element picker for the Inspect tab.
+    function setPick(sh, on) {
+        dtPicking = on;
+        var b = sh.getElementById('dtpick');
+        if (b) b.classList.toggle('armed', on);
+        var st = sh.getElementById('dtinsst');
+        if (st) st.textContent = on ? 'hover to inspect — click to pin' : 'click any element on the page';
+        var hl = sh.getElementById('dthl'), tip = sh.getElementById('dttip');
+        if (!on) { if (hl) hl.style.display = 'none'; if (tip) tip.style.display = 'none'; }
+        document.documentElement.style.cursor = on ? 'crosshair' : '';
+    }
+
+    function describeEl(el) {
+        if (!el || !el.tagName) return '';
+        var s = '<' + el.tagName.toLowerCase();
+        if (el.id) s += ' id="' + el.id + '"';
+        if (el.className && typeof el.className === 'string')
+            s += ' class="' + el.className.trim().slice(0, 120) + '"';
+        s += '>';
+        var r = el.getBoundingClientRect();
+        var meta = s + '  ·  ' + Math.round(r.width) + '×' + Math.round(r.height) +
+            ' @ ' + Math.round(r.x) + ',' + Math.round(r.y);
+        var attrs = '';
+        for (var i = 0; i < el.attributes.length && i < 12; i++)
+            attrs += el.attributes[i].name + '="' + el.attributes[i].value.slice(0, 80) + '"  ';
+        var html = (el.outerHTML || '').slice(0, 800);
+        var txt = (el.innerText || '').trim().slice(0, 200);
+        return meta + '\n\nattributes: ' + (attrs.trim() || '—') +
+            '\n\ntext: ' + (txt || '—') + '\n\nhtml: ' + html;
     }
 
     function applyBoot() {
@@ -1351,6 +1494,51 @@
             '.brand:hover{filter:brightness(1.25)}' +
             '.brand svg{width:14px;height:14px;color:#9c9cff;transition:transform .4s cubic-bezier(.16,1,.3,1)}' +
             '.brand:hover svg{transform:rotate(180deg)}' +
+            // ---- devtools panel ----
+            '#dt{position:fixed;left:0;right:0;bottom:0;height:340px;display:none;flex-direction:column;z-index:20;' +
+            'background:linear-gradient(180deg,rgba(18,18,28,.995),rgba(12,12,20,.995));' +
+            'border-top:1px solid rgba(255,255,255,.1);box-shadow:0 -14px 44px rgba(0,0,0,.55);' +
+            'font:12px/1.45 "Segoe UI Variable Text",system-ui,sans-serif;color:#c9c9dc;' +
+            'user-select:text;-webkit-user-select:text;animation:dtin .18s cubic-bezier(.16,1,.3,1)}' +
+            '@keyframes dtin{from{transform:translateY(18px);opacity:0}to{transform:none;opacity:1}}' +
+            '#dtgrip{height:5px;margin-top:-3px;cursor:ns-resize;flex:none;position:relative;z-index:2}' +
+            '.dthead{display:flex;align-items:center;gap:2px;padding:0 10px;height:35px;flex:none;' +
+            'border-bottom:1px solid rgba(255,255,255,.06)}' +
+            '.dtab{padding:6px 12px;border:0;border-radius:8px 8px 0 0;background:transparent;color:#8f8fb0;' +
+            'font:600 11.5px/1 "Segoe UI Variable Text",system-ui,sans-serif;cursor:pointer;transition:color .12s}' +
+            '.dtab:hover{color:#d8d8ec}' +
+            '.dtab.on{color:#ececff;background:rgba(124,124,255,.13);box-shadow:inset 0 -2px 0 #7c7cff}' +
+            '.dtsp{flex:1}' +
+            '.dtbtn{padding:4px 10px;border:0;border-radius:7px;background:transparent;color:#8f8fb0;font-size:11px;cursor:pointer}' +
+            '.dtbtn:hover{background:rgba(255,255,255,.09);color:#fff}' +
+            '.dtbtn.armed{color:#b9b9ff;background:rgba(124,124,255,.18)}' +
+            '#dtbody{flex:1;display:flex;min-height:0}' +
+            '.dtpane{flex:1;min-width:0;display:none;flex-direction:column;min-height:0}' +
+            '.dtpane.on{display:flex}' +
+            '.dtscroll{flex:1;overflow-y:auto;font:11.5px/1.55 Consolas,"Cascadia Mono","Courier New",monospace}' +
+            '.dtscroll::-webkit-scrollbar{width:9px}' +
+            '.dtscroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:5px}' +
+            '.crow{padding:1.5px 14px;border-bottom:1px solid rgba(255,255,255,.035);white-space:pre-wrap;word-break:break-word;display:flex;gap:10px}' +
+            '.crow .ct{color:#55556f;flex:none}' +
+            '.crow.err{background:rgba(232,17,35,.09);color:#ffb4b9}' +
+            '.crow.warn{color:#ffd08a}' +
+            '.crow.in{color:#8fe0cd}.crow.in .ct{color:#3d7a6b}' +
+            '.crow.out .ct{color:#7c7cff}' +
+            '.dneth,.dnetr{display:grid;grid-template-columns:52px 62px 78px 74px 1fr;gap:10px;padding:2px 14px}' +
+            '.dneth{color:#66667f;font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;border-bottom:1px solid rgba(255,255,255,.08);position:sticky;top:0;background:#101018;flex:none}' +
+            '.dnetr{border-bottom:1px solid rgba(255,255,255,.03);font:11.5px/1.55 Consolas,"Cascadia Mono",monospace}' +
+            '.dnetr .u{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#a8a8c8;direction:rtl;text-align:left}' +
+            '.dnetr .s2{color:#7ee0a3}.dnetr .s3{color:#7cc4ff}.dnetr .s4{color:#ffb86b}.dnetr .s5,.dnetr .s0{color:#ff8a94}' +
+            '.dtrepl{display:flex;align-items:center;gap:9px;border-top:1px solid rgba(255,255,255,.08);padding:0 14px;flex:none;height:32px}' +
+            '.dtrepl input{flex:1;border:0;outline:0;background:transparent;color:#e8e8f4;font:12px/1 Consolas,"Cascadia Mono",monospace}' +
+            '.dtrepl .pr{color:#7c7cff;font-weight:700}' +
+            '.ins-top{display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,.07);flex:none}' +
+            '#dtins{flex:1;overflow:auto;margin:0;padding:9px 14px;white-space:pre-wrap;word-break:break-word;' +
+            'font:11.5px/1.6 Consolas,"Cascadia Mono",monospace;color:#b9b9d4}' +
+            '#dthl{position:fixed;display:none;pointer-events:none;z-index:24;border:1.5px solid #8c8cff;' +
+            'background:rgba(124,124,255,.13);border-radius:3px;transition:all .06s}' +
+            '#dttip{position:fixed;display:none;pointer-events:none;z-index:24;padding:2px 8px;border-radius:6px;' +
+            'background:#1d1d2e;border:1px solid rgba(140,140,255,.5);color:#d8d8f0;font:11px/1.5 Consolas,monospace;white-space:nowrap}' +
             // ---- window controls (chromeless title-bar buttons) ----
             // Windows caption-button proportions: 46px wide, flush with the
             // bar's top/right/bottom edges so the close button sits in the
@@ -1468,7 +1656,29 @@
             '<div class="rc" id="ntprc"><h2>Recent</h2><div class="tl" id="ntptl"></div></div>' +
             '<div class="hn">Connect an MCP client to this process over <code>stdio</code> and the agent ' +
             'can navigate, click, type, snapshot and screenshot this browser.<br>' +
-            '<span class="hp" id="ntphp">How to use &rarr;</span></div></div>';
+            '<span class="hp" id="ntphp">How to use &rarr;</span></div></div>' +
+            // devtools panel — Console / Network / Inspect over the page
+            '<div id="dt"><div id="dtgrip"></div>' +
+            '<div class="dthead">' +
+            '<button class="dtab on" data-t="con">Console</button>' +
+            '<button class="dtab" data-t="net">Network</button>' +
+            '<button class="dtab" data-t="ins">Inspect</button>' +
+            '<span class="dtsp"></span>' +
+            '<button class="dtbtn" id="dtclear">Clear</button>' +
+            '<button class="dtbtn" id="dtx" title="Close (F12)">✕</button></div>' +
+            '<div id="dtbody">' +
+            '<div class="dtpane on" id="dtpcon">' +
+            '<div class="dtscroll" id="dtlist"></div>' +
+            '<div class="dtrepl"><span class="pr">›</span><input id="dtin" spellcheck="false" placeholder="Evaluate JavaScript in page context…"></div></div>' +
+            '<div class="dtpane" id="dtpnet">' +
+            '<div class="dneth"><span>Status</span><span>Method</span><span>Type</span><span>Size</span><span>URL</span></div>' +
+            '<div class="dtscroll" id="dtnet"></div></div>' +
+            '<div class="dtpane" id="dtpins">' +
+            '<div class="ins-top"><button class="dtbtn" id="dtpick">◉ Pick element</button>' +
+            '<span id="dtinsst" style="color:#66667f;font-size:11px">click any element on the page</span></div>' +
+            '<pre id="dtins"></pre></div>' +
+            '</div></div>' +
+            '<div id="dthl"></div><div id="dttip"></div>';
 
         sh.querySelector('.nav').addEventListener('click', function (e) {
             var b = e.target.closest('button');
@@ -1508,6 +1718,55 @@
         });
         bar.addEventListener('mouseleave', function () { bar.style.cursor = ''; });
         syncWin(sh);
+
+        // ---- devtools panel ----
+        sh.querySelectorAll('.dtab').forEach(function (b) {
+            b.addEventListener('click', function () {
+                dtTab = b.getAttribute('data-t');
+                syncDtTabs(sh);
+                if (dtTab !== 'ins' && dtPicking) setPick(sh, false);
+                send('dtget');
+            });
+        });
+        sh.getElementById('dtclear').addEventListener('click', function () {
+            if (dtTab === 'con') { send('dtclearc'); dtConSig = ''; }
+            else if (dtTab === 'net') { send('dtclearn'); dtNetSig = ''; }
+            else { var p = sh.getElementById('dtins'); if (p) p.textContent = ''; }
+            setTimeout(function () { send('dtget'); }, 60);
+        });
+        sh.getElementById('dtx').addEventListener('click', function () { toggleDt(sh); });
+        var dtin = sh.getElementById('dtin');
+        dtin.addEventListener('keydown', function (e) {
+            e.stopPropagation();
+            if (e.key === 'Enter' && dtin.value.trim()) {
+                var x = dtin.value.trim();
+                dtin.value = '';
+                dtReplRun(sh, x);
+            }
+            // Escape is handled by the window-level shortcut (closes the panel).
+        });
+        dtin.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+        var dl = sh.getElementById('dtlist');
+        dl.addEventListener('scroll', function () {
+            dtScrollPin = dl.scrollTop + dl.clientHeight >= dl.scrollHeight - 30;
+        });
+        sh.getElementById('dtpick').addEventListener('click', function () { setPick(sh, !dtPicking); });
+        // Height grip — drag the panel's top edge.
+        var grip = sh.getElementById('dtgrip');
+        grip.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            var y0 = e.clientY, h0 = dtH;
+            var mv = function (ev) {
+                dtH = Math.min(Math.max(h0 + (y0 - ev.clientY), 140), window.innerHeight - 120);
+                grip.parentElement.style.height = dtH + 'px';
+            };
+            var up = function () {
+                document.removeEventListener('mousemove', mv, true);
+                document.removeEventListener('mouseup', up, true);
+            };
+            document.addEventListener('mousemove', mv, true);
+            document.addEventListener('mouseup', up, true);
+        });
 
         var star = sh.getElementById('star');
         ['mousedown', 'click'].forEach(function (ev) {
@@ -1607,12 +1866,45 @@
                 setEdgeCursor(edgeCode(e.clientX, e.clientY) ? edgeCursor(edgeCode(e.clientX, e.clientY)) : 0);
             }, true);
             document.addEventListener('mousedown', function (e) {
-                if (!state.wc || state.w || e.button !== 0) return;
+                if (!state.wc || state.w || dtPicking || e.button !== 0) return;
                 var c = edgeCode(e.clientX, e.clientY);
                 if (!c) return;
                 e.preventDefault();
                 setEdgeCursor(0);
                 send('wresize:' + c);
+            }, true);
+            // Inspect-tab element picker — highlight on hover, pin on click.
+            document.addEventListener('mousemove', function (e) {
+                if (!dtPicking) return;
+                var s = sh0(); if (!s) return;
+                var el = document.elementFromPoint(e.clientX, e.clientY);
+                if (!el || el.id === HOST_ID) {
+                    s.getElementById('dthl').style.display = 'none';
+                    s.getElementById('dttip').style.display = 'none';
+                    return;
+                }
+                var r = el.getBoundingClientRect();
+                var hl = s.getElementById('dthl');
+                hl.style.display = 'block';
+                hl.style.left = r.left + 'px'; hl.style.top = r.top + 'px';
+                hl.style.width = Math.max(r.width, 1) + 'px'; hl.style.height = Math.max(r.height, 1) + 'px';
+                var tip = s.getElementById('dttip');
+                tip.style.display = 'block';
+                tip.textContent = el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') +
+                    '  ' + Math.round(r.width) + '×' + Math.round(r.height);
+                tip.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 160)) + 'px';
+                tip.style.top = Math.max(4, r.top - 24) + 'px';
+            }, true);
+            document.addEventListener('mousedown', function (e) {
+                if (!dtPicking) return;
+                e.preventDefault(); e.stopPropagation();
+                var s = sh0();
+                var el = document.elementFromPoint(e.clientX, e.clientY);
+                if (s && el && el.id !== HOST_ID) {
+                    var ins = s.getElementById('dtins');
+                    if (ins) ins.textContent = describeEl(el);
+                }
+                setPick(s, false);
             }, true);
             // Embedded __brainBoot (internal pages) lands during head parse —
             // retry at DOMContentLoaded in case the 0ms timer beat it.
@@ -1623,6 +1915,7 @@
                 var s = sh0(); if (!s) return;
                 updateAddr(s);
                 if (state.ov) ntpTick(s);
+                if (dtOpen) send('dtget');
             }, 1000);
         }
         wireStripDnd(sh); // strip node is recreated each mount
@@ -1677,6 +1970,10 @@
                         try {
                             document.dispatchEvent(new CustomEvent('brain-state', { detail: state }));
                         } catch (e2) { }
+                    } else if (j && j.b === 10 && dtOpen) {
+                        renderDt(sh, j);
+                    } else if (j && j.b === 11 && dtOpen) {
+                        dtEvalResult(sh, j);
                     }
                 } catch (e) { }
             });
