@@ -35,7 +35,10 @@ public sealed class BrowserController : IAsyncDisposable
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pendingEval = new();
 
     private readonly ConcurrentQueue<ConsoleEntry> _console = new();
-    private readonly ConcurrentQueue<NetworkEntry> _network = new();
+    // Per-request merge: CDP emits one event per phase (request/response/
+    // finished), so keying by requestId yields a single row per request that
+    // accumulates status, bytes, headers. Ordered view = sort by Time.
+    private readonly ConcurrentDictionary<string, NetworkEntry> _network = new();
     private const int LogCap = 500;
 
     // Chrome state: loading spinner, nav availability, visit history (most
@@ -358,7 +361,14 @@ public sealed class BrowserController : IAsyncDisposable
     private void WireDriverEvents(BrowserTab tab, IBrowserDriver driver)
     {
         driver.ConsoleMessage += (_, e) => Enqueue(_console, e);
-        driver.NetworkEvent += (_, e) => Enqueue(_network, e);
+        driver.NetworkEvent += (_, e) =>
+        {
+            _network.AddOrUpdate(e.RequestId, e, (rid, old) => MergeNetwork(old, e));
+            // trim oldest when the map grows past the cap
+            if (_network.Count > LogCap * 2)
+                foreach (var k in _network.Values.OrderBy(n => n.Time).Take(LogCap).Select(n => n.RequestId).ToList())
+                    _network.TryRemove(k, out var _);
+        };
         driver.LoadStarted += (_, _) =>
         {
             Interlocked.Increment(ref _loadDepth);
@@ -516,8 +526,24 @@ public sealed class BrowserController : IAsyncDisposable
         }
     }
 
+    /// <summary>Combine per-phase CDP events into one row: later fields win
+    /// only when they carry data (status set, bytes counted, headers seen).</summary>
+    private static NetworkEntry MergeNetwork(NetworkEntry old, NetworkEntry next) =>
+        old with
+        {
+            Url = next.Url.Length > 0 ? next.Url : old.Url,
+            Status = next.Status ?? old.Status,
+            ResourceType = next.ResourceType ?? old.ResourceType,
+            BytesReceived = next.BytesReceived > 0 ? next.BytesReceived : old.BytesReceived,
+            Error = next.Error ?? old.Error,
+            RequestHeaders = next.RequestHeaders ?? old.RequestHeaders,
+            ResponseHeaders = next.ResponseHeaders ?? old.ResponseHeaders,
+            PostData = next.PostData ?? old.PostData,
+        };
+
     public IReadOnlyList<ConsoleEntry> ConsoleLog => _console.ToArray();
-    public IReadOnlyList<NetworkEntry> NetworkLog => _network.ToArray();
+    public IReadOnlyList<NetworkEntry> NetworkLog =>
+        _network.Values.OrderBy(n => n.Time).ToArray();
     public void ClearConsoleLog() => _console.Clear();
     public void ClearNetworkLog() => _network.Clear();
 
@@ -942,6 +968,8 @@ public sealed class BrowserController : IAsyncDisposable
                         case "dtclearc": _console.Clear(); break;
                         case "dtclearn": _network.Clear(); break;
                         case "dteval": await DevToolsEvalAsync(active, arg); break;
+                        case "dtnet": PushNetDetail(tab, arg); break;
+                        case "dtsend": await DevToolsSendAsync(active, arg); break;
                     }
                 }
                 catch (Exception ex) { Log($"toolbar cmd '{verb}' failed: {ex.Message}"); }
@@ -1090,8 +1118,9 @@ public sealed class BrowserController : IAsyncDisposable
             x = c.Text.Length > 2000 ? c.Text[..2000] : c.Text,
             u = c.Url,
         }).ToArray();
-        var net = _network.TakeLast(300).Select(n => (object)new
+        var net = _network.Values.OrderBy(n => n.Time).TakeLast(300).Select(n => (object)new
         {
+            id = n.RequestId,
             m = n.Method, u = n.Url.Length > 400 ? n.Url[..400] : n.Url,
             st = n.Status, ty = n.ResourceType, sz = n.BytesReceived, er = n.Error,
         }).ToArray();
@@ -1113,6 +1142,115 @@ public sealed class BrowserController : IAsyncDisposable
         catch (Exception ex)
         {
             json = JsonSerializer.Serialize(new { b = 11, ok = false, e = ex.Message });
+        }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { }
+    }
+
+    /// <summary>Full request detail for the DevTools Network pane (b:12).</summary>
+    private void PushNetDetail(BrowserTab tab, string requestId)
+    {
+        if (_noToolbar || tab.IsClosed || !_driverReady.Task.IsCompleted) return;
+        if (!_network.TryGetValue(requestId, out var n)) return;
+        var json = JsonSerializer.Serialize(new
+        {
+            b = 12,
+            id = n.RequestId,
+            m = n.Method, u = n.Url, st = n.Status, ty = n.ResourceType,
+            sz = n.BytesReceived, er = n.Error, t = n.Time.ToString("HH:mm:ss"),
+            rq = n.RequestHeaders, rs = n.ResponseHeaders, pd = n.PostData,
+        });
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { }
+    }
+
+    /// <summary>Edit-and-resend: replay an arbitrary request host-side. The
+    /// browser profile's cookies for the target domain are merged in, but the
+    /// request bypasses page CSP/CORS like a real API client (b:13).</summary>
+    private static readonly HttpClient _dtHttp = new(new HttpClientHandler
+    {
+        AllowAutoRedirect = true,
+        AutomaticDecompression = System.Net.DecompressionMethods.All,
+    });
+
+    private async Task DevToolsSendAsync(BrowserTab tab, string arg)
+    {
+        string json;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            using var doc = JsonDocument.Parse(arg);
+            var r = doc.RootElement;
+            var method = r.TryGetProperty("m", out var m) ? m.GetString() ?? "GET" : "GET";
+            var url = r.GetProperty("u").GetString()!;
+            using var req = new HttpRequestMessage(new HttpMethod(method), url);
+
+            Dictionary<string, string>? headers = null;
+            if (r.TryGetProperty("h", out var h) && h.ValueKind == JsonValueKind.Object)
+            {
+                headers = new(StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in h.EnumerateObject())
+                    headers[kv.Name] = kv.Value.GetString() ?? "";
+            }
+            var body = r.TryGetProperty("b", out var b) ? b.GetString() : null;
+            if (body is not null && method is not "GET" and not "HEAD")
+                req.Content = new StringContent(body, System.Text.Encoding.UTF8);
+
+            // Profile cookies for the target host, unless the caller set one.
+            try
+            {
+                var driver = await DriverOrThrowAsync(tab, CancellationToken.None);
+                var uri = new Uri(url);
+                var cookies = await driver.GetCookiesAsync(CancellationToken.None);
+                var cstr = string.Join("; ", cookies
+                    .Where(c => c.Domain is { } d &&
+                        uri.Host.EndsWith(d.TrimStart('.'), StringComparison.OrdinalIgnoreCase))
+                    .Select(c => c.Name + "=" + c.Value));
+                if (cstr.Length > 0 && headers?.ContainsKey("Cookie") != true)
+                    req.Headers.TryAddWithoutValidation("Cookie", cstr);
+            }
+            catch { /* cookies are best-effort */ }
+
+            if (headers is not null)
+                foreach (var (k, v) in headers)
+                {
+                    if (k.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
+                    {
+                        req.Content ??= new StringContent("", System.Text.Encoding.UTF8);
+                        req.Content.Headers.TryAddWithoutValidation(k, v);
+                    }
+                    else if (!req.Headers.TryAddWithoutValidation(k, v))
+                        req.Content?.Headers.TryAddWithoutValidation(k, v);
+                }
+            req.Headers.TryAddWithoutValidation("User-Agent", "BrAIn-DevTools/1.0");
+
+            using var resp = await _dtHttp.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+            var buf = await resp.Content.ReadAsByteArrayAsync();
+            string? bodyText;
+            if (buf.Take(8000).Any(b2 => b2 == 0))
+                bodyText = null; // binary
+            else
+                bodyText = buf.Length > 131072
+                    ? System.Text.Encoding.UTF8.GetString(buf, 0, 131072) + "\n…truncated"
+                    : System.Text.Encoding.UTF8.GetString(buf);
+            var rheads = resp.Headers.Concat(resp.Content?.Headers ?? Enumerable.Empty<KeyValuePair<string, IEnumerable<string>>>())
+                .GroupBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Take(60)
+                .ToDictionary(g => g.Key, g => string.Join(", ", g.SelectMany(x => x.Value)), StringComparer.OrdinalIgnoreCase);
+            json = JsonSerializer.Serialize(new
+            {
+                b = 13, ok = true,
+                st = (int)resp.StatusCode,
+                ms = sw.ElapsedMilliseconds,
+                sz = buf.LongLength,
+                rh = rheads,
+                body = bodyText,
+                bin = bodyText is null,
+            });
+        }
+        catch (Exception ex)
+        {
+            json = JsonSerializer.Serialize(new { b = 13, ok = false, e = ex.Message, ms = sw.ElapsedMilliseconds });
         }
         try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
         catch { }

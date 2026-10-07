@@ -14,7 +14,10 @@ public sealed record NetworkEntry(
     int? Status,
     string? ResourceType,
     long BytesReceived,
-    string? Error);
+    string? Error,
+    Dictionary<string, string>? RequestHeaders = null,
+    Dictionary<string, string>? ResponseHeaders = null,
+    string? PostData = null);
 
 public sealed record CookieInfo(
     string Name,

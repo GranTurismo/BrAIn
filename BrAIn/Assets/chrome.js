@@ -1012,6 +1012,7 @@
     // ---------------- devtools panel ----------------
     var dtOpen = false, dtTab = 'con', dtH = 340;
     var dtConSig = '', dtNetSig = '', dtPicking = false, dtReplBusy = false;
+    var dtLast = null; // latest b:10 payload — filters re-render from cache
     var dtScrollPin = true; // console auto-scrolls only when parked at bottom
 
     function toggleDt(sh, tab) {
@@ -1059,7 +1060,9 @@
                 if (pinned && dtScrollPin) list.scrollTop = list.scrollHeight;
             }
         }
-        var ns = net.length + '|' + (net.length ? net[net.length - 1].u + net[net.length - 1].st : '');
+        var ns = dtNetType + '|' + dtNetQ + '|' + dtNetSel + '|' + net.length;
+        for (var nx = 0; nx < net.length; nx++) // status/bytes land via merges
+            ns += '|' + (net[nx].st || '') + (net[nx].sz || '');
         if (ns !== dtNetSig) {
             dtNetSig = ns;
             var nl = sh.getElementById('dtnet');
@@ -1067,16 +1070,147 @@
                 var h2 = '';
                 for (var k = 0; k < net.length; k++) {
                     var n = net[k];
+                    if (dtNetType !== 'all' && netBucket(n.ty) !== dtNetType) continue;
+                    if (dtNetQ && (n.u || '').toLowerCase().indexOf(dtNetQ) < 0) continue;
                     var st = n.er ? 'ERR' : (n.st || '…');
                     var cls = n.er ? 's0' : 's' + String(n.st || 0)[0];
-                    h2 += '<div class="dnetr"><span class="' + cls + '">' + st + '</span>' +
+                    h2 += '<div class="dnetr' + (dtNetSel === n.id ? ' sel' : '') + '" data-id="' + esc(n.id || '') + '">' +
+                        '<span class="' + cls + '">' + st + '</span>' +
                         '<span>' + esc(n.m || '') + '</span><span style="color:#77779a">' + esc(n.ty || '') + '</span>' +
                         '<span style="color:#77779a">' + (n.sz ? fmtBytes(n.sz) : '') + '</span>' +
                         '<span class="u" title="' + esc(n.u || '') + '">' + esc(n.u || '') + '</span></div>';
                 }
-                nl.innerHTML = h2;
+                nl.innerHTML = h2 || '<div style="padding:12px 14px;color:#55556f">no requests match</div>';
             }
         }
+    }
+
+    // Network pane state + views (list / detail / edit-and-resend).
+    var dtNetType = 'all', dtNetQ = '', dtNetSel = null, dtNetEntry = null;
+    var NETPILLS = [['all', 'All'], ['doc', 'Doc'], ['xhr', 'XHR'], ['js', 'JS'], ['css', 'CSS'],
+        ['img', 'Img'], ['media', 'Media'], ['font', 'Font'], ['ws', 'WS'], ['other', 'Other']];
+    function netBucket(ty) {
+        ty = (ty || '').toLowerCase();
+        return ty === 'document' ? 'doc' : (ty === 'xhr' || ty === 'fetch') ? 'xhr' :
+            ty === 'script' ? 'js' : ty === 'stylesheet' ? 'css' : ty === 'image' ? 'img' :
+            ty === 'font' ? 'font' : ty === 'media' ? 'media' : ty === 'websocket' ? 'ws' : 'other';
+    }
+    function showNetView(sh, v) { // 'list' | 'detail' | 'edit'
+        var pane = sh.getElementById('dtpnet'); if (!pane) return;
+        var list = pane.querySelector('.dtscroll'), hdr = pane.querySelector('.dneth'),
+            tools = pane.querySelector('.dnettools'),
+            det = sh.getElementById('dtdetail'), ed = sh.getElementById('dtedit');
+        if (list) list.style.display = v === 'list' ? '' : 'none';
+        if (hdr) hdr.style.display = v === 'list' ? '' : 'none';
+        if (tools) tools.style.display = v === 'list' ? '' : 'none';
+        if (det) det.style.display = v === 'detail' ? 'flex' : 'none';
+        if (ed) ed.style.display = v === 'edit' ? 'flex' : 'none';
+    }
+    function kvRows(map) {
+        if (!map) return '<div class="dtkv"><b>—</b><span style="color:#55556f">none captured</span></div>';
+        var keys = Object.keys(map).sort(), h = '';
+        for (var i = 0; i < keys.length; i++)
+            h += '<div class="dtkv"><b title="' + esc(keys[i]) + '">' + esc(keys[i]) + '</b><span>' + esc(map[keys[i]]) + '</span></div>';
+        return h || '<div class="dtkv"><b>—</b><span style="color:#55556f">none</span></div>';
+    }
+    function renderNetDetail(sh) {
+        var d = sh.getElementById('dtdetail'), e = dtNetEntry;
+        if (!d || !e) return;
+        var h = '<div class="dttools"><button class="dtbtn" id="dtback">‹ All requests</button>' +
+            '<span class="dtsp"></span><button class="dtbtn" id="dteditb" style="color:#b9b9ff">✎ Edit and resend</button></div>' +
+            '<div class="dtbscroll">' +
+            '<div class="dtsec">General</div>' +
+            '<div class="dtkv"><b>URL</b><span>' + esc(e.u) + '</span></div>' +
+            '<div class="dtkv"><b>Method</b><span>' + esc(e.m) + '</span></div>' +
+            '<div class="dtkv"><b>Status</b><span>' + (e.er ? '<span class="resp-err">' + esc(e.er) + '</span>' : (e.st || 'pending')) + '</span></div>' +
+            '<div class="dtkv"><b>Type</b><span>' + esc(e.ty || '') + '</span></div>' +
+            '<div class="dtkv"><b>Size</b><span>' + fmtBytes(e.sz) + '</span></div>' +
+            '<div class="dtkv"><b>Time</b><span>' + esc(e.t || '') + '</span></div>';
+        if (e.pd) h += '<div class="dtsec">Request body</div><pre style="white-space:pre-wrap;word-break:break-all;color:#b9b9d4;margin:0 0 4px">' + esc(e.pd) + '</pre>';
+        h += '<div class="dtsec">Request headers</div>' + kvRows(e.rq) +
+            '<div class="dtsec">Response headers</div>' + kvRows(e.rs) + '</div>';
+        d.innerHTML = h;
+        showNetView(sh, 'detail');
+        d.querySelector('#dtback').addEventListener('click', function () {
+            dtNetSel = null; dtNetEntry = null; showNetView(sh, 'list');
+        });
+        d.querySelector('#dteditb').addEventListener('click', function () { renderNetEditor(sh); });
+    }
+    function addHdrRow(sh, name, val) {
+        var box = sh.getElementById('dteh'); if (!box) return;
+        var row = document.createElement('div');
+        row.className = 'dthr';
+        row.innerHTML = '<input class="dtedit-in hn" placeholder="Name" spellcheck="false">' +
+            '<input class="dtedit-in hv" placeholder="Value" spellcheck="false">' +
+            '<button class="hx" title="Remove">✕</button>';
+        row.children[0].value = name || ''; row.children[1].value = val || '';
+        row.querySelector('.hx').addEventListener('click', function () { row.remove(); });
+        box.appendChild(row);
+    }
+    function renderNetEditor(sh) {
+        var ed = sh.getElementById('dtedit'), e = dtNetEntry;
+        if (!ed || !e) return;
+        var methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+        var h = '<div class="dttools"><button class="dtbtn" id="dteback">‹ Detail</button><span class="dtsp"></span>' +
+            '<span style="color:#55556f;font-size:10.5px">bypasses page CSP &amp; CORS · profile cookies merged</span></div>' +
+            '<div class="dte-row"><select id="dtem" class="dtedit-in">' +
+            methods.map(function (m) { return '<option' + (m === e.m ? ' selected' : '') + '>' + m + '</option>'; }).join('') +
+            '</select><input id="dteu" class="dtedit-in" spellcheck="false" placeholder="https://…">' +
+            '<button class="dtsend" id="dtesend">Send</button></div>' +
+            '<div style="flex:1;overflow-y:auto;min-height:0" class="dtbscroll">' +
+            '<div class="dtsec">Headers</div><div id="dteh"></div>' +
+            '<button class="dtbtn" id="dteadd" style="margin:4px 14px">+ header</button>' +
+            '<div class="dtsec">Body</div><textarea id="dteb" class="dtedit-in" spellcheck="false"></textarea>' +
+            '<div class="dtsec">Response</div><div id="dteresp"><span style="color:#55556f">not sent yet</span></div>' +
+            '</div>';
+        ed.innerHTML = h;
+        ed.querySelector('#dteu').value = e.u;
+        if (e.pd) ed.querySelector('#dteb').value = e.pd;
+        showNetView(sh, 'edit');
+        var rq = e.rq || {};
+        var keys = Object.keys(rq).filter(function (k) { return k[0] !== ':'; }).sort();
+        for (var i = 0; i < keys.length; i++) addHdrRow(sh, keys[i], rq[keys[i]]);
+        if (!keys.length) addHdrRow(sh, '', '');
+        sh.getElementById('dteback').addEventListener('click', function () { showNetView(sh, 'detail'); });
+        sh.getElementById('dteadd').addEventListener('click', function () { addHdrRow(sh, '', ''); });
+        sh.getElementById('dtesend').addEventListener('click', function () {
+            var hd = {};
+            sh.querySelectorAll('#dteh .dthr').forEach(function (row) {
+                var n = row.children[0].value.trim();
+                if (n) hd[n] = row.children[1].value;
+            });
+            var btn = sh.getElementById('dtesend');
+            btn.disabled = true; btn.textContent = 'Sending…';
+            sh.getElementById('dteresp').innerHTML = '<span style="color:#66667f">sending…</span>';
+            send('dtsend:' + JSON.stringify({
+                m: sh.getElementById('dtem').value,
+                u: sh.getElementById('dteu').value.trim(),
+                h: hd, b: sh.getElementById('dteb').value || null,
+            }));
+        });
+    }
+    function renderDtResp(sh, j) {
+        var r = sh.getElementById('dteresp'); if (!r) return;
+        var btn = sh.getElementById('dtesend');
+        if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
+        if (!j.ok) { r.innerHTML = '<span class="resp-err">✕ ' + esc(j.e || 'request failed') + '</span>'; return; }
+        var cls = j.st >= 200 && j.st < 400 ? 'resp-ok' : 'resp-err';
+        var h = '<div><span class="' + cls + '" style="font-size:13px;font-weight:700">' + j.st + '</span>' +
+            '<span class="rdet"> · ' + j.ms + ' ms · ' + fmtBytes(j.sz) + '</span></div>';
+        if (j.rh) {
+            var ks = Object.keys(j.rh).sort();
+            h += '<div class="dtsec">Headers</div>';
+            for (var i = 0; i < ks.length; i++)
+                h += '<div class="dtkv"><b>' + esc(ks[i]) + '</b><span>' + esc(j.rh[ks[i]]) + '</span></div>';
+        }
+        h += '<div class="dtsec">Body</div>';
+        var body = j.bin ? '[binary body, ' + fmtBytes(j.sz) + ']' : (j.body || '');
+        try { // pretty-print JSON bodies
+            var pj = JSON.parse(body);
+            body = JSON.stringify(pj, null, 2);
+        } catch (e) { }
+        h += '<pre>' + esc(body.slice(0, 20000)) + '</pre>';
+        r.innerHTML = h;
     }
 
     // Console REPL — echo the input, host evals through the driver
@@ -1529,6 +1663,48 @@
             '.dnetr{border-bottom:1px solid rgba(255,255,255,.03);font:11.5px/1.55 Consolas,"Cascadia Mono",monospace}' +
             '.dnetr .u{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#a8a8c8;direction:rtl;text-align:left}' +
             '.dnetr .s2{color:#7ee0a3}.dnetr .s3{color:#7cc4ff}.dnetr .s4{color:#ffb86b}.dnetr .s5,.dnetr .s0{color:#ff8a94}' +
+            '.dnetr{cursor:pointer}.dnetr:hover{background:rgba(255,255,255,.04)}' +
+            '.dnetr.sel{background:rgba(124,124,255,.1)}' +
+            '.dnettools{display:flex;align-items:center;gap:8px;padding:5px 10px;flex:none;' +
+            'border-bottom:1px solid rgba(255,255,255,.07)}' +
+            '.fpills{display:flex;gap:3px;flex:none;flex-wrap:wrap}' +
+            '.fpill{padding:3px 9px;border:1px solid rgba(255,255,255,.09);border-radius:999px;' +
+            'background:transparent;color:#8f8fb0;font-size:10.5px;cursor:pointer;white-space:nowrap;transition:all .12s}' +
+            '.fpill:hover{color:#d8d8ec;border-color:rgba(255,255,255,.22)}' +
+            '.fpill.on{background:rgba(124,124,255,.16);border-color:rgba(124,124,255,.45);color:#c9c9ff}' +
+            '#dtfq{flex:1;max-width:230px;margin-left:auto;border:1px solid rgba(255,255,255,.1);border-radius:7px;' +
+            'background:rgba(255,255,255,.04);color:#e8e8f4;padding:4px 9px;font-size:11.5px;outline:0}' +
+            '#dtfq:focus{border-color:rgba(124,124,255,.5)}' +
+            '#dtdetail,#dtedit{flex:1;min-height:0;flex-direction:column;overflow:hidden}' +
+            '.dttools{display:flex;align-items:center;gap:8px;padding:6px 14px;flex:none;' +
+            'border-bottom:1px solid rgba(255,255,255,.07)}' +
+            '.dtbscroll{flex:1;overflow-y:auto;padding:4px 14px 12px;font:11.5px/1.6 Consolas,"Cascadia Mono",monospace;min-height:0}' +
+            '.dtbscroll::-webkit-scrollbar{width:9px}' +
+            '.dtbscroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:5px}' +
+            '.dtsec{margin:10px 0 2px;color:#7c7cff;font-weight:700;font-size:10.5px;letter-spacing:.7px;text-transform:uppercase}' +
+            '.dtkv{display:flex;gap:10px;padding:1.5px 0;border-bottom:1px solid rgba(255,255,255,.03)}' +
+            '.dtkv b{color:#7a7a98;font-weight:400;min-width:160px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+            '.dtkv span{color:#c9c9dc;word-break:break-all;min-width:0;user-select:text}' +
+            '.dtedit-in{border:1px solid rgba(255,255,255,.12);border-radius:7px;background:rgba(255,255,255,.05);' +
+            'color:#e8e8f4;padding:5px 9px;font:11.5px/1.4 Consolas,"Cascadia Mono",monospace;outline:0}' +
+            '.dtedit-in:focus{border-color:rgba(124,124,255,.55)}' +
+            '.dte-row{display:flex;gap:6px;padding:8px 14px;align-items:center;flex:none}' +
+            '#dtem{width:92px;flex:none}' +
+            '.dthr{display:flex;gap:6px;padding:2px 14px;align-items:center}' +
+            '.dthr input{flex:1;min-width:0}' +
+            '.dthr .hx{flex:none;width:20px;height:20px;padding:0;display:grid;place-items:center;border:0;border-radius:5px;' +
+            'background:transparent;color:#77779a;cursor:pointer;font-size:12px}' +
+            '.dthr .hx:hover{background:rgba(232,17,35,.2);color:#ffb4b9}' +
+            '#dteb{margin:2px 14px;min-height:56px;max-height:140px;resize:vertical}' +
+            '.dtsend{padding:5px 16px;border:0;border-radius:8px;flex:none;' +
+            'background:linear-gradient(135deg,#7c7cff,#5b5bd6);color:#fff;font-weight:600;cursor:pointer;transition:filter .12s}' +
+            '.dtsend:hover{filter:brightness(1.15)}' +
+            '.dtsend:disabled{opacity:.45;cursor:default}' +
+            '#dteresp{margin:2px 14px 10px;border-top:1px solid rgba(255,255,255,.08);padding-top:8px;' +
+            'font:11.5px/1.55 Consolas,"Cascadia Mono",monospace;overflow:auto;min-height:0}' +
+            '#dteresp pre{white-space:pre-wrap;word-break:break-all;margin:4px 0;color:#a8e0c8;user-select:text}' +
+            '#dteresp .rdet{color:#8f8fb0}' +
+            '.resp-ok{color:#7ee0a3}.resp-err{color:#ff8a94}' +
             '.dtrepl{display:flex;align-items:center;gap:9px;border-top:1px solid rgba(255,255,255,.08);padding:0 14px;flex:none;height:32px}' +
             '.dtrepl input{flex:1;border:0;outline:0;background:transparent;color:#e8e8f4;font:12px/1 Consolas,"Cascadia Mono",monospace}' +
             '.dtrepl .pr{color:#7c7cff;font-weight:700}' +
@@ -1671,8 +1847,12 @@
             '<div class="dtscroll" id="dtlist"></div>' +
             '<div class="dtrepl"><span class="pr">›</span><input id="dtin" spellcheck="false" placeholder="Evaluate JavaScript in page context…"></div></div>' +
             '<div class="dtpane" id="dtpnet">' +
+            '<div class="dnettools"><div class="fpills" id="dtfp"></div>' +
+            '<input id="dtfq" placeholder="Filter" spellcheck="false"></div>' +
             '<div class="dneth"><span>Status</span><span>Method</span><span>Type</span><span>Size</span><span>URL</span></div>' +
-            '<div class="dtscroll" id="dtnet"></div></div>' +
+            '<div class="dtscroll" id="dtnet"></div>' +
+            '<div id="dtdetail" style="display:none"></div>' +
+            '<div id="dtedit" style="display:none"></div></div>' +
             '<div class="dtpane" id="dtpins">' +
             '<div class="ins-top"><button class="dtbtn" id="dtpick">◉ Pick element</button>' +
             '<span id="dtinsst" style="color:#66667f;font-size:11px">click any element on the page</span></div>' +
@@ -1730,9 +1910,54 @@
         });
         sh.getElementById('dtclear').addEventListener('click', function () {
             if (dtTab === 'con') { send('dtclearc'); dtConSig = ''; }
-            else if (dtTab === 'net') { send('dtclearn'); dtNetSig = ''; }
+            else if (dtTab === 'net') {
+                send('dtclearn'); dtNetSig = '';
+                dtNetSel = null; dtNetEntry = null; showNetView(sh, 'list');
+            }
             else { var p = sh.getElementById('dtins'); if (p) p.textContent = ''; }
             setTimeout(function () { send('dtget'); }, 60);
+        });
+        // Network filters.
+        var fp = sh.getElementById('dtfp');
+        if (fp) {
+            fp.innerHTML = '';
+            NETPILLS.forEach(function (p) {
+                var b = document.createElement('button');
+                b.className = 'fpill' + (dtNetType === p[0] ? ' on' : '');
+                b.textContent = p[1];
+                b.addEventListener('click', function () {
+                    dtNetType = p[0];
+                    fp.querySelectorAll('.fpill').forEach(function (x) { x.classList.toggle('on', x === b); });
+                    dtNetSig = 'x'; if (dtLast) renderDt(sh, dtLast);
+                });
+                fp.appendChild(b);
+            });
+        }
+        var fq = sh.getElementById('dtfq');
+        if (fq) fq.addEventListener('input', function () {
+            dtNetQ = fq.value.trim().toLowerCase(); dtNetSig = 'x'; if (dtLast) renderDt(sh, dtLast);
+        });
+        var netList = sh.getElementById('dtnet');
+        if (netList) netList.addEventListener('click', function (ev) {
+            var row = ev.target.closest ? ev.target.closest('.dnetr') : null;
+            if (!row || !row.dataset.id) return;
+            dtNetSel = row.dataset.id;
+            netList.querySelectorAll('.dnetr').forEach(function (r) {
+                r.classList.toggle('sel', r.dataset.id === dtNetSel);
+            });
+            var dd = sh.getElementById('dtdetail');
+            if (dd) dd.innerHTML = '<div class="dtbscroll" style="padding:12px 14px;color:#55556f">loading…</div>';
+            showNetView(sh, 'detail');
+            send('dtnet:' + dtNetSel);
+        });
+        // Panel input isolation: filter/editor keystrokes must not reach page
+        // handlers or our own window shortcuts (Ctrl+R inside an input, etc.).
+        var dtp = sh.getElementById('dt');
+        ['keydown', 'keyup', 'keypress'].forEach(function (ev) {
+            dtp.addEventListener(ev, function (e) {
+                if (e.key === 'Escape') return; // window handler closes the panel
+                e.stopPropagation();
+            });
         });
         sh.getElementById('dtx').addEventListener('click', function () { toggleDt(sh); });
         var dtin = sh.getElementById('dtin');
@@ -1971,9 +2196,15 @@
                             document.dispatchEvent(new CustomEvent('brain-state', { detail: state }));
                         } catch (e2) { }
                     } else if (j && j.b === 10 && dtOpen) {
+                        dtLast = j;
                         renderDt(sh, j);
                     } else if (j && j.b === 11 && dtOpen) {
                         dtEvalResult(sh, j);
+                    } else if (j && j.b === 12 && dtOpen) {
+                        dtNetEntry = j;
+                        renderNetDetail(sh);
+                    } else if (j && j.b === 13 && dtOpen) {
+                        renderDtResp(sh, j);
                     }
                 } catch (e) { }
             });

@@ -259,6 +259,20 @@ public sealed class CdpDriver : DriverBase
         RaiseConsole(new ConsoleEntry(DateTime.Now, level, text, url, line));
     }
 
+    private static Dictionary<string, string>? ReadHeaders(JsonElement el)
+    {
+        if (!el.TryGetProperty("headers", out var h) || h.ValueKind != JsonValueKind.Object)
+            return null;
+        var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in h.EnumerateObject())
+        {
+            if (d.Count >= 40) break;
+            d[kv.Name] = kv.Value.ValueKind == JsonValueKind.String
+                ? kv.Value.GetString() ?? "" : kv.Value.GetRawText();
+        }
+        return d;
+    }
+
     private void HandleRequestWillBeSent(JsonElement p)
     {
         var id = p.GetProperty("requestId").GetString()!;
@@ -268,7 +282,11 @@ public sealed class CdpDriver : DriverBase
             req.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "",
             p.TryGetProperty("type", out var t) ? t.GetString() : null);
         var (method, url, type) = _pendingRequests[id];
-        RaiseNetwork(new NetworkEntry(DateTime.Now, id, method, url, null, type, 0, null));
+        var post = req.TryGetProperty("postData", out var pd) && pd.ValueKind == JsonValueKind.String
+            ? pd.GetString() : null;
+        if (post is { Length: > 4000 }) post = post[..4000];
+        RaiseNetwork(new NetworkEntry(DateTime.Now, id, method, url, null, type, 0, null,
+            ReadHeaders(req), null, post));
     }
 
     private void HandleResponse(JsonElement p)
@@ -280,7 +298,8 @@ public sealed class CdpDriver : DriverBase
         var method = _pendingRequests.TryGetValue(id, out var pend) ? pend.Method : "GET";
         var type = p.TryGetProperty("type", out var t) ? t.GetString()
             : _pendingRequests.TryGetValue(id, out pend) ? pend.Type : null;
-        RaiseNetwork(new NetworkEntry(DateTime.Now, id, method, url, status, type, 0, null));
+        RaiseNetwork(new NetworkEntry(DateTime.Now, id, method, url, status, type, 0, null,
+            null, ReadHeaders(resp), null));
     }
 
     private void HandleLoadingFinished(JsonElement p)
