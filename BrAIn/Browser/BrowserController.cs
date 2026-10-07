@@ -51,6 +51,10 @@ public sealed class BrowserController : IAsyncDisposable
     private readonly List<(string Url, string? Icon)> _history = new();
     private const int HistoryCap = 40;
     private readonly ConcurrentStack<(string Url, string? Icon)> _closedTabs = new();
+    // DevTools panel survives document swaps: chrome.js reports its state and
+    // every boot/push carries it so the panel reopens on the new document.
+    private bool _dtOpen;
+    private string _dtTab = "con";
 
     // Browser-level state shared across tabs (one window = one zoom level).
     private int _zoom = 100;
@@ -970,6 +974,24 @@ public sealed class BrowserController : IAsyncDisposable
                         case "dteval": await DevToolsEvalAsync(active, arg); break;
                         case "dtnet": PushNetDetail(tab, arg); break;
                         case "dtsend": await DevToolsSendAsync(active, arg); break;
+                        case "dtcookies": await PushDtCookiesAsync(tab); break;
+                        case "dtcdel": await DtCookieDeleteAsync(tab, arg); break;
+                        case "dtcset": await DtCookieSetAsync(tab, arg); break;
+                        case "dtsessions": PushDtSessions(tab); break;
+                        case "dtstate":
+                            _dtOpen = arg.Length > 0;
+                            if (arg.Length > 0) _dtTab = arg;
+                            break;
+                        case "dtunclose":
+                            {
+                                // Restore a specific closed entry (not just
+                                // the newest) — rebuild the stack without it.
+                                var rest = _closedTabs.Where(c => c.Url != arg).ToList();
+                                _closedTabs.Clear();
+                                for (var i = rest.Count - 1; i >= 0; i--) _closedTabs.Push(rest[i]);
+                                await NewTabAsync(arg, default);
+                                break;
+                            }
                     }
                 }
                 catch (Exception ex) { Log($"toolbar cmd '{verb}' failed: {ex.Message}"); }
@@ -1034,6 +1056,7 @@ public sealed class BrowserController : IAsyncDisposable
             topmost = _topmost,
             wc = Chromeless,
             w = _winMax ? 1 : 0,
+            dt = _dtOpen ? _dtTab : "",
             privActive = Tabs.Active?.IsPrivate == true,
             sess = _savedSession.Count,
             fresh,
@@ -1252,6 +1275,101 @@ public sealed class BrowserController : IAsyncDisposable
         {
             json = JsonSerializer.Serialize(new { b = 13, ok = false, e = ex.Message, ms = sw.ElapsedMilliseconds });
         }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { }
+    }
+
+    /// <summary>All profile cookies for the DevTools Cookies pane (b:14).
+    /// The pane filters by the active document's host client-side.</summary>
+    private async Task PushDtCookiesAsync(BrowserTab tab)
+    {
+        if (_noToolbar || tab.IsClosed || !_driverReady.Task.IsCompleted) return;
+        string json;
+        try
+        {
+            var driver = await DriverOrThrowAsync(tab, CancellationToken.None);
+            var cookies = await driver.GetCookiesAsync(CancellationToken.None);
+            string? host = null;
+            try { host = new Uri(DocTab?.LastUrl ?? tab.LastUrl ?? "").Host; } catch { }
+            json = JsonSerializer.Serialize(new
+            {
+                b = 14,
+                host,
+                ck = cookies.OrderBy(c => c.Domain).ThenBy(c => c.Name).Select(c => new
+                {
+                    n = c.Name, v = c.Value, d = c.Domain, p = c.Path,
+                    e = c.Expires, h = c.HttpOnly, s = c.Secure,
+                }),
+            });
+        }
+        catch (Exception ex)
+        {
+            json = JsonSerializer.Serialize(new { b = 14, err = ex.Message });
+        }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { }
+    }
+
+    /// <summary>Delete one cookie (name + scope) then re-push the list.</summary>
+    private async Task DtCookieDeleteAsync(BrowserTab tab, string arg)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(arg);
+            var r = doc.RootElement;
+            var name = r.GetProperty("n").GetString()!;
+            var dom = r.TryGetProperty("d", out var d) ? d.GetString() : null;
+            var path = r.TryGetProperty("p", out var p) ? p.GetString() : null;
+            var secure = r.TryGetProperty("s", out var s) && s.GetBoolean();
+            var driver = await DriverOrThrowAsync(tab, CancellationToken.None);
+            var url = dom is { Length: > 0 }
+                ? (secure ? "https://" : "http://") + dom.TrimStart('.') + (path ?? "/")
+                : null;
+            await driver.DeleteCookiesAsync(name, url, CancellationToken.None);
+        }
+        catch { }
+        await PushDtCookiesAsync(tab);
+    }
+
+    /// <summary>Set/overwrite a cookie from the pane's editor, then re-push.</summary>
+    private async Task DtCookieSetAsync(BrowserTab tab, string arg)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(arg);
+            var r = doc.RootElement;
+            var driver = await DriverOrThrowAsync(tab, CancellationToken.None);
+            await driver.SetCookieAsync(new CookieInfo(
+                r.GetProperty("n").GetString()!,
+                r.TryGetProperty("v", out var v) ? v.GetString() ?? "" : "",
+                r.TryGetProperty("d", out var d) ? d.GetString() : null,
+                r.TryGetProperty("p", out var p) ? p.GetString() : null,
+                r.TryGetProperty("e", out var e) && e.ValueKind == JsonValueKind.Number ? e.GetDouble() : null,
+                r.TryGetProperty("h", out var h) && h.GetBoolean(),
+                r.TryGetProperty("s", out var s) && s.GetBoolean()), CancellationToken.None);
+        }
+        catch { }
+        await PushDtCookiesAsync(tab);
+    }
+
+    /// <summary>Session browser for the DevTools Sessions pane (b:15): open
+    /// tabs, recently closed entries, and the last saved session.</summary>
+    private void PushDtSessions(BrowserTab tab)
+    {
+        if (_noToolbar || tab.IsClosed || !_driverReady.Task.IsCompleted) return;
+        var activeId = Tabs.Active?.Id;
+        var open = Tabs.All.Where(t => !t.IsClosed).Select(t => new
+        {
+            id = t.Id.ToString("N")[..8],
+            t = t.LastTitle ?? t.LastUrl,
+            u = t.LastUrl,
+            i = t.LastIcon,
+            act = t.Id == activeId,
+            priv = t.IsPrivate,
+            pin = t.IsPinned,
+        }).ToArray();
+        var closed = _closedTabs.Select(c => new { u = c.Url, i = c.Icon }).ToArray();
+        var json = JsonSerializer.Serialize(new { b = 15, open, closed, saved = _savedSession });
         try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
         catch { }
     }

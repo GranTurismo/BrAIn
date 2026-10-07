@@ -544,17 +544,20 @@ public sealed class CdpDriver : DriverBase
     public override async Task<bool> SetCookieAsync(CookieInfo cookie, CancellationToken ct)
     {
         var url = await GetUrlSafeAsync(ct);
-        var res = await _session!.SendAsync("Network.setCookie", new
+        // CDP rejects explicit nulls for optional numeric/string params —
+        // only include domain/expires when they carry a value.
+        var p = new Dictionary<string, object?>
         {
-            name = cookie.Name,
-            value = cookie.Value,
-            url,
-            domain = cookie.Domain,
-            path = cookie.Path ?? "/",
-            httpOnly = cookie.HttpOnly,
-            secure = cookie.Secure,
-            expires = cookie.Expires,
-        }, ct);
+            ["name"] = cookie.Name,
+            ["value"] = cookie.Value,
+            ["url"] = url,
+            ["path"] = cookie.Path ?? "/",
+            ["httpOnly"] = cookie.HttpOnly,
+            ["secure"] = cookie.Secure,
+        };
+        if (cookie.Domain is { Length: > 0 }) p["domain"] = cookie.Domain;
+        if (cookie.Expires is { } exp) p["expires"] = exp;
+        var res = await _session!.SendAsync("Network.setCookie", p, ct);
         return res.TryGetProperty("success", out var s) && s.GetBoolean();
     }
 

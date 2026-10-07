@@ -1015,24 +1015,33 @@
     var dtLast = null; // latest b:10 payload — filters re-render from cache
     var dtScrollPin = true; // console auto-scrolls only when parked at bottom
 
-    function toggleDt(sh, tab) {
+    function toggleDt(sh, tab, quiet) {
         var p = sh.getElementById('dt');
         if (!p) return;
         dtOpen = !dtOpen;
         if (dtOpen && tab) dtTab = tab;
         p.style.display = dtOpen ? 'flex' : 'none';
-        if (dtOpen) { p.style.height = dtH + 'px'; syncDtTabs(sh); send('dtget'); }
+        if (dtOpen) {
+            p.style.height = dtH + 'px'; syncDtTabs(sh); send('dtget');
+            if (dtTab === 'cookies') send('dtcookies');
+            else if (dtTab === 'sess') send('dtsessions');
+        }
         if (!dtOpen && dtPicking) setPick(sh, false);
+        // Report to the host so the panel reopens after a document swap —
+        // quiet restores (from a boot payload) must not echo back.
+        if (!quiet) send('dtstate:' + (dtOpen ? dtTab : ''));
     }
 
     function syncDtTabs(sh) {
         sh.querySelectorAll('.dtab').forEach(function (b) {
             b.classList.toggle('on', b.getAttribute('data-t') === dtTab);
         });
-        ['con', 'net', 'ins'].forEach(function (t) {
+        ['con', 'net', 'cookies', 'sess', 'ins'].forEach(function (t) {
             var p = sh.getElementById('dtp' + t);
             if (p) p.classList.toggle('on', t === dtTab);
         });
+        var clr = sh.getElementById('dtclear');
+        if (clr) clr.textContent = (dtTab === 'cookies' || dtTab === 'sess') ? 'Refresh' : 'Clear';
     }
 
     function fmtBytes(n) {
@@ -1213,6 +1222,99 @@
         r.innerHTML = h;
     }
 
+    // ---- Cookies pane ----
+    var dtCk = [], dtCkView = [], dtCkHost = '', dtCkQ = '', dtCkSite = true, dtCkEdit = null;
+    function renderCookies(sh) {
+        var l = sh.getElementById('dtclist'); if (!l) return;
+        dtCkView = dtCk.filter(function (c) {
+            if (dtCkSite && dtCkHost) {
+                var d = (c.d || '').replace(/^\./, '');
+                if (!(dtCkHost === d || dtCkHost.endsWith('.' + d) || d.endsWith('.' + dtCkHost))) return false;
+            }
+            return !dtCkQ || (c.n + ' ' + (c.d || '')).toLowerCase().indexOf(dtCkQ) >= 0;
+        });
+        var h = '';
+        for (var i = 0; i < dtCkView.length; i++) {
+            var c = dtCkView[i];
+            var flags = (c.h ? '<span class="ckb ho">HttpOnly</span>' : '') +
+                (c.s ? '<span class="ckb sc">Secure</span>' : '');
+            var exp = c.e > 0 ? new Date(c.e * 1000).toLocaleDateString() + ' ' +
+                new Date(c.e * 1000).toLocaleTimeString() : 'Session';
+            h += '<div class="ckr" data-i="' + i + '">' +
+                '<span title="' + esc(c.n) + '">' + esc(c.n) + '</span>' +
+                '<span class="cv" title="' + esc(c.v) + '">' + esc(c.v) + '</span>' +
+                '<span>' + esc(c.d || '') + '</span><span>' + esc(c.p || '/') + '</span>' +
+                '<span>' + esc(exp) + '</span><span>' + flags + '</span>' +
+                '<button class="ckx" title="Delete cookie" data-di="' + i + '">✕</button></div>';
+        }
+        l.innerHTML = h || '<div class="sempty">' +
+            (dtCk.length ? 'no cookies match the filter' : 'no cookies in the profile') + '</div>';
+    }
+    function renderCkEditor(sh) {
+        var ed = sh.getElementById('dtcedit'); if (!ed) return;
+        if (!dtCkEdit) { ed.style.display = 'none'; return; }
+        var c = dtCkEdit;
+        ed.innerHTML =
+            '<div class="cer"><input class="dtedit-in" id="cen" placeholder="Name" spellcheck="false" value="' + esc(c.n || '') + '">' +
+            '<input class="dtedit-in" id="cev" placeholder="Value" spellcheck="false" value="' + esc(c.v || '') + '"></div>' +
+            '<div class="cer"><input class="dtedit-in" id="ced" placeholder="Domain" spellcheck="false" value="' +
+            esc(c.d || (dtCkHost ? '.' + dtCkHost : '')) + '">' +
+            '<input class="dtedit-in" id="cep" placeholder="Path" spellcheck="false" value="' + esc(c.p || '/') + '"></div>' +
+            '<div class="cer cflags">' +
+            '<label><input type="checkbox" id="ceh"' + (c.h ? ' checked' : '') + '> HttpOnly</label>' +
+            '<label><input type="checkbox" id="ces"' + (c.s ? ' checked' : '') + '> Secure</label>' +
+            '<span class="dtsp"></span>' +
+            '<button class="dtsend" id="cesave" style="padding:4px 16px">' + (c.add ? 'Add' : 'Save') + '</button>' +
+            '<button class="dtbtn" id="cecancel">Cancel</button></div>';
+        ed.style.display = 'flex';
+        sh.getElementById('cecancel').addEventListener('click', function () {
+            dtCkEdit = null; renderCkEditor(sh);
+        });
+        sh.getElementById('cesave').addEventListener('click', function () {
+            var n = sh.getElementById('cen').value.trim(); if (!n) return;
+            send('dtcset:' + JSON.stringify({
+                n: n, v: sh.getElementById('cev').value,
+                d: sh.getElementById('ced').value.trim() || null,
+                p: sh.getElementById('cep').value.trim() || '/',
+                h: sh.getElementById('ceh').checked, s: sh.getElementById('ces').checked,
+            }));
+            dtCkEdit = null; renderCkEditor(sh);
+        });
+    }
+
+    // ---- Sessions pane ----
+    function renderSessions(sh, j) {
+        var l = sh.getElementById('dtslist'); if (!l) return;
+        var open = j.open || [], closed = j.closed || [], saved = j.saved || [];
+        var h = '<div class="ssec">Open tabs<span class="cnt">' + open.length + '</span></div>';
+        open.forEach(function (t) {
+            h += '<div class="srow" data-tab="' + esc(t.id) + '">' +
+                (t.i ? '<img src="' + esc(t.i) + '">' : '<span style="width:14px;flex:none"></span>') +
+                '<span class="st">' + esc(t.t || t.u || 'New Tab') + '</span>' +
+                '<span class="su">' + esc(t.u || '') + '</span>' +
+                (t.priv ? '<span class="sbadge priv">private</span>' : '') +
+                (t.pin ? '<span class="sbadge pin">pinned</span>' : '') +
+                (t.act ? '<span class="sbadge cur">current</span>' : '') + '</div>';
+        });
+        h += '<div class="ssec">Recently closed<span class="cnt">' + closed.length + '</span></div>';
+        if (!closed.length) h += '<div class="sempty">nothing recently closed</div>';
+        closed.forEach(function (c) {
+            h += '<div class="srow" data-reopen="1" data-u="' + esc(c.u) + '">' +
+                (c.i ? '<img src="' + esc(c.i) + '">' : '<span style="width:14px;flex:none"></span>') +
+                '<span class="su">' + esc(c.u) + '</span>' +
+                '<button class="sbtn">Restore</button></div>';
+        });
+        h += '<div class="ssec">Previous session<span class="cnt">' + saved.length + '</span>' +
+            (saved.length ? '<button class="sbtn" id="sessall">Restore all</button>' : '') + '</div>';
+        if (!saved.length) h += '<div class="sempty">no saved session</div>';
+        saved.forEach(function (u) {
+            h += '<div class="srow" data-newtab="1" data-u="' + esc(u) + '">' +
+                '<span style="width:14px;flex:none"></span><span class="su">' + esc(u) + '</span>' +
+                '<button class="sbtn">Open</button></div>';
+        });
+        l.innerHTML = h;
+    }
+
     // Console REPL — echo the input, host evals through the driver
     // (Runtime.evaluate / evaluateJavaScript — not subject to page CSP).
     function dtReplRun(sh, expr) {
@@ -1315,6 +1417,8 @@
             updateAddr(s);
             var om = s.getElementById('omni');
             if (om) om.classList.toggle('priv', !!state.privActive);
+            // DevTools survives doc swaps — reopen on the tab the host remembers.
+            if (b.dt && !dtOpen) toggleDt(s, b.dt, true);
         }
         // Pages (newtab tiles) render from this event — fire after listeners
         // have had a chance to attach during parse.
@@ -1705,6 +1809,46 @@
             '#dteresp pre{white-space:pre-wrap;word-break:break-all;margin:4px 0;color:#a8e0c8;user-select:text}' +
             '#dteresp .rdet{color:#8f8fb0}' +
             '.resp-ok{color:#7ee0a3}.resp-err{color:#ff8a94}' +
+            '.cklbl{display:flex;align-items:center;gap:5px;color:#8f8fb0;font-size:11px;cursor:pointer;white-space:nowrap}' +
+            '.cklbl input{accent-color:#7c7cff;margin:0}' +
+            '.ckh,.ckr{display:grid;grid-template-columns:minmax(90px,1.1fr) minmax(120px,1.6fr) ' +
+            'minmax(90px,1fr) minmax(50px,.6fr) 130px 74px 24px;gap:8px;align-items:center;padding:3px 12px}' +
+            '.ckh{position:sticky;top:0;background:#111320;color:#55556f;font-size:10px;letter-spacing:.6px;' +
+            'text-transform:uppercase;border-bottom:1px solid rgba(255,255,255,.07);flex:none;z-index:1}' +
+            '.ckr{font:11.5px/1.5 Consolas,"Cascadia Mono",monospace;color:#c9c9dc;cursor:pointer}' +
+            '.ckr:hover{background:rgba(255,255,255,.04)}' +
+            '.ckr span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}' +
+            '.ckr .cv{color:#8f8fb0}' +
+            '.ckb{display:inline-block;padding:0 5px;margin-right:3px;border-radius:4px;font-size:9px;' +
+            'letter-spacing:.4px;line-height:15px}' +
+            '.ckb.ho{background:rgba(255,184,107,.15);color:#ffb86b}' +
+            '.ckb.sc{background:rgba(126,224,163,.14);color:#7ee0a3}' +
+            '.ckx{width:18px;height:18px;padding:0;display:grid;place-items:center;border:0;border-radius:4px;' +
+            'background:transparent;color:#77779a;cursor:pointer;font-size:11px}' +
+            '.ckx:hover{background:rgba(232,17,35,.2);color:#ffb4b9}' +
+            '#dtcedit{flex:none;border-top:1px solid rgba(255,255,255,.08);padding:8px 14px;' +
+            'display:none;flex-direction:column;gap:6px}' +
+            '#dtcedit .cer{display:flex;gap:6px;align-items:center}' +
+            '#dtcedit .dtedit-in{flex:1;min-width:0}' +
+            '#dtcedit .cflags{display:flex;gap:12px;color:#8f8fb0;font-size:11px;align-items:center}' +
+            '#dtcedit .cflags label{display:flex;gap:4px;align-items:center;cursor:pointer}' +
+            '#dtcedit .cflags input{accent-color:#7c7cff;margin:0}' +
+            '.ssec{margin:10px 0 4px;color:#7c7cff;font-weight:700;font-size:10.5px;letter-spacing:.7px;' +
+            'text-transform:uppercase;display:flex;align-items:center;gap:8px}' +
+            '.ssec .cnt{color:#55556f;font-weight:400;letter-spacing:0}' +
+            '.srow{display:flex;align-items:center;gap:9px;padding:5px 12px;border-radius:8px;cursor:pointer;min-width:0}' +
+            '.srow:hover{background:rgba(255,255,255,.05)}' +
+            '.srow img{width:14px;height:14px;border-radius:3px;flex:none}' +
+            '.srow .st{color:#d8d8ec;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:none;max-width:38%}' +
+            '.srow .su{color:#66667f;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}' +
+            '.sbadge{flex:none;font-size:9.5px;padding:0 6px;border-radius:4px;line-height:16px;letter-spacing:.4px}' +
+            '.sbadge.priv{background:rgba(124,124,255,.16);color:#b9b9ff}' +
+            '.sbadge.pin{background:rgba(255,255,255,.08);color:#8f8fb0}' +
+            '.sbadge.cur{background:rgba(126,224,163,.14);color:#7ee0a3}' +
+            '.sbtn{flex:none;padding:3px 10px;border:1px solid rgba(255,255,255,.12);border-radius:6px;' +
+            'background:transparent;color:#b9b9ff;font-size:10.5px;cursor:pointer}' +
+            '.sbtn:hover{background:rgba(124,124,255,.12);border-color:rgba(124,124,255,.4)}' +
+            '.sempty{padding:14px;color:#55556f;font-size:11.5px}' +
             '.dtrepl{display:flex;align-items:center;gap:9px;border-top:1px solid rgba(255,255,255,.08);padding:0 14px;flex:none;height:32px}' +
             '.dtrepl input{flex:1;border:0;outline:0;background:transparent;color:#e8e8f4;font:12px/1 Consolas,"Cascadia Mono",monospace}' +
             '.dtrepl .pr{color:#7c7cff;font-weight:700}' +
@@ -1838,6 +1982,8 @@
             '<div class="dthead">' +
             '<button class="dtab on" data-t="con">Console</button>' +
             '<button class="dtab" data-t="net">Network</button>' +
+            '<button class="dtab" data-t="cookies">Cookies</button>' +
+            '<button class="dtab" data-t="sess">Sessions</button>' +
             '<button class="dtab" data-t="ins">Inspect</button>' +
             '<span class="dtsp"></span>' +
             '<button class="dtbtn" id="dtclear">Clear</button>' +
@@ -1853,6 +1999,15 @@
             '<div class="dtscroll" id="dtnet"></div>' +
             '<div id="dtdetail" style="display:none"></div>' +
             '<div id="dtedit" style="display:none"></div></div>' +
+            '<div class="dtpane" id="dtpcookies">' +
+            '<div class="dnettools"><input id="dtcq" placeholder="Filter by name or domain" spellcheck="false">' +
+            '<label class="cklbl"><input type="checkbox" id="dtcsite"> this site only</label>' +
+            '<span class="dtsp"></span><button class="dtbtn" id="dtcadd">+ Cookie</button></div>' +
+            '<div class="ckh"><span>Name</span><span>Value</span><span>Domain</span><span>Path</span>' +
+            '<span>Expires</span><span>Flags</span><span></span></div>' +
+            '<div class="dtscroll" id="dtclist"></div>' +
+            '<div id="dtcedit" style="display:none"></div></div>' +
+            '<div class="dtpane" id="dtpsess"><div class="dtscroll" id="dtslist"></div></div>' +
             '<div class="dtpane" id="dtpins">' +
             '<div class="ins-top"><button class="dtbtn" id="dtpick">◉ Pick element</button>' +
             '<span id="dtinsst" style="color:#66667f;font-size:11px">click any element on the page</span></div>' +
@@ -1906,6 +2061,9 @@
                 syncDtTabs(sh);
                 if (dtTab !== 'ins' && dtPicking) setPick(sh, false);
                 send('dtget');
+                send('dtstate:' + dtTab);
+                if (dtTab === 'cookies') send('dtcookies');
+                else if (dtTab === 'sess') send('dtsessions');
             });
         });
         sh.getElementById('dtclear').addEventListener('click', function () {
@@ -1914,8 +2072,46 @@
                 send('dtclearn'); dtNetSig = '';
                 dtNetSel = null; dtNetEntry = null; showNetView(sh, 'list');
             }
+            else if (dtTab === 'cookies') send('dtcookies');
+            else if (dtTab === 'sess') send('dtsessions');
             else { var p = sh.getElementById('dtins'); if (p) p.textContent = ''; }
             setTimeout(function () { send('dtget'); }, 60);
+        });
+        // Cookies pane: filter, this-site toggle, add/edit/delete.
+        var cq = sh.getElementById('dtcq');
+        if (cq) cq.addEventListener('input', function () {
+            dtCkQ = cq.value.trim().toLowerCase(); renderCookies(sh);
+        });
+        var cs = sh.getElementById('dtcsite');
+        if (cs) { cs.checked = dtCkSite; cs.addEventListener('change', function () {
+            dtCkSite = cs.checked; renderCookies(sh);
+        }); }
+        var cadd = sh.getElementById('dtcadd');
+        if (cadd) cadd.addEventListener('click', function () {
+            dtCkEdit = { add: true }; renderCkEditor(sh);
+        });
+        var cl = sh.getElementById('dtclist');
+        if (cl) cl.addEventListener('click', function (ev) {
+            var del = ev.target.closest ? ev.target.closest('.ckx') : null;
+            if (del) {
+                var c = dtCkView[+del.dataset.di]; if (!c) return;
+                send('dtcdel:' + JSON.stringify({ n: c.n, d: c.d, p: c.p, s: c.s }));
+                return;
+            }
+            var row = ev.target.closest ? ev.target.closest('.ckr') : null;
+            if (row) { dtCkEdit = dtCkView[+row.dataset.i] || null; renderCkEditor(sh); }
+        });
+        // Sessions pane: switch / reopen / restore.
+        var sl = sh.getElementById('dtslist');
+        if (sl) sl.addEventListener('click', function (ev) {
+            var t = ev.target.closest ? ev.target.closest('.srow') : null;
+            if (!t) return;
+            if (t.dataset.tab) send('switchtab:' + t.dataset.tab);
+            else if (t.dataset.reopen) send('dtunclose:' + t.dataset.u);
+            else if (t.dataset.newtab) send('newtab:' + t.dataset.u);
+        });
+        sl && sl.addEventListener('click', function (ev) {
+            if (ev.target.id === 'sessall') send('restoresession');
         });
         // Network filters.
         var fp = sh.getElementById('dtfp');
@@ -2140,7 +2336,11 @@
                 var s = sh0(); if (!s) return;
                 updateAddr(s);
                 if (state.ov) ntpTick(s);
-                if (dtOpen) send('dtget');
+                if (dtOpen) {
+                    send('dtget');
+                    if (dtTab === 'cookies') send('dtcookies');
+                    else if (dtTab === 'sess') send('dtsessions');
+                }
             }, 1000);
         }
         wireStripDnd(sh); // strip node is recreated each mount
@@ -2191,6 +2391,7 @@
                         updateStar(sh);
                         var om = sh.getElementById('omni');
                         if (om) om.classList.toggle('priv', !!state.privActive);
+                        if (j.dt && !dtOpen) toggleDt(sh, j.dt, true);
                         if (editing) renderDrops(sh);
                         try {
                             document.dispatchEvent(new CustomEvent('brain-state', { detail: state }));
@@ -2205,6 +2406,11 @@
                         renderNetDetail(sh);
                     } else if (j && j.b === 13 && dtOpen) {
                         renderDtResp(sh, j);
+                    } else if (j && j.b === 14 && dtOpen) {
+                        dtCk = j.ck || []; dtCkHost = j.host || '';
+                        renderCookies(sh);
+                    } else if (j && j.b === 15 && dtOpen) {
+                        renderSessions(sh, j);
                     }
                 } catch (e) { }
             });
