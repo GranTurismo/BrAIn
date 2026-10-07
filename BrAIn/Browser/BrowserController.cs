@@ -93,6 +93,13 @@ public sealed class BrowserController : IAsyncDisposable
     public static bool IsWindows => OperatingSystem.IsWindows();
     public static bool IsMac => OperatingSystem.IsMacOS();
 
+    /// <summary>Frameless window: tabs live in the title-bar row next to our
+    /// own min/max/close buttons (Windows only — macOS keeps native traffic
+    /// lights; --no-toolbar automation keeps native chrome so the window
+    /// stays movable/closable without our bar).</summary>
+    private bool Chromeless => IsWindows && !_noToolbar;
+    private bool _winMax;
+
     public BrowserController(string[] args)
     {
         for (var i = 0; i < args.Length; i++)
@@ -242,6 +249,7 @@ public sealed class BrowserController : IAsyncDisposable
             .SetTitle(AppName)
             .SetLogVerbosity(0) // NEVER write to stdout — stdio MCP lives there
             .SetUseOsDefaultSize(false)
+            .SetUseOsDefaultLocation(false)
             .SetSize(1440, 900)
             .Center()
             .SetDevToolsEnabled(true)
@@ -249,6 +257,7 @@ public sealed class BrowserController : IAsyncDisposable
             .SetGrantBrowserPermissions(true)
             .SetJavascriptClipboardAccessEnabled(true)
             .SetTemporaryFilesPath(Path.Combine(_userDataDir, "webview"));
+        if (Chromeless) window.SetChromeless(true);
         window.IconFile = ResolveIconPath();
 
         if (IsWindows && Environment.GetEnvironmentVariable("BRAIN_NO_CDP") is null)
@@ -262,10 +271,25 @@ public sealed class BrowserController : IAsyncDisposable
         window.RegisterWebMessageReceivedHandler((_, msg) => HandleWebMessage(tab, msg));
         window.RegisterWindowCreatedHandler((_, _) =>
         {
+            if (Chromeless)
+            {
+                Native.Win32.ApplyBorderlessChrome(window.WindowHandle);
+                Native.Win32.RoundCorners(window.WindowHandle);
+            }
             // Logical tabs share this single window/webview; only the main
             // driver needs wiring.
             _windowCreated.TrySetResult();
             Task.Run(InitializeMainDriverAsync);
+        });
+        window.RegisterMaximizedHandler((_, _) =>
+        {
+            _winMax = true;
+            PushChromeStateAll();
+        });
+        window.RegisterRestoredHandler((_, _) =>
+        {
+            _winMax = window.Maximized;
+            PushChromeStateAll();
         });
         window.RegisterWindowClosingHandler((_, _) =>
         {
@@ -889,6 +913,28 @@ public sealed class BrowserController : IAsyncDisposable
                             try { InvokeOnUi(() => { if (_mainWindow is not null) _mainWindow.Topmost = _topmost; }); } catch { }
                             PushChromeStateAll();
                             break;
+                        // Chromeless-window controls (drawn in the bar by
+                        // chrome.js; the native title bar is gone).
+                        case "wmin":
+                            try { InvokeOnUi(() => { if (_mainWindow is not null) _mainWindow.Minimized = true; }); } catch { }
+                            break;
+                        case "wmax":
+                            try { InvokeOnUi(() =>
+                            {
+                                if (_mainWindow is null) return;
+                                _mainWindow.Maximized = !_mainWindow.Maximized;
+                                _winMax = _mainWindow.Maximized;
+                            }); } catch { }
+                            break;
+                        case "wclose":
+                            try { InvokeOnUi(() => _mainWindow?.Close()); } catch { }
+                            break;
+                        case "wdrag":
+                            try { InvokeOnUi(() => Native.Win32.BeginNcDrag(_mainWindow?.WindowHandle ?? IntPtr.Zero, Native.Win32.HtCaption)); } catch { }
+                            break;
+                        case "wresize" when int.TryParse(arg, out var ht):
+                            try { InvokeOnUi(() => Native.Win32.BeginNcDrag(_mainWindow?.WindowHandle ?? IntPtr.Zero, ht)); } catch { }
+                            break;
                         case "bm": ToggleBookmark(active); break;
                         case "scroll": RecordScroll(DocTab ?? active, arg); break;
                     }
@@ -953,6 +999,8 @@ public sealed class BrowserController : IAsyncDisposable
             bm = isBm,
             zoom = _zoom,
             topmost = _topmost,
+            wc = Chromeless,
+            w = _winMax ? 1 : 0,
             privActive = Tabs.Active?.IsPrivate == true,
             sess = _savedSession.Count,
             fresh,
@@ -963,7 +1011,10 @@ public sealed class BrowserController : IAsyncDisposable
     /// <summary>Push current tab/URL state to a window's injected chrome bar.</summary>
     public void PushChromeState(BrowserTab tab)
     {
-        if (_noToolbar || tab.IsClosed) return;
+        // Skip until the webview exists — SendWebMessage on a bare window
+        // crashes (chromeless window events fire before the webview is up),
+        // and without brain.js there's nothing listening anyway.
+        if (_noToolbar || tab.IsClosed || !_driverReady.Task.IsCompleted) return;
         var json = BuildChromeStateJson(null);
         try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
         catch { /* window mid-close */ }

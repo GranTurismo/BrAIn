@@ -21,6 +21,8 @@
     state.bmarks = []; state.bm = false; state.zoom = 100; state.topmost = false;
     state.sess = 0; state.privActive = false;
     state.ov = false;      // active tab is a blank new tab painted as an in-doc overlay
+    state.wc = false;      // chromeless window — show our own min/max/close
+    state.w = false;       // window currently maximized
     var ovPending = 0;     // optimistic overlay hold (ms deadline) — see holdOverlay()
     var lastPushOv = false;
     var ntpHistSig = '';
@@ -45,7 +47,10 @@
         mask: '<svg viewBox="0 0 16 16"><path d="M8 2.6c-2 0-3.6.7-4.3 1.7L3 7.6h10l-.7-3.3C11.6 3.3 10 2.6 8 2.6z" fill="currentColor"/><path d="M3.4 8.4a4.6 4.6 0 0 0 9.2 0z" fill="currentColor" opacity=".75"/><circle cx="5.7" cy="9.6" r=".85" fill="#0b0b13"/><circle cx="10.3" cy="9.6" r=".85" fill="#0b0b13"/></svg>',
         pin: '<svg viewBox="0 0 16 16"><path d="M9.4 2.2 13.8 6.6l-1.5.2-3.2 3.2-.2 3-1.7 1.7.6-3.9-3-3zM3.6 12.4 6 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M2.4 13.6l4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
         link: '<svg viewBox="0 0 16 16"><path d="M6.5 9.5a3 3 0 0 0 4.2.4l2-2a3 3 0 1 0-4.2-4.2l-1.1 1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9.5 6.5a3 3 0 0 0-4.2-.4l-2 2a3 3 0 1 0 4.2 4.2l1.1-1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-        copy: '<svg viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 5.5v-1a1.5 1.5 0 0 0-1.5-1.5H4.5A1.5 1.5 0 0 0 3 4.5V9a1.5 1.5 0 0 0 1.5 1.5h1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>'
+        copy: '<svg viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 5.5v-1a1.5 1.5 0 0 0-1.5-1.5H4.5A1.5 1.5 0 0 0 3 4.5V9a1.5 1.5 0 0 0 1.5 1.5h1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>',
+        wmin: '<svg viewBox="0 0 16 16"><path d="M3.6 8h8.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+        wmax: '<svg viewBox="0 0 16 16"><rect x="3.6" y="3.6" width="8.8" height="8.8" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+        wres: '<svg viewBox="0 0 16 16"><rect x="4.8" y="4.8" width="7.2" height="7.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.6 4.8v-.6a1 1 0 0 1 1-1h3.6a1 1 0 0 1 1 1v3.6a1 1 0 0 1-1 1h-.6" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>'
     };
 
     function send(cmd) {
@@ -966,6 +971,34 @@
     // exactly once — deferred past head-parse so an embedded <script> on
     // internal pages overrides a stale injected payload. Falls back cleanly
     // to the normal push path when absent.
+
+    // ---- window controls (chromeless) ----
+    var curEl = null; // temporary *{cursor} style while hovering a resize edge
+    function edgeCode(x, y) {
+        var w = window.innerWidth, h = window.innerHeight;
+        var l = x < 6, r = x > w - 6, t = y < 6, b = y > h - 6;
+        if (t) return l ? 13 : r ? 14 : 12;
+        if (b) return l ? 16 : r ? 17 : 15;
+        return l ? 10 : r ? 11 : 0;
+    }
+    function edgeCursor(c) {
+        return c === 10 || c === 11 ? 'ew-resize' :
+            c === 12 || c === 15 ? 'ns-resize' :
+            c === 13 || c === 17 ? 'nwse-resize' : 'nesw-resize';
+    }
+    function setEdgeCursor(c) {
+        if (!c) { if (curEl) { curEl.remove(); curEl = null; } return; }
+        if (!curEl) { curEl = document.createElement('style'); document.documentElement.appendChild(curEl); }
+        curEl.textContent = '*{cursor:' + c + ' !important}';
+    }
+    // Show/hide the caption buttons and swap maximize ↔ restore glyph.
+    function syncWin(s) {
+        var w = s.getElementById('wctrl');
+        if (w) w.style.display = state.wc ? 'flex' : 'none';
+        var mb = s.getElementById('wmaxb');
+        if (mb) { mb.innerHTML = state.w ? SVG.wres : SVG.wmax; mb.title = state.w ? 'Restore down' : 'Maximize'; }
+    }
+
     function applyBoot() {
         var b = null;
         try { b = window.__brainBoot; } catch (e) { }
@@ -990,6 +1023,8 @@
         state.bm = !!b.bm;
         state.zoom = b.zoom || 100;
         state.topmost = !!b.topmost;
+        state.wc = !!b.wc;
+        state.w = !!b.w;
         state.sess = b.sess || 0;
         state.privActive = !!b.privActive;
         state.ov = lastPushOv = !!b.ov;
@@ -997,6 +1032,7 @@
         var s = sh0();
         if (s) {
             render(s);
+            syncWin(s);
             syncNtp(s);
             updateStar(s);
             updateAddr(s);
@@ -1315,6 +1351,17 @@
             '.brand:hover{filter:brightness(1.25)}' +
             '.brand svg{width:14px;height:14px;color:#9c9cff;transition:transform .4s cubic-bezier(.16,1,.3,1)}' +
             '.brand:hover svg{transform:rotate(180deg)}' +
+            // ---- window controls (chromeless title-bar buttons) ----
+            // Windows caption-button proportions: 46px wide, flush with the
+            // bar's top/right/bottom edges so the close button sits in the
+            // exact corner like the native chrome did.
+            '.wctrl{display:none;flex:none;align-self:stretch;margin-right:-12px;margin-left:2px}' +
+            '.wb{width:46px;display:grid;place-items:center;border:0;align-self:stretch;' +
+            'background:transparent;color:#b9b9d4;cursor:pointer;transition:background .12s,color .12s}' +
+            '.wb:hover{background:rgba(255,255,255,.1);color:#fff}' +
+            '.wb svg{width:14px;height:14px;pointer-events:none}' +
+            '.wb.wcx:hover{background:#e81123;color:#fff}' +
+            '.wb.wcx{border-top-right-radius:8px}' +  // matches DWM corner rounding
             // ---- in-document new-tab page (virtual blank tabs) ----
             // Same look as newtab.html; top:46 + height:100vh centers content
             // exactly like the real start-page document, so the two are
@@ -1395,6 +1442,10 @@
             '<div id="drops"></div></div>' +
             '<div class="brand">' + SVG.sparkle + '<span>BrAIn</span></div>' +
             '<button class="nav-b" id="mbtn" title="Menu">' + SVG.dots + '</button>' +
+            '<div class="wctrl" id="wctrl">' +
+            '<button class="wb" id="wmin" title="Minimize">' + SVG.wmin + '</button>' +
+            '<button class="wb" id="wmaxb" title="Maximize">' + SVG.wmax + '</button>' +
+            '<button class="wb wcx" id="wclose" title="Close">' + SVG.close + '</button></div>' +
             '<div id="prog"><i></i></div>' +
             '</div>' +
             '<div id="status"></div>' +
@@ -1429,6 +1480,34 @@
             e.stopPropagation();
             showMenu(sh);
         });
+
+        // ---- window controls + title-bar behavior (chromeless) ----
+        // Empty bar space drags the window (host posts WM_NCLBUTTONDOWN
+        // HTCAPTION → native move loop incl. Aero Snap); dbl-click toggles
+        // maximize; the top 6px stay a resize strip handled at document level.
+        sh.getElementById('wmin').addEventListener('click', function () { send('wmin'); });
+        sh.getElementById('wmaxb').addEventListener('click', function () { send('wmax'); });
+        sh.getElementById('wclose').addEventListener('click', function () { send('wclose'); });
+        var bar = sh.querySelector('.bar');
+        var barDragOk = function (e) {
+            return state.wc && e.button === 0 && !edgeCode(e.clientX, e.clientY) &&
+                !e.target.closest('button,.tab,.omni,.plus,.nav,#drops,.wctrl,input');
+        };
+        bar.addEventListener('mousedown', function (e) {
+            if (!barDragOk(e)) return;
+            e.preventDefault();
+            send('wdrag');
+        });
+        bar.addEventListener('dblclick', function (e) {
+            if (!state.wc || !barDragOk(e)) return;
+            send('wmax');
+        });
+        bar.addEventListener('mousemove', function (e) {
+            if (!state.wc || state.w || e.clientY >= 6) { bar.style.cursor = ''; return; }
+            bar.style.cursor = edgeCursor(edgeCode(e.clientX, e.clientY) || 12);
+        });
+        bar.addEventListener('mouseleave', function () { bar.style.cursor = ''; });
+        syncWin(sh);
 
         var star = sh.getElementById('star');
         ['mousedown', 'click'].forEach(function (ev) {
@@ -1520,6 +1599,21 @@
             wireLinkGestures();
             wirePageMenu();
             wireScrollReport();
+            // Chromeless edge resize: thin zones on the window edges start a
+            // native modal resize via the host (skipped while maximized —
+            // the borders are off-screen then anyway).
+            document.addEventListener('mousemove', function (e) {
+                if (!state.wc || state.w) { if (curEl) setEdgeCursor(0); return; }
+                setEdgeCursor(edgeCode(e.clientX, e.clientY) ? edgeCursor(edgeCode(e.clientX, e.clientY)) : 0);
+            }, true);
+            document.addEventListener('mousedown', function (e) {
+                if (!state.wc || state.w || e.button !== 0) return;
+                var c = edgeCode(e.clientX, e.clientY);
+                if (!c) return;
+                e.preventDefault();
+                setEdgeCursor(0);
+                send('wresize:' + c);
+            }, true);
             // Embedded __brainBoot (internal pages) lands during head parse —
             // retry at DOMContentLoaded in case the 0ms timer beat it.
             document.addEventListener('DOMContentLoaded', applyBoot);
@@ -1559,6 +1653,8 @@
                         state.bm = !!j.bm;
                         state.zoom = j.zoom || 100;
                         state.topmost = !!j.topmost;
+                        state.wc = !!j.wc;
+                        state.w = !!j.w;
                         state.sess = j.sess || 0;
                         lastPushOv = !!j.ov;
                         // An optimistic/pending overlay holds until the
@@ -1571,6 +1667,7 @@
                         }
                         window.__brainState = state;
                         render(sh);
+                        syncWin(sh);
                         syncNtp(sh);
                         updateAddr(sh);
                         updateStar(sh);
