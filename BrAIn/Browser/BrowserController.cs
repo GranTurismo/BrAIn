@@ -329,7 +329,7 @@ public sealed class BrowserController : IAsyncDisposable
             // A document is being created — refresh the boot payload it will
             // carry (covers back/forward and page-initiated navigations where
             // NavigateAsync isn't on the path).
-            _ = driver.SetBootStateAsync(BuildChromeStateJson(null), CancellationToken.None);
+            _ = driver.SetBootStateAsync(BuildChromeStateJson(null, "inj"), CancellationToken.None);
         };
         driver.LoadCompleted += async (_, _) =>
         {
@@ -399,13 +399,16 @@ public sealed class BrowserController : IAsyncDisposable
             tab.LastUrl = url;
             tab.LastTitle = nt ? "New Tab" : "How to use";
             try { await EnsurePageHelpersAsync(tab); } catch { }
+            // NavigateToString docs never emit frameStoppedLoading — settle
+            // the loading depth here or the spinner sticks forever.
+            Interlocked.Exchange(ref _loadDepth, 0);
             PushChromeStateAll();
             return NavigateResult.Success(url, tab.LastTitle);
         }
         var driver = await DriverOrThrowAsync(tab, ct);
         // Bake chrome state into the next document so the toolbar renders
         // final tab state on first paint (no empty-strip flash).
-        try { await driver.SetBootStateAsync(BuildChromeStateJson(ConsumeFresh()), ct); } catch { }
+        try { await driver.SetBootStateAsync(BuildChromeStateJson(ConsumeFresh(), "inj"), ct); } catch { }
         var result = await driver.NavigateAsync(url, ct);
         if (result.Ok) tab.LastUrl = result.Url;
         return result;
@@ -830,8 +833,11 @@ public sealed class BrowserController : IAsyncDisposable
 
     /// <summary>Serialize the chrome state payload (b:9) shared by pushes and
     /// document boot state. <paramref name="fresh"/> marks a just-created tab
-    /// id prefix — only that pill animates on first paint.</summary>
-    private string BuildChromeStateJson(string? fresh)
+    /// id prefix — only that pill animates on first paint.
+    /// <paramref name="src"/> tags boot origin ("inj" = injected new-document
+    /// script, "emb" = embedded in an internal page) so chrome.js can let the
+    /// embedded payload win when both exist.</summary>
+    private string BuildChromeStateJson(string? fresh, string? src = null)
     {
         var activeId = Tabs.Active?.Id;
         var tabs = Tabs.All.Where(t => !t.IsClosed).Select(t => new
@@ -869,6 +875,7 @@ public sealed class BrowserController : IAsyncDisposable
             privActive = Tabs.Active?.IsPrivate == true,
             sess = _savedSession.Count,
             fresh,
+            src,
         });
     }
 
@@ -888,10 +895,11 @@ public sealed class BrowserController : IAsyncDisposable
     private string InjectBootState(string html)
     {
         // '<' inside a <script> would break parsing — escape it in the JSON.
-        var json = BuildChromeStateJson(ConsumeFresh()).Replace("<", "\\u003c");
+        var json = BuildChromeStateJson(ConsumeFresh(), "emb").Replace("<", "\\u003c");
         var lib = _noToolbar ? Assets.BrainJs : Assets.BrainJs + "\n" + Assets.ChromeJs;
         return html.Replace("</head>",
-            "<script>window.__brainBoot=" + json + ";</script>" +
+            "<script>window.__brainBoot=" + json +
+            ";try{window.__brainChrome&&__brainChrome.applyBoot()}catch(e){}</script>" +
             "<script>" + lib + "</script></head>");
     }
 

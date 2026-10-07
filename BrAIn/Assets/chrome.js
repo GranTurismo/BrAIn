@@ -104,6 +104,23 @@
     // bootFresh (the just-created tab) animates. Without it every tab would
     // flash in ~100ms later when the first push arrives.
     var bootApplied = null, bootFresh = null;
+    // Loading indicator appears only once a load outlives ~150ms, like real
+    // browsers — instant internal-page swaps must not flash spinner/progress.
+    var loadStart = 0, loadSlow = false;
+    function markLoading() {
+        if (state.loading) {
+            if (!loadStart) {
+                loadStart = Date.now();
+                loadSlow = false;
+                setTimeout(function () {
+                    if (!state.loading) return;
+                    loadSlow = true;
+                    var s = sh0();
+                    if (s) { render(s); updateNav(s); updateProg(s); }
+                }, 160);
+            }
+        } else { loadStart = 0; loadSlow = false; }
+    }
 
     function makeTabEl(sh, t) {
         var el = document.createElement('div');
@@ -153,7 +170,7 @@
             el.title = (t.title || '') + '\n' + (t.url || '') +
                 (t.priv ? '\nPrivate — no history; site data wiped on close' : '');
         }
-        var busy = t.active && state.loading;
+        var busy = t.active && state.loading && loadSlow;
         var icon = t.icon || '';
         var letter = (title || '?').trim().charAt(0).toUpperCase();
         var faceSig = letter + '|' + icon + '|' + (busy ? 'B' : '') + (t.priv ? 'P' : '') + '|' + t.id;
@@ -182,7 +199,7 @@
         if (!strip) return;
         // Signature check: state pushes arrive on every load event; reconcile
         // only when tab data actually changed.
-        var sig = (state.loading ? 'L' : '.');
+        var sig = ((state.loading && loadSlow) ? 'L' : '.');
         for (var i = 0; i < state.tabs.length; i++) {
             var t0 = state.tabs[i];
             sig += t0.id + ',' + (t0.active ? 1 : 0) + ',' + (t0.title || '') + ',' + (t0.icon || '') + ';';
@@ -202,17 +219,11 @@
                 tabEls[t.id] = el;               // .tab's tabin anim plays on insert
                 if (firstRender) {
                     if (bootApplied) {
-                        // Boot state: strip appears instantly — suppress the
-                        // entrance anim on existing tabs; only the freshly
-                        // created one slides in.
-                        if (t.id !== bootFresh) {
-                            el.style.animation = 'none';
-                            (function (e2) {
-                                requestAnimationFrame(function () {
-                                    requestAnimationFrame(function () { e2.style.animation = ''; });
-                                });
-                            })(el);
-                        }
+                        // Boot state: strip appears instantly — existing tabs
+                        // get a permanent noanim class (never cleared: doing
+                        // so would restart tabin mid-flight); only the freshly
+                        // created pill slides in.
+                        if (t.id !== bootFresh) el.classList.add('noanim');
                     }
                     else el.style.animationDelay = Math.min(i * 40, 360) + 'ms';
                 }
@@ -358,15 +369,16 @@
         if (f) f.classList.toggle('dis', !state.canFwd);
         var rel = sh.getElementById('rel');
         if (rel) {
-            rel.innerHTML = state.loading ? SVG.stop : SVG.reload;
-            rel.setAttribute('data-cmd', state.loading ? 'stop' : 'reload');
-            rel.title = state.loading ? 'Stop loading (Esc)' : 'Reload (Ctrl+R)';
+            var stoppable = state.loading && loadSlow;
+            rel.innerHTML = stoppable ? SVG.stop : SVG.reload;
+            rel.setAttribute('data-cmd', stoppable ? 'stop' : 'reload');
+            rel.title = stoppable ? 'Stop loading (Esc)' : 'Reload (Ctrl+R)';
         }
     }
 
     function updateProg(sh) {
         var p = sh.getElementById('prog');
-        if (p) p.classList.toggle('on', !!state.loading);
+        if (p) p.classList.toggle('on', !!(state.loading && loadSlow));
     }
 
     function updateAddr(sh) {
@@ -863,11 +875,19 @@
         var b = null;
         try { b = window.__brainBoot; } catch (e) { }
         if (!b || b === bootApplied || b.b !== 9 || !Array.isArray(b.tabs)) return;
+        // The injected new-document script also fires on internal pages
+        // (NavigateToString) BEFORE the page's embedded payload exists — its
+        // copy carries no `fresh` marker and would kill the new-tab slide-in.
+        // On about: docs let the embedded payload (src:"emb") win.
+        if (b.src === 'inj') {
+            try { if (location.protocol === 'about:') return; } catch (e) { }
+        }
         bootApplied = b;
         try { window.__brainBoot = null; } catch (e) { }
         bootFresh = b.fresh || null;
         state.tabs = b.tabs;
         state.loading = !!b.loading;
+        markLoading();
         state.canBack = b.canBack !== false;
         state.canFwd = !!b.canFwd;
         state.hist = Array.isArray(b.hist) ? b.hist : [];
@@ -898,6 +918,10 @@
     function mount() {
         if (document.getElementById(HOST_ID)) return;
         if (!document.documentElement) { setTimeout(mount, 120); return; }
+        // With boot state the bar existed before the doc swap — sliding it in
+        // again reads as flicker, so skip the entrance animation.
+        var hadBoot = false;
+        try { hadBoot = !!window.__brainBoot; } catch (e) { }
 
         var host = document.createElement('div');
         host.id = HOST_ID;
@@ -940,6 +964,10 @@
             'animation:tabin .22s cubic-bezier(.16,1,.3,1) backwards}' +
             '@keyframes tabin{from{transform:scale(.75);opacity:0;max-width:0;padding-left:0;padding-right:0}' +
             '60%{transform:scale(1.03)}to{transform:scale(1);opacity:1;max-width:184px}}' +
+            // Boot-rendered tabs appear with the bar, not "in" — permanent
+            // class (clearing inline styles would restart tabin). Closing
+            // stays later in the sheet so tabout still wins.
+            '.tab.noanim{animation:none}' +
             '.tab.closing{pointer-events:none;animation:tabout .19s cubic-bezier(.4,0,.7,1) forwards}' +
             '@keyframes tabout{to{transform:scale(.7);opacity:0;max-width:0;padding-left:0;padding-right:0;border-width:0}}' +
             '.tab.dropmark::before,.tab.dropmark-r::after{content:"";position:absolute;top:6px;bottom:6px;width:2.5px;' +
@@ -951,7 +979,9 @@
             'box-shadow:0 2px 10px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.08),0 0 20px rgba(124,124,255,.14)}' +
             '.tab .dot{width:21px;height:21px;border-radius:7px;flex:none;display:grid;place-items:center;position:relative;' +
             'font-size:11px;font-weight:700;color:#fff;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.15)}' +
-            '.tab .dot .fav{position:absolute;inset:2.5px;width:16px;height:16px;border-radius:5px}' +
+            '.tab .dot .fav{position:absolute;inset:2.5px;width:16px;height:16px;border-radius:5px;' +
+            'animation:iconin .18s ease both}' +
+            '@keyframes iconin{from{opacity:0}to{opacity:1}}' +
             '.tab .dot.spin{background:transparent;box-shadow:none}' +
             '.tab .dot.spin::before{content:"";width:13px;height:13px;border-radius:50%;' +
             'border:2px solid rgba(124,124,255,.2);border-top-color:#9c9cff;animation:rot .65s linear infinite}' +
@@ -1177,6 +1207,10 @@
 
         (document.body || document.documentElement).appendChild(host);
         reserveSpace();
+        if (hadBoot) {
+            var barEl = sh.querySelector('.bar');
+            if (barEl) barEl.style.animation = 'none';
+        }
 
         statusEl = sh.getElementById('status');
         // Document/window-level wires attach exactly once per document —
@@ -1215,6 +1249,7 @@
                     if (j && j.b === 9 && Array.isArray(j.tabs)) {
                         state.tabs = j.tabs;
                         state.loading = !!j.loading;
+                        markLoading();
                         state.canBack = j.canBack !== false;
                         state.canFwd = !!j.canFwd;
                         state.hist = Array.isArray(j.hist) ? j.hist : [];
@@ -1238,11 +1273,13 @@
             });
         } catch (e) { }
 
+        // Apply boot synchronously — the strip renders final state in the
+        // same task as mount, so an empty strip can never reach a paint.
+        applyBoot();
         render(sh);
         updateAddr(sh);
         send('tabs');
-        // Boot state render is deferred one tick so an embedded page script
-        // can overwrite a stale injected payload before we consume it.
+        // Retry deferred: covers a late-arriving embedded payload.
         setTimeout(applyBoot, 0);
     }
 
