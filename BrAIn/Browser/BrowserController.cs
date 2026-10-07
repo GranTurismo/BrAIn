@@ -76,6 +76,18 @@ public sealed class BrowserController : IAsyncDisposable
     /// the driver for the remaining tabs.</summary>
     private BrowserTab? _driverTab;
 
+    /// <summary>The tab whose document currently lives in the shared webview.
+    /// Blank new tabs are "virtual": chrome.js paints the start page as an
+    /// overlay over this document instead of loading a new one — every
+    /// document load spins a fresh renderer process (~200ms cold start), which
+    /// was the visible new-tab delay. Switching back to this tab is instant.</summary>
+    private Guid? _docTabId;
+    private BrowserTab? DocTab => _docTabId is { } id ? Tabs.Find(id) : null;
+
+    /// <summary>Active tab is a blank new tab painted as an overlay.</summary>
+    private bool OverlayActive =>
+        Tabs.Active is { } a && a.Id != _docTabId && a.LastUrl == "about:newtab";
+
     public BrowserTabRegistry Tabs { get; } = new();
     public int? CdpPort { get; private set; }
     public static bool IsWindows => OperatingSystem.IsWindows();
@@ -200,6 +212,7 @@ public sealed class BrowserController : IAsyncDisposable
     {
         var (window, tab) = CreatePhotinoWindow();
         tab.LastUrl = _initialUrl ?? "about:newtab";
+        _docTabId = tab.Id;
 
         _mainWindow = window;
         Tabs.Add(tab);
@@ -335,8 +348,10 @@ public sealed class BrowserController : IAsyncDisposable
         {
             if (Interlocked.Decrement(ref _loadDepth) < 0)
                 Interlocked.Exchange(ref _loadDepth, 0);
-            // The window hosts whichever tab is active — refresh that one.
-            var target = Tabs.Active ?? tab;
+            // Refresh the tab that OWNS the document — with a new-tab overlay
+            // up, the active tab is virtual and must not inherit the hidden
+            // page's URL/title.
+            var target = DocTab ?? Tabs.Active ?? tab;
             await RefreshTabInfoAsync(target);
             await EnsurePageHelpersAsync(target);
             // Logical tabs reload on switch — restore the scroll position the
@@ -392,26 +407,58 @@ public sealed class BrowserController : IAsyncDisposable
         if (Tabs.Active?.Id != tab.Id) Tabs.Activate(tab.Id);
         url = NormalizeUrl(url);
         if (url is "about:newtab" or "about:help")
-        {
-            var nt = url == "about:newtab";
-            var html = InjectBootState(nt ? Assets.NewTabHtml : Assets.HelpHtml);
-            InvokeOnUi(() => tab.Window.LoadRawString(html));
-            tab.LastUrl = url;
-            tab.LastTitle = nt ? "New Tab" : "How to use";
-            try { await EnsurePageHelpersAsync(tab); } catch { }
-            // NavigateToString docs never emit frameStoppedLoading — settle
-            // the loading depth here or the spinner sticks forever.
-            Interlocked.Exchange(ref _loadDepth, 0);
-            PushChromeStateAll();
-            return NavigateResult.Success(url, tab.LastTitle);
-        }
-        var driver = await DriverOrThrowAsync(tab, ct);
+            return await LoadInternalPageAsync(tab, url);
+        // materialize:false — a virtual new tab navigating away must not
+        // first load the start-page document it's about to replace.
+        var driver = await DriverOrThrowAsync(tab, ct, materialize: false);
+        _docTabId = tab.Id;
         // Bake chrome state into the next document so the toolbar renders
         // final tab state on first paint (no empty-strip flash).
         try { await driver.SetBootStateAsync(BuildChromeStateJson(ConsumeFresh(), "inj"), ct); } catch { }
         var result = await driver.NavigateAsync(url, ct);
         if (result.Ok) tab.LastUrl = result.Url;
         return result;
+    }
+
+    /// <summary>Loads an internal about: page as a real document.</summary>
+    private async Task<NavigateResult> LoadInternalPageAsync(BrowserTab tab, string url)
+    {
+        var nt = url == "about:newtab";
+        _docTabId = tab.Id;
+        tab.LastUrl = url;
+        tab.LastTitle = nt ? "New Tab" : "How to use";
+        var html = InjectBootState(nt ? Assets.NewTabHtml : Assets.HelpHtml);
+        InvokeOnUi(() => tab.Window.LoadRawString(html));
+        try { await EnsurePageHelpersAsync(tab); } catch { }
+        // NavigateToString docs never emit frameStoppedLoading — settle
+        // the loading depth here or the spinner sticks forever.
+        Interlocked.Exchange(ref _loadDepth, 0);
+        PushChromeStateAll();
+        return NavigateResult.Success(url, tab.LastTitle);
+    }
+
+    /// <summary>Can a blank new tab be shown as an in-document overlay right
+    /// now? Needs a live document owner with the chrome bar mounted (error
+    /// pages / PDF viewers don't run our injection).</summary>
+    private async Task<bool> CanOverlayAsync()
+    {
+        if (_noToolbar || _docTabId is null || DocTab is null) return false;
+        var d = _driverTab?.Driver;
+        if (d is null || !d.SupportsEval) return false;
+        try
+        {
+            var r = await d.EvaluateAsync(
+                "!!(window.__brainChrome && document.getElementById('__brain-chrome-host'))",
+                false, CancellationToken.None);
+            return r?.ValueKind == JsonValueKind.True;
+        }
+        catch { return false; }
+    }
+
+    private void SetWindowTitleFor(BrowserTab tab)
+    {
+        var title = string.IsNullOrWhiteSpace(tab.LastTitle) ? "BrAIn" : tab.LastTitle + " — BrAIn";
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.Title = title; }); } catch { }
     }
 
     /// <summary>Photino-level navigation (works even without a driver).</summary>
@@ -460,10 +507,22 @@ public sealed class BrowserController : IAsyncDisposable
         await _windowCreated.Task.WaitAsync(ct);
         var main = _mainWindow ?? throw new InvalidOperationException("Browser window not initialized");
         var tab = new BrowserTab { Id = Guid.NewGuid(), IsMain = false, Window = main, IsPrivate = priv };
+        var overlay = url is null && await CanOverlayAsync();
         Tabs.Add(tab);
         Tabs.Activate(tab.Id);
-        _pendingFresh = tab.Id.ToString("N")[..8]; // consumed by boot state
-        await NavigateAsync(url ?? "newtab", tab, ct);
+        if (overlay)
+        {
+            // Blank tab: no document load — chrome.js paints the start page
+            // over the current document (instant; no renderer cold start).
+            tab.LastUrl = "about:newtab";
+            tab.LastTitle = "New Tab";
+            SetWindowTitleFor(tab);
+        }
+        else
+        {
+            _pendingFresh = tab.Id.ToString("N")[..8]; // consumed by boot state
+            await NavigateAsync(url ?? "newtab", tab, ct);
+        }
         PushChromeStateAll();
         SaveSessionSoon();
         return tab;
@@ -480,7 +539,12 @@ public sealed class BrowserController : IAsyncDisposable
         {
             Tabs.Activate(tab.Id);
             await RaiseWindowAsync(tab, ct);
-            await NavigateAsync(tab.LastUrl, tab, ct);
+            if (tab.Id == _docTabId)
+                SetWindowTitleFor(tab); // its document is still loaded under the overlay — instant
+            else if (tab.LastUrl == "about:newtab" && await CanOverlayAsync())
+                SetWindowTitleFor(tab); // blank tab → overlay, no document load
+            else
+                await NavigateAsync(tab.LastUrl, tab, ct);
         }
         PushChromeStateAll();
         return true;
@@ -502,6 +566,10 @@ public sealed class BrowserController : IAsyncDisposable
         else if (tab.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
             _closedTabs.Push((tab.LastUrl, tab.LastIcon));
         Tabs.Remove(tab.Id);
+        // The closed tab owned the live document — it must not linger hidden
+        // under an overlay (audio, private data), so the next view reloads.
+        var closedDoc = tab.Id == _docTabId;
+        if (closedDoc) _docTabId = null;
         SaveSessionSoon();
         var remaining = Tabs.All;
         if (remaining.Count == 0)
@@ -518,6 +586,8 @@ public sealed class BrowserController : IAsyncDisposable
             var next = remaining[Math.Clamp(idx, 0, remaining.Count - 1)];
             await ActivateWindowAsync(next.Id.ToString("N")[..8], ct);
         }
+        else if (closedDoc && Tabs.Active is { } act && act.LastUrl == "about:newtab")
+            await LoadInternalPageAsync(act, "about:newtab"); // unload the hidden page
         return true;
     }
 
@@ -730,7 +800,7 @@ public sealed class BrowserController : IAsyncDisposable
                         case "navigate": await NavigateAsync(arg, active); break;
                         case "back": await GoBackAsync(active); break;
                         case "forward": await GoForwardAsync(active); break;
-                        case "reload": await ReloadAsync(false, active); break;
+                        case "reload": if (!OverlayActive) await ReloadAsync(false, active); break;
                         case "stop":
                             var d = await DriverOrThrowAsync(active, default);
                             await d.EvaluateAsync("window.stop()", false, default);
@@ -815,7 +885,7 @@ public sealed class BrowserController : IAsyncDisposable
                             PushChromeStateAll();
                             break;
                         case "bm": ToggleBookmark(active); break;
-                        case "scroll": RecordScroll(active, arg); break;
+                        case "scroll": RecordScroll(DocTab ?? active, arg); break;
                     }
                 }
                 catch (Exception ex) { Log($"toolbar cmd '{verb}' failed: {ex.Message}"); }
@@ -860,13 +930,16 @@ public sealed class BrowserController : IAsyncDisposable
         bool isBm;
         lock (_bookmarks)
             isBm = activeUrl is not null && _bookmarks.Any(b => b.Url == activeUrl);
+        // Overlay tab: the hidden document's nav/loading state isn't this tab's.
+        var ov = OverlayActive;
         return JsonSerializer.Serialize(new
         {
             b = 9,
             tabs,
-            loading = IsLoading,
-            canBack = _canBack,
-            canFwd = _canFwd,
+            loading = IsLoading && !ov,
+            canBack = _canBack && !ov,
+            canFwd = _canFwd && !ov,
+            ov,
             hist,
             bmarks,
             bm = isBm,
@@ -899,12 +972,17 @@ public sealed class BrowserController : IAsyncDisposable
         // '<' inside a <script> would break parsing — escape it in the JSON.
         var json = BuildChromeStateJson(ConsumeFresh(), "emb").Replace("<", "\\u003c");
         var lib = _noToolbar ? Assets.BrainJs : Assets.BrainJs + "\n" + Assets.ChromeJs;
+        // The new-document injection normally already ran brain.js+chrome.js
+        // in this doc — executing the inlined copy again cost ~40ms before
+        // first paint. Ship it as inert text/plain (no compile) and eval only
+        // when the injection is missing (driver not bound yet, first launch).
         return html.Replace("</head>",
             "<script>window.__brainBoot=" + json +
             ";window.__brainPageAnim=" + (animate ? "true" : "false") +
             (animate ? ";document.documentElement.className+=' anim'" : "") + ";" +
             "try{window.__brainChrome&&__brainChrome.applyBoot()}catch(e){}</script>" +
-            "<script>" + lib + "</script></head>");
+            "<script type=\"text/plain\" id=\"__brainlib\">" + lib + "</script>" +
+            "<script>if(!window.__brainChrome){try{(0,eval)(document.getElementById('__brainlib').textContent)}catch(e){}}</script></head>");
     }
 
     private string? ConsumeFresh()
@@ -975,8 +1053,7 @@ public sealed class BrowserController : IAsyncDisposable
                 (_canBack, _canFwd) = await driver.GetNavStateAsync(CancellationToken.None);
                 if (!tab.IsPrivate) RecordHistory(tab.LastUrl, tab.LastIcon);
                 SaveSessionSoon();
-                var title = string.IsNullOrWhiteSpace(tab.LastTitle) ? "BrAIn" : tab.LastTitle + " — BrAIn";
-                InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.Title = title; });
+                if (Tabs.Active?.Id == tab.Id) SetWindowTitleFor(tab);
                 PushChromeStateAll();
             }
         }
@@ -1005,7 +1082,10 @@ public sealed class BrowserController : IAsyncDisposable
     public bool IsLoading => _loadDepth > 0;
     public (bool CanBack, bool CanFwd) NavState => (_canBack, _canFwd);
 
-    public async Task<IBrowserDriver> DriverOrThrowAsync(BrowserTab tab, CancellationToken ct)
+    /// <param name="materialize">A virtual (overlay) new tab gets its real
+    /// start-page document loaded first, so automation sees the page the
+    /// user sees rather than the document hidden underneath.</param>
+    public async Task<IBrowserDriver> DriverOrThrowAsync(BrowserTab tab, CancellationToken ct, bool materialize = true)
     {
         await _windowCreated.Task.WaitAsync(ct);
         if (tab.Driver is null)
@@ -1031,6 +1111,8 @@ public sealed class BrowserController : IAsyncDisposable
         // operation on a background tab activates it first (loads its URL).
         if (Tabs.Active?.Id != tab.Id && !tab.IsClosed)
             await ActivateWindowAsync(tab.Id.ToString("N")[..8], ct);
+        if (materialize && !tab.IsClosed && tab.Id != _docTabId && tab.LastUrl == "about:newtab")
+            await LoadInternalPageAsync(tab, "about:newtab");
         return tab.Driver;
     }
 

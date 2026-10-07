@@ -18,15 +18,17 @@
     overflow: hidden; position: relative;
   }
   /* ambient gradient orbs */
-  .orb { position: fixed; border-radius: 50%; filter: blur(90px); opacity: .5; pointer-events: none; }
-  .orb.a { width: 560px; height: 560px; top: -220px; left: -140px;
-    background: radial-gradient(circle, #4a3fb8, transparent 70%);
+  /* Pre-softened gradients instead of filter:blur(90px) — the blur made the
+     first raster of every new tab ~45ms slower for a near-identical look. */
+  .orb { position: fixed; border-radius: 50%; opacity: .5; pointer-events: none; will-change: transform; }
+  .orb.a { width: 760px; height: 760px; top: -320px; left: -240px;
+    background: radial-gradient(circle closest-side, rgba(74,63,184,.85), rgba(74,63,184,.32) 45%, rgba(74,63,184,0));
     animation: drift1 26s ease-in-out infinite alternate; }
-  .orb.b { width: 480px; height: 480px; bottom: -200px; right: -120px;
-    background: radial-gradient(circle, #1f7a68, transparent 70%);
+  .orb.b { width: 680px; height: 680px; bottom: -300px; right: -220px;
+    background: radial-gradient(circle closest-side, rgba(31,122,104,.85), rgba(31,122,104,.32) 45%, rgba(31,122,104,0));
     animation: drift2 30s ease-in-out infinite alternate; }
-  .orb.c { width: 300px; height: 300px; top: 40%; right: 22%;
-    background: radial-gradient(circle, #6d3fa0, transparent 70%); opacity: .28;
+  .orb.c { width: 480px; height: 480px; top: calc(40% - 90px); right: calc(22% - 90px);
+    background: radial-gradient(circle closest-side, rgba(109,63,160,.85), rgba(109,63,160,.3) 45%, rgba(109,63,160,0)); opacity: .28;
     animation: drift1 34s ease-in-out infinite alternate-reverse; }
   @keyframes drift1 { from { transform: translate(0,0) scale(1); } to { transform: translate(70px,40px) scale(1.12); } }
   @keyframes drift2 { from { transform: translate(0,0) scale(1.05); } to { transform: translate(-60px,-50px) scale(.95); } }
@@ -61,8 +63,7 @@
   form {
     display: flex; gap: 10px; width: min(640px, 86vw);
     padding: 8px; border-radius: 999px;
-    background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.08);
-    backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08);
     box-shadow: 0 12px 40px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.05);
     transition: border-color .2s, box-shadow .2s;
   }
@@ -94,7 +95,6 @@
     display: flex; align-items: center; gap: 10px; padding: 13px 14px; cursor: pointer;
     background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
     border-radius: 14px; color: #c5c5dd; font-size: 12.5px; font-weight: 500;
-    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
     transition: transform .15s, border-color .15s, background .15s, color .15s;
     overflow: hidden; white-space: nowrap;
   }
@@ -177,9 +177,15 @@
     var box = document.getElementById('recent');
     var tiles = document.getElementById('tiles');
     if (!hist || !hist.length) { box.style.display = 'none'; return; }
+    // one tile per site, single row (matches the in-chrome overlay)
+    var picks = [], seen = {};
+    for (var k = 0; k < hist.length && picks.length < 4; k++) {
+      var hu = typeof hist[k] === 'string' ? hist[k] : hist[k].u, hh = hostOf(hu);
+      if (hh && !seen[hh]) { seen[hh] = 1; picks.push(hist[k]); }
+    }
     var html = '';
-    for (var i = 0; i < hist.length && i < 8; i++) {
-      var it = hist[i];
+    for (var i = 0; i < picks.length; i++) {
+      var it = picks[i];
       var u = typeof it === 'string' ? it : it.u;
       var icon = typeof it === 'object' ? it.i : null;
       var h = hostOf(u);
@@ -204,8 +210,11 @@
   setTimeout(function () { if (window.__brainState) renderTiles(window.__brainState.hist); }, 900);
 
   // autofocus alone is flaky when the doc is injected via NavigateToString —
-  // focus the search box so typing starts immediately.
-  try { document.getElementById('q').focus(); } catch (e) { }
+  // focus the search box so typing starts immediately. Next frame, not
+  // mid-parse: a sync focus() forced a ~26ms layout before first paint.
+  requestAnimationFrame(function () {
+    try { document.getElementById('q').focus({ preventScroll: true }); } catch (e) { }
+  });
   window.addEventListener('load', function () {
     try { document.getElementById('q').focus(); } catch (e) { }
   });

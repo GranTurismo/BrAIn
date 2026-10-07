@@ -20,6 +20,10 @@
     var lastScrollReport = 0;
     state.bmarks = []; state.bm = false; state.zoom = 100; state.topmost = false;
     state.sess = 0; state.privActive = false;
+    state.ov = false;      // active tab is a blank new tab painted as an in-doc overlay
+    var ovPending = 0;     // optimistic overlay hold (ms deadline) — see holdOverlay()
+    var lastPushOv = false;
+    var ntpHistSig = '';
 
     var SVG = {
         back: '<svg viewBox="0 0 16 16"><path d="M10.5 3.5 6 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -45,6 +49,11 @@
     };
 
     function send(cmd) {
+        // Explicit tab moves supersede an optimistic overlay hold.
+        if (/^(switchtab|closetab):/.test(cmd)) ovPending = 0;
+        // Navigating away from the overlay: keep it up until the new document
+        // replaces this one — otherwise the hidden previous page flashes.
+        else if (state.ov && /^navigate:/.test(cmd)) holdOverlay(4000);
         try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
     }
 
@@ -232,12 +241,19 @@
             var anchor = prev ? prev.nextSibling : strip.firstChild;
             if (el !== anchor) strip.insertBefore(el, anchor); // move keeps the node
             if (fresh) {
-                // reveal the new tab at the strip's edge, like real browsers
-                var l = el.offsetLeft, r = l + el.offsetWidth;
-                if (r > strip.scrollLeft + strip.clientWidth)
-                    strip.scrollTo({ left: r - strip.clientWidth, behavior: 'smooth' });
-                else if (l < strip.scrollLeft)
-                    strip.scrollTo({ left: l, behavior: 'smooth' });
+                // reveal the new tab at the strip's edge, like real browsers —
+                // measured next frame: a sync offsetLeft read here forced a
+                // full-document layout (~30ms) before the first paint.
+                (function (e2) {
+                    requestAnimationFrame(function () {
+                        if (!e2.isConnected || strip.scrollWidth <= strip.clientWidth) return;
+                        var l = e2.offsetLeft, r = l + e2.offsetWidth;
+                        if (r > strip.scrollLeft + strip.clientWidth)
+                            strip.scrollTo({ left: r - strip.clientWidth, behavior: 'smooth' });
+                        else if (l < strip.scrollLeft)
+                            strip.scrollTo({ left: l, behavior: 'smooth' });
+                    });
+                })(el);
             }
             prev = el;
         }
@@ -288,7 +304,10 @@
         m.querySelectorAll('.mi').forEach(function (el) {
             el.addEventListener('mousedown', function (e) {
                 e.preventDefault(); e.stopPropagation();
-                send(el.getAttribute('data-c') + ':' + id);
+                var c = el.getAttribute('data-c');
+                // newprivtab takes a URL arg — never the tab id
+                if (c === 'newprivtab') openNewTab(true);
+                else send(c + ':' + id);
                 m.style.display = 'none';
             });
         });
@@ -386,7 +405,7 @@
         var lock = sh.getElementById('lock');
         if (!addr || editing) return;
         var url = location.href;
-        if (url === 'about:blank') {
+        if (url === 'about:blank' || state.ov) {
             addr.innerHTML = '<span class="dim">Search or type a URL</span>';
             if (lock) { lock.style.opacity = '0'; lock.title = ''; }
             return;
@@ -536,7 +555,8 @@
                 else if (c === 'copy') copyText((getSelection() || '').toString());
                 else if (c === 'vsrc') send('newtab:view-source:' + location.href);
                 else if (c === 'help') send('newtab:about:help');
-                else send(c); // back/forward/reload/newprivtab
+                else if (c === 'newprivtab') openNewTab(true);
+                else send(c); // back/forward/reload
             });
         });
         var off = function () {
@@ -724,11 +744,14 @@
     }
 
     function menuCmd(sh, c) {
+        // On the start-page overlay, page-scoped actions would hit the hidden document.
+        if (state.ov && (c === 'find' || c === 'print' || c === 'viewsource' || c === 'copyurl' || c === 'bm')) return;
         if (c === 'find') { openFind(sh); return; }
         if (c === 'print') { try { window.print(); } catch (e) { } return; }
         if (c === 'viewsource') { send('newtab:view-source:' + location.href); return; }
         if (c === 'help') { send('newtab:about:help'); return; }
-        if (c === 'newpriv') { send('newprivtab'); return; }
+        if (c === 'newpriv') { openNewTab(true); return; }
+        if (c === 'newtab') { openNewTab(false); return; }
         if (c === 'copyurl') { copyText(location.href); return; }
         if (c === 'restore') { send('restoresession'); return; }
         send(c);
@@ -765,7 +788,7 @@
     function updateStar(sh) {
         var s = sh.getElementById('star');
         if (!s) return;
-        var http = /^https?:/.test(location.href) && !state.privActive;
+        var http = /^https?:/.test(location.href) && !state.privActive && !state.ov;
         s.style.display = http ? 'grid' : 'none';
         s.innerHTML = state.bm ? SVG.starF : SVG.star;
         s.classList.toggle('yes', !!state.bm);
@@ -788,13 +811,13 @@
                 send('reopen'); // Ctrl+Shift+T reopens the last closed tab
             } else if (mod && e.shiftKey && (k === 'n' || k === 'N')) {
                 e.preventDefault(); e.stopPropagation();
-                send('newprivtab'); // Ctrl+Shift+N — incognito-style tab
+                openNewTab(true); // Ctrl+Shift+N — incognito-style tab
             } else if (mod && e.shiftKey && (k === 'c' || k === 'C')) {
                 e.preventDefault(); e.stopPropagation();
-                copyText(location.href); // Ctrl+Shift+C copies the page URL
+                if (!state.ov) copyText(location.href); // Ctrl+Shift+C copies the page URL
             } else if (mod && (k === 't' || k === 'T')) {
                 e.preventDefault(); e.stopPropagation();
-                send('newtab');
+                openNewTab(false);
             } else if (mod && (k === 'w' || k === 'W')) {
                 e.preventDefault(); e.stopPropagation();
                 var a = activeTab(); if (a) send('closetab:' + a.id);
@@ -806,13 +829,13 @@
                 send('bm');
             } else if (mod && (k === 'f' || k === 'F')) {
                 e.preventDefault(); e.stopPropagation();
-                openFind(sh);
+                if (!state.ov) openFind(sh); // nothing to find on the start page
             } else if (mod && (k === 'p' || k === 'P')) {
                 e.preventDefault(); e.stopPropagation();
-                try { window.print(); } catch (err) { }
+                if (!state.ov) { try { window.print(); } catch (err) { } }
             } else if (mod && (k === 'u' || k === 'U')) {
                 e.preventDefault(); e.stopPropagation();
-                send('newtab:view-source:' + location.href);
+                if (!state.ov) send('newtab:view-source:' + location.href);
             } else if (mod && (k === '=' || k === '+')) {
                 e.preventDefault(); e.stopPropagation();
                 send('zoomin');
@@ -897,10 +920,12 @@
         state.topmost = !!b.topmost;
         state.sess = b.sess || 0;
         state.privActive = !!b.privActive;
+        state.ov = lastPushOv = !!b.ov;
         window.__brainState = state;
         var s = sh0();
         if (s) {
             render(s);
+            syncNtp(s);
             updateStar(s);
             updateAddr(s);
             var om = s.getElementById('omni');
@@ -911,6 +936,127 @@
         setTimeout(function () {
             try { document.dispatchEvent(new CustomEvent('brain-state', { detail: state })); } catch (e) { }
         }, 0);
+    }
+
+    // ---------------- in-document new-tab page ----------------
+    // Blank new tabs don't load a document (each load cold-starts a renderer
+    // process, ~200ms of nothing then a jump). The host marks them virtual
+    // (state.ov) and we paint the start page over the current document.
+
+    // Keep the overlay up for `ms` regardless of pushes (optimistic open /
+    // pending navigation), then fall back to the host's latest word.
+    function holdOverlay(ms) {
+        ovPending = Date.now() + ms;
+        setTimeout(function () {
+            if (ovPending && Date.now() >= ovPending) {
+                ovPending = 0;
+                state.ov = lastPushOv;
+                var s = sh0(); if (s) { syncNtp(s); updateAddr(s); }
+            }
+        }, ms + 20);
+    }
+
+    // Ctrl+T / + / menu: show the start page in the same frame as the
+    // keypress; the host's push (pill + ov:true) lands ~10ms later.
+    function openNewTab(priv) {
+        var s = sh0();
+        if (s) {
+            if (findOpen) closeFind(s);
+            state.ov = true;
+            state.privActive = !!priv;
+            holdOverlay(700);
+            syncNtp(s);
+            updateAddr(s);
+            updateStar(s);
+            var om = s.getElementById('omni');
+            if (om) om.classList.toggle('priv', !!priv);
+        }
+        send(priv ? 'newprivtab' : 'newtab');
+    }
+
+    function ntpTick(sh) {
+        var d = new Date(), hh = d.getHours(), mm = d.getMinutes();
+        var ck = sh.getElementById('ntpck'), dt = sh.getElementById('ntpdt');
+        if (ck) ck.textContent = (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
+        if (dt) dt.textContent = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+    }
+
+    function renderNtpTiles(sh) {
+        // One tile per site, one row — repeated hosts read as clutter and a
+        // second row collided with the bottom hint.
+        var picks = [], seenH = {};
+        (state.hist || []).forEach(function (it) {
+            var u = typeof it === 'string' ? it : it.u, h = hostOf(u);
+            if (picks.length < 4 && h && !seenH[h]) { seenH[h] = 1; picks.push({ u: u, i: typeof it === 'object' ? it.i : null, h: h }); }
+        });
+        var sig = picks.map(function (p) { return p.u + '|' + (p.i || ''); }).join(';');
+        if (sig === ntpHistSig) return;
+        ntpHistSig = sig;
+        var box = sh.getElementById('ntprc'), tl = sh.getElementById('ntptl');
+        if (!box || !tl) return;
+        var html = '';
+        for (var i = 0; i < picks.length; i++) {
+            var u = picks[i].u, icon = picks[i].i, h = picks[i].h;
+            html += '<div class="ti" data-u="' + esc(u) + '" title="' + esc(u) + '">' +
+                '<span class="ic" style="background:' + tabHue(h) + '">' + esc((h.charAt(0) || '?').toUpperCase()) +
+                (icon ? '<img src="' + esc(icon) + '" alt="" onerror="this.remove()">' : '') +
+                '</span><span>' + esc(h) + '</span></div>';
+        }
+        tl.innerHTML = html;
+        box.classList.toggle('has', !!html);
+    }
+
+    function syncNtp(sh) {
+        var n = sh.getElementById('ntp');
+        if (!n) return;
+        // A real start-page document already shows this exact UI.
+        var on = !!state.ov && !window.__brainNewTab;
+        var was = n.classList.contains('on');
+        n.classList.toggle('priv', !!state.privActive);
+        if (on) renderNtpTiles(sh);
+        if (on === was) return;
+        n.classList.toggle('on', on);
+        // Fixed overlays don't cover the viewport scrollbar — hide the hidden
+        // page's (also blocks keyboard-scrolling it). Scroll offset survives.
+        try {
+            var de = document.documentElement;
+            if (on) de.style.setProperty('overflow', 'hidden', 'important');
+            else de.style.removeProperty('overflow');
+        } catch (e) { }
+        var q = sh.getElementById('ntpq');
+        if (on) {
+            ntpTick(sh);
+            if (q) { q.value = ''; try { q.focus({ preventScroll: true }); } catch (e) { } }
+        } else if (q) {
+            try { q.blur(); } catch (e) { }
+        }
+    }
+
+    function wireNtp(sh) {
+        var n = sh.getElementById('ntp');
+        var q = sh.getElementById('ntpq');
+        sh.getElementById('ntpf').addEventListener('submit', function (e) {
+            e.preventDefault();
+            var v = q.value.trim();
+            if (v) send('navigate:' + v);
+        });
+        sh.getElementById('ntphp').addEventListener('click', function () { send('navigate:about:help'); });
+        sh.getElementById('ntptl').addEventListener('click', function (e) {
+            var t = e.target.closest && e.target.closest('.ti');
+            if (t) send('navigate:' + t.getAttribute('data-u'));
+        });
+        // The overlay sits on top of a live page — keystrokes/clicks/wheel
+        // must not reach that page's handlers (e.g. YouTube 'k' = pause).
+        // Our own shortcuts run in window capture phase, before this.
+        ['keydown', 'keyup', 'keypress', 'mousedown', 'mouseup', 'click', 'dblclick',
+            'input', 'paste', 'copy', 'cut', 'pointerdown', 'pointerup'].forEach(function (ev) {
+            n.addEventListener(ev, function (e) { e.stopPropagation(); });
+        });
+        n.addEventListener('wheel', function (e) { e.preventDefault(); e.stopPropagation(); }, { passive: false });
+        n.addEventListener('contextmenu', function (e) {
+            e.stopPropagation();
+            if (e.target !== q) e.preventDefault();
+        });
     }
 
     // ---------------- mount ----------------
@@ -930,10 +1076,11 @@
         sh.innerHTML =
             '<style>' +
             ':host{all:initial}* {box-sizing:border-box;margin:0;padding:0}' +
-            '.bar{position:fixed;top:0;left:0;right:0;height:46px;display:flex;align-items:center;gap:10px;' +
+            '.bar{position:fixed;top:0;left:0;right:0;height:46px;display:flex;align-items:center;gap:10px;z-index:10;' +
             'padding:0 12px;' +
-            'background:linear-gradient(180deg,rgba(23,23,36,.94),rgba(15,15,25,.92));' +
-            'backdrop-filter:blur(22px) saturate(1.6);-webkit-backdrop-filter:blur(22px) saturate(1.6);' +
+            // near-opaque: a backdrop blur here was invisible yet re-rastered
+            // on every document's first frame
+            'background:linear-gradient(180deg,rgba(23,23,36,.985),rgba(15,15,25,.98));' +
             'border-bottom:1px solid rgba(255,255,255,.07);' +
             'box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 8px 28px rgba(0,0,0,.4);' +
             'font:12px/1.45 "Segoe UI Variable Text",system-ui,-apple-system,"Segoe UI",sans-serif;color:#c9c9dc;' +
@@ -1096,6 +1243,71 @@
             '.brand:hover{filter:brightness(1.25)}' +
             '.brand svg{width:14px;height:14px;color:#9c9cff;transition:transform .4s cubic-bezier(.16,1,.3,1)}' +
             '.brand:hover svg{transform:rotate(180deg)}' +
+            // ---- in-document new-tab page (virtual blank tabs) ----
+            // Same look as newtab.html; top:46 + height:100vh centers content
+            // exactly like the real start-page document, so the two are
+            // interchangeable without a visible jump.
+            '#ntp{position:fixed;left:0;right:0;top:46px;height:100vh;display:none;z-index:5;overflow:hidden;' +
+            'flex-direction:column;align-items:center;justify-content:center;background:#0b0b13;color:#e8e8f0;' +
+            'font:13px/1.45 "Segoe UI Variable Text",system-ui,-apple-system,"Segoe UI",sans-serif;' +
+            'user-select:none;-webkit-user-select:none;cursor:default;animation:ntpin .14s ease-out}' +
+            '#ntp.on{display:flex}' +
+            '@keyframes ntpin{from{opacity:0}to{opacity:1}}' +
+            '#ntp .orb{position:absolute;border-radius:50%;opacity:.5;pointer-events:none;will-change:transform}' +
+            '#ntp .oa{width:760px;height:760px;top:-366px;left:-240px;' +
+            'background:radial-gradient(circle closest-side,rgba(74,63,184,.85),rgba(74,63,184,.32) 45%,rgba(74,63,184,0));' +
+            'animation:drift1 26s ease-in-out infinite alternate}' +
+            '#ntp .ob{width:680px;height:680px;bottom:-254px;right:-220px;' +
+            'background:radial-gradient(circle closest-side,rgba(31,122,104,.85),rgba(31,122,104,.32) 45%,rgba(31,122,104,0));' +
+            'animation:drift2 30s ease-in-out infinite alternate}' +
+            '#ntp .oc{width:480px;height:480px;top:calc(40% - 136px);right:calc(22% - 90px);opacity:.28;' +
+            'background:radial-gradient(circle closest-side,rgba(109,63,160,.85),rgba(109,63,160,.3) 45%,rgba(109,63,160,0));' +
+            'animation:drift1 34s ease-in-out infinite alternate-reverse}' +
+            '#ntp.priv .ob{background:radial-gradient(circle closest-side,rgba(124,60,200,.85),rgba(124,60,200,.32) 45%,rgba(124,60,200,0))}' +
+            '@keyframes drift1{from{transform:translate(0,0) scale(1)}to{transform:translate(70px,40px) scale(1.12)}}' +
+            '@keyframes drift2{from{transform:translate(0,0) scale(1.05)}to{transform:translate(-60px,-50px) scale(.95)}}' +
+            '#ntp>*:not(.orb){position:relative}' +
+            '#ntp .ck{font-size:64px;font-weight:200;letter-spacing:1px;color:#f2f2fc;font-variant-numeric:tabular-nums;line-height:1;margin-bottom:4px}' +
+            '#ntp .dt{font-size:13px;color:#7a7a96;margin-bottom:42px;letter-spacing:.3px}' +
+            '#ntp .lg{font-size:52px;font-weight:800;letter-spacing:2px;margin-bottom:8px;line-height:1.45;' +
+            'background:linear-gradient(120deg,#9c9cff,#4ec9b0);-webkit-background-clip:text;background-clip:text;color:transparent}' +
+            '#ntp .tg{color:#8a8aa0;margin-bottom:38px;font-size:14px}' +
+            '#ntp .tg b{color:#4ec9b0;font-weight:600}' +
+            '#ntp .pv{display:none;margin:-26px 0 26px;padding:5px 14px;border-radius:999px;font-size:12px;font-weight:600;' +
+            'color:#c9b8ff;background:rgba(124,92,255,.14);border:1px solid rgba(140,110,255,.3);align-items:center;gap:7px}' +
+            '#ntp .pv svg{width:14px;height:14px}' +
+            '#ntp.priv .pv{display:inline-flex}' +
+            '#ntp form{display:flex;gap:10px;width:min(640px,86vw);padding:8px;border-radius:999px;' +
+            'background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);' +
+            'box-shadow:0 12px 40px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.05);transition:border-color .2s,box-shadow .2s}' +
+            '#ntp form:focus-within{border-color:rgba(124,124,255,.45);' +
+            'box-shadow:0 12px 40px rgba(0,0,0,.35),0 0 0 4px rgba(124,124,255,.12),inset 0 1px 0 rgba(255,255,255,.05)}' +
+            '#ntp input{flex:1;padding:13px 18px;border:none;outline:none;background:transparent;color:#eeeefc;' +
+            'font:15px "Segoe UI Variable Text",system-ui,sans-serif;user-select:text;-webkit-user-select:text}' +
+            '#ntp input::placeholder{color:#5e5e78}' +
+            '#ntp button{padding:12px 26px;border-radius:999px;border:none;cursor:pointer;' +
+            'background:linear-gradient(120deg,#7c7cff,#6868f0);color:#fff;font:600 14px system-ui,sans-serif;letter-spacing:.2px;' +
+            'transition:filter .15s,transform .1s;box-shadow:0 4px 16px rgba(124,124,255,.35)}' +
+            '#ntp button:hover{filter:brightness(1.12)}#ntp button:active{transform:scale(.96)}' +
+            '#ntp .rc{display:none;margin-top:46px;width:min(700px,88vw)}' +
+            '#ntp .rc.has{display:block}' +
+            '#ntp .rc h2{font-size:11px;font-weight:600;letter-spacing:1.4px;text-transform:uppercase;color:#5f5f7c;margin-bottom:14px;text-align:center}' +
+            '#ntp .tl{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}' +
+            '#ntp .ti{display:flex;align-items:center;gap:10px;padding:13px 14px;cursor:pointer;overflow:hidden;white-space:nowrap;' +
+            'background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:14px;color:#c5c5dd;' +
+            'font-size:12.5px;font-weight:500;transition:transform .15s,border-color .15s,background .15s,color .15s}' +
+            '#ntp .ti:hover{transform:translateY(-2px);background:rgba(255,255,255,.07);border-color:rgba(124,124,255,.4);' +
+            'color:#f0f0fc;box-shadow:0 8px 24px rgba(0,0,0,.3)}' +
+            '#ntp .ic{width:26px;height:26px;flex:none;border-radius:8px;display:grid;place-items:center;font-size:12px;' +
+            'font-weight:700;color:#fff;position:relative;box-shadow:inset 0 1px 0 rgba(255,255,255,.18)}' +
+            '#ntp .ic img{position:absolute;inset:4px;width:18px;height:18px;border-radius:5px}' +
+            '#ntp .ti>span:last-child{overflow:hidden;text-overflow:ellipsis}' +
+            '#ntp .hn{position:absolute;bottom:72px;color:#4c4c62;font-size:12.5px;max-width:620px;text-align:center;line-height:1.7;padding:0 20px}' +
+            '#ntp .hn code{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:1px 7px;color:#9a9ab8;font-size:12px}' +
+            '#ntp .hp{display:inline-block;margin-top:8px;padding:6px 16px;cursor:pointer;border-radius:999px;' +
+            'border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.05);color:#8f8fb0;font-size:12px;font-weight:600;' +
+            'transition:background .15s,color .15s,border-color .15s}' +
+            '#ntp .hp:hover{background:rgba(124,124,255,.12);border-color:rgba(124,124,255,.35);color:#c9c9ff}' +
             '</style>' +
             '<div class="bar">' +
             '<div class="nav">' +
@@ -1122,13 +1334,25 @@
             '<span id="fcnt"></span>' +
             '<button class="fb" data-f="-1" title="Previous (Shift+Enter)">' + SVG.up + '</button>' +
             '<button class="fb" data-f="1" title="Next (Enter)">' + SVG.dn + '</button>' +
-            '<button class="fb" id="fclose" title="Close (Esc)">' + SVG.close + '</button></div>';
+            '<button class="fb" id="fclose" title="Close (Esc)">' + SVG.close + '</button></div>' +
+            '<div id="ntp"><div class="orb oa"></div><div class="orb ob"></div><div class="orb oc"></div>' +
+            '<div class="ck" id="ntpck"></div><div class="dt" id="ntpdt"></div>' +
+            '<div class="lg">BrAIn</div>' +
+            '<div class="tg">A browser your <b>AI</b> can drive &mdash; MCP server built in</div>' +
+            '<div class="pv">' + SVG.mask + 'Private tab &mdash; no history, site data wiped on close</div>' +
+            '<form id="ntpf"><input id="ntpq" placeholder="Search Google or type a URL" autocomplete="off" spellcheck="false">' +
+            '<button type="submit">Go</button></form>' +
+            '<div class="rc" id="ntprc"><h2>Recent</h2><div class="tl" id="ntptl"></div></div>' +
+            '<div class="hn">Connect an MCP client to this process over <code>stdio</code> and the agent ' +
+            'can navigate, click, type, snapshot and screenshot this browser.<br>' +
+            '<span class="hp" id="ntphp">How to use &rarr;</span></div></div>';
 
         sh.querySelector('.nav').addEventListener('click', function (e) {
             var b = e.target.closest('button');
             if (b && b.getAttribute('data-cmd')) send(b.getAttribute('data-cmd'));
         });
-        sh.getElementById('newtab').addEventListener('click', function () { send('newtab'); });
+        sh.getElementById('newtab').addEventListener('click', function () { openNewTab(false); });
+        wireNtp(sh);
         sh.getElementById('mbtn').addEventListener('click', function (e) {
             e.stopPropagation();
             showMenu(sh);
@@ -1227,12 +1451,18 @@
             // Embedded __brainBoot (internal pages) lands during head parse —
             // retry at DOMContentLoaded in case the 0ms timer beat it.
             document.addEventListener('DOMContentLoaded', applyBoot);
-            // Keep the omnibox in sync with in-page (SPA) navigation.
-            setInterval(function () { var s = sh0(); if (s) updateAddr(s); }, 1000);
+            // Keep the omnibox in sync with in-page (SPA) navigation; tick the
+            // start-page clock while the overlay is up.
+            setInterval(function () {
+                var s = sh0(); if (!s) return;
+                updateAddr(s);
+                if (state.ov) ntpTick(s);
+            }, 1000);
         }
         wireStripDnd(sh); // strip node is recreated each mount
         lastSig = '';     // force a fresh strip render for the new shadow
         tabEls = {};      // new shadow — the old tab elements are gone
+        ntpHistSig = '';  // ...and so are the overlay tiles
         firstRender = true;
         editing = false; dirty = false; dropIdx = -1; // remount kills the old omnibox
 
@@ -1258,9 +1488,18 @@
                         state.zoom = j.zoom || 100;
                         state.topmost = !!j.topmost;
                         state.sess = j.sess || 0;
-                        state.privActive = !!j.privActive;
+                        lastPushOv = !!j.ov;
+                        // An optimistic/pending overlay holds until the
+                        // host confirms or the hold expires.
+                        if (lastPushOv) ovPending = 0;
+                        if (lastPushOv || !(ovPending > Date.now())) {
+                            state.ov = lastPushOv;
+                            state.privActive = !!j.privActive;
+                        }
                         window.__brainState = state;
                         render(sh);
+                        syncNtp(sh);
+                        updateAddr(sh);
                         updateStar(sh);
                         var om = sh.getElementById('omni');
                         if (om) om.classList.toggle('priv', !!state.privActive);
@@ -1277,6 +1516,7 @@
         // same task as mount, so an empty strip can never reach a paint.
         applyBoot();
         render(sh);
+        syncNtp(sh);
         updateAddr(sh);
         send('tabs');
         // Retry deferred: covers a late-arriving embedded payload.
