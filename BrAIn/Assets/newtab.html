@@ -173,6 +173,7 @@
     for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
     return 'hsl(' + (((h % 360) + 360) % 360) + ' 60% 50%)';
   }
+  var tilesSig = null;
   function renderTiles(hist) {
     var box = document.getElementById('recent');
     var tiles = document.getElementById('tiles');
@@ -183,6 +184,11 @@
       var hu = typeof hist[k] === 'string' ? hist[k] : hist[k].u, hh = hostOf(hu);
       if (hh && !seen[hh]) { seen[hh] = 1; picks.push(hist[k]); }
     }
+    // State pushes arrive on every tab open/close — rebuilding identical
+    // tiles re-played their entrance animation each time.
+    var sig = picks.map(function (p) { return typeof p === 'string' ? p : p.u + '|' + (p.i || ''); }).join(';');
+    if (sig === tilesSig) return;
+    tilesSig = sig;
     var html = '';
     for (var i = 0; i < picks.length; i++) {
       var it = picks[i];
@@ -208,6 +214,9 @@
   });
   if (window.__brainState) renderTiles(window.__brainState.hist);
   setTimeout(function () { if (window.__brainState) renderTiles(window.__brainState.hist); }, 900);
+  // The launch entrance is one-shot: once played, later content changes on
+  // this long-lived first page must not animate again.
+  setTimeout(function () { document.documentElement.classList.remove('anim'); }, 1600);
 
   // autofocus alone is flaky when the doc is injected via NavigateToString —
   // focus the search box so typing starts immediately. Next frame, not

@@ -107,6 +107,10 @@ public sealed class BrowserTabRegistry
     public BrowserTab? Active =>
         _tabs.TryGetValue(_activeId, out var t) ? t : All.FirstOrDefault();
 
+    /// <summary>The explicitly activated tab — no first-tab fallback (that
+    /// fallback made a just-closed active tab look like tab 0 was active).</summary>
+    public BrowserTab? ActiveExact => _tabs.TryGetValue(_activeId, out var t) ? t : null;
+
     public BrowserTab? Main => _tabs.Values.FirstOrDefault(t => t.IsMain);
 
     /// <summary>New tabs slot in right after the active one, like a real browser.</summary>

@@ -535,7 +535,7 @@ public sealed class BrowserController : IAsyncDisposable
     {
         var tab = Tabs.FindByPrefix(idOrPrefix) ?? throw new InvalidOperationException($"No such tab '{idOrPrefix}'");
         if (tab.IsClosed) throw new InvalidOperationException("Tab is closed");
-        if (Tabs.Active?.Id != tab.Id)
+        if (Tabs.ActiveExact?.Id != tab.Id)
         {
             Tabs.Activate(tab.Id);
             await RaiseWindowAsync(tab, ct);
@@ -578,16 +578,21 @@ public sealed class BrowserController : IAsyncDisposable
             try { InvokeOnUi(() => _mainWindow?.Close()); } catch { }
             return true;
         }
-        PushChromeStateAll();
         if (wasActive)
         {
             // Activate the tab that slid into the closed slot (right neighbor),
-            // or the new last tab when closing the rightmost one.
+            // or the new last tab when closing the rightmost one. No push
+            // before this: an intermediate state would show tab 0 as active
+            // (registry fallback) and drop the new-tab overlay for a frame.
             var next = remaining[Math.Clamp(idx, 0, remaining.Count - 1)];
-            await ActivateWindowAsync(next.Id.ToString("N")[..8], ct);
+            await ActivateWindowAsync(next.Id.ToString("N")[..8], ct); // pushes once
         }
-        else if (closedDoc && Tabs.Active is { } act && act.LastUrl == "about:newtab")
-            await LoadInternalPageAsync(act, "about:newtab"); // unload the hidden page
+        else
+        {
+            PushChromeStateAll();
+            if (closedDoc && Tabs.Active is { } act && act.LastUrl == "about:newtab")
+                await LoadInternalPageAsync(act, "about:newtab"); // unload the hidden page
+        }
         return true;
     }
 
@@ -919,6 +924,9 @@ public sealed class BrowserController : IAsyncDisposable
             active = t.Id == activeId,
             priv = t.IsPrivate,
             pin = t.IsPinned,
+            // owns the live document — lets chrome.js predict whether a
+            // switch is instant (doc/overlay) or a navigation
+            doc = t.Id == _docTabId,
         }).ToList();
         object[] hist;
         lock (_history)

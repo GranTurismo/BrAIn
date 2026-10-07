@@ -49,12 +49,83 @@
     };
 
     function send(cmd) {
-        // Explicit tab moves supersede an optimistic overlay hold.
-        if (/^(switchtab|closetab):/.test(cmd)) ovPending = 0;
         // Navigating away from the overlay: keep it up until the new document
         // replaces this one — otherwise the hidden previous page flashes.
-        else if (state.ov && /^navigate:/.test(cmd)) holdOverlay(4000);
+        if (state.ov && /^navigate:/.test(cmd)) holdOverlay(4000);
         try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
+    }
+
+    // ---------------- optimistic close / switch ----------------
+    // Applied locally in the click's frame (same neighbor rule as the host),
+    // then confirmed by the host push. Stale pushes in between must not
+    // resurrect a closed tab or flip the active pill back.
+    var pendClose = {};   // id -> deadline
+    var pendAct = null;   // { id, until }
+
+    function predictActivate(next) {
+        for (var i = 0; i < state.tabs.length; i++) state.tabs[i].active = state.tabs[i] === next;
+        pendAct = { id: next.id, until: Date.now() + 900 };
+        state.privActive = !!next.priv;
+        if (next.doc) { ovPending = 0; state.ov = false; }            // its page is right underneath
+        else if (next.url === 'about:newtab') { state.ov = true; holdOverlay(700); }
+        else if (state.ov) holdOverlay(4000); // will navigate — keep the start page until the new doc lands
+        var s = sh0();
+        if (!s) return;
+        render(s); syncNtp(s); updateAddr(s); updateStar(s);
+        var om = s.getElementById('omni');
+        if (om) om.classList.toggle('priv', !!state.privActive);
+    }
+
+    function findTab(id) {
+        for (var i = 0; i < state.tabs.length; i++) if (state.tabs[i].id === id) return i;
+        return -1;
+    }
+
+    function switchTabLocal(id) {
+        var i = findTab(id);
+        if (i >= 0 && !state.tabs[i].active) predictActivate(state.tabs[i]);
+        send('switchtab:' + id);
+    }
+
+    function closeTabLocal(id) {
+        var i = findTab(id);
+        if (i < 0) { send('closetab:' + id); return; }
+        var t = state.tabs[i];
+        if (t.pin) return;
+        if (state.tabs.length > 1) {
+            pendClose[id] = Date.now() + 1500;
+            state.tabs = state.tabs.slice(0, i).concat(state.tabs.slice(i + 1));
+            if (t.active) predictActivate(state.tabs[Math.min(i, state.tabs.length - 1)]);
+            else {
+                if (t.doc && state.ov) holdOverlay(4000); // host unloads the covered page
+                var s = sh0(); if (s) render(s);
+            }
+        }
+        send('closetab:' + id);
+    }
+
+    // Filters a host push through pending local actions. Returns true when
+    // the push's active tab was overridden (its ov/priv are then stale too).
+    function reconcilePending(tabs) {
+        var now = Date.now(), overridden = false;
+        for (var id in pendClose) {
+            var still = false;
+            for (var k = 0; k < tabs.length; k++) if (tabs[k].id === id) still = true;
+            if (!still || pendClose[id] < now) delete pendClose[id];
+        }
+        var out = tabs.filter(function (t) { return !pendClose[t.id]; });
+        if (pendAct && pendAct.until > now) {
+            var hit = null;
+            for (var j = 0; j < out.length; j++) if (out[j].id === pendAct.id) hit = out[j];
+            if (!hit) pendAct = null;
+            else if (hit.active) pendAct = null; // host confirmed
+            else {
+                for (var m = 0; m < out.length; m++) out[m].active = out[m] === hit;
+                overridden = true;
+            }
+        } else pendAct = null;
+        state.tabs = out;
+        return overridden;
     }
 
     // The bar overlays the top of the viewport; push the document down 46px so
@@ -140,13 +211,13 @@
         el.draggable = true;
         el.addEventListener('click', function (e) {
             var x = e.target.closest && e.target.closest('.x');
-            if (x) { if (!el._pin) send('closetab:' + el.getAttribute('data-id')); e.stopPropagation(); return; }
-            send('switchtab:' + el.getAttribute('data-id'));
+            if (x) { if (!el._pin) closeTabLocal(el.getAttribute('data-id')); e.stopPropagation(); return; }
+            switchTabLocal(el.getAttribute('data-id'));
         });
         el.addEventListener('auxclick', function (e) {
             if (e.button === 1 && !el._pin) { // middle-click closes the tab
                 e.preventDefault();
-                send('closetab:' + el.getAttribute('data-id'));
+                closeTabLocal(el.getAttribute('data-id'));
             }
         });
         el.addEventListener('contextmenu', function (e) {
@@ -307,6 +378,7 @@
                 var c = el.getAttribute('data-c');
                 // newprivtab takes a URL arg — never the tab id
                 if (c === 'newprivtab') openNewTab(true);
+                else if (c === 'closetab') closeTabLocal(id);
                 else send(c + ':' + id);
                 m.style.display = 'none';
             });
@@ -820,7 +892,7 @@
                 openNewTab(false);
             } else if (mod && (k === 'w' || k === 'W')) {
                 e.preventDefault(); e.stopPropagation();
-                var a = activeTab(); if (a) send('closetab:' + a.id);
+                var a = activeTab(); if (a) closeTabLocal(a.id);
             } else if (mod && (k === 'r' || k === 'R')) {
                 e.preventDefault(); e.stopPropagation();
                 send('reload');
@@ -849,7 +921,7 @@
                 e.preventDefault(); e.stopPropagation();
                 var ti = k === '9' ? state.tabs.length - 1 : (+k) - 1;
                 var tt = state.tabs[ti];
-                if (tt) send('switchtab:' + tt.id);
+                if (tt) switchTabLocal(tt.id);
             } else if (e.key === 'F5') {
                 e.preventDefault(); e.stopPropagation();
                 send('reload');
@@ -887,7 +959,7 @@
         var idx = 0;
         for (var i = 0; i < n; i++) if (state.tabs[i].active) { idx = i; break; }
         var next = state.tabs[(idx + dir + n) % n];
-        if (next) send('switchtab:' + next.id);
+        if (next) switchTabLocal(next.id);
     }
 
     // Applies window.__brainBoot (baked in by the host before first paint)
@@ -1477,7 +1549,7 @@
                     applyBoot();
                     var j = JSON.parse(m);
                     if (j && j.b === 9 && Array.isArray(j.tabs)) {
-                        state.tabs = j.tabs;
+                        var stale = reconcilePending(j.tabs); // sets state.tabs
                         state.loading = !!j.loading;
                         markLoading();
                         state.canBack = j.canBack !== false;
@@ -1490,9 +1562,10 @@
                         state.sess = j.sess || 0;
                         lastPushOv = !!j.ov;
                         // An optimistic/pending overlay holds until the
-                        // host confirms or the hold expires.
-                        if (lastPushOv) ovPending = 0;
-                        if (lastPushOv || !(ovPending > Date.now())) {
+                        // host confirms or the hold expires. A push that
+                        // predates a local switch carries the old tab's ov.
+                        if (lastPushOv && !stale) ovPending = 0;
+                        if (!stale && (lastPushOv || !(ovPending > Date.now()))) {
                             state.ov = lastPushOv;
                             state.privActive = !!j.privActive;
                         }
