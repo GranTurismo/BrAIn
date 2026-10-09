@@ -1,4 +1,4 @@
-﻿using BrAIn.Browser;
+using BrAIn.Browser;
 using BrAIn.Mcp;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -51,21 +51,25 @@ public static class Program
             DisableDefaults = true,
         });
         builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
-        builder.Logging.SetMinimumLevel(LogLevel.Information);
+        builder.Logging.SetMinimumLevel(args.Contains("--verbose") ? LogLevel.Information : LogLevel.Warning);
         builder.Services.AddSingleton(controller);
         builder.Services.AddSingleton(controller.Tabs);
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
-            .WithToolsFromAssembly(typeof(Program).Assembly);
+            .WithTools<BrowserTools>();
 
         var host = builder.Build();
 
         // stdio MCP servers exit when the client closes stdin — the transport
         // stops the host, and we close the windows so the process doesn't
-        // linger as a zombie with no server attached.
-        host.Services.GetRequiredService<IHostApplicationLifetime>()
-            .ApplicationStopped.Register(controller.CloseAllWindows);
+        // linger as a zombie with no server attached. But only when stdin is
+        // actually a client pipe: Finder/Dock launches hand us /dev/null (a
+        // character device), which EOFs instantly and would otherwise kill
+        // the window the moment the app opens.
+        if (StdinIsClientPipe())
+            host.Services.GetRequiredService<IHostApplicationLifetime>()
+                .ApplicationStopped.Register(controller.CloseAllWindows);
 
         var hostTask = Task.Run(() => host.RunAsync());
 
@@ -89,4 +93,37 @@ public static class Program
         }
         return exitCode;
     }
+
+    /// <summary>
+    /// True when stdin is a pipe/socket — i.e. an MCP client spawned us and
+    /// its disconnect should end the process. Character devices (/dev/null on
+    /// Finder launch, a TTY on terminal launch) and unreadable stdin mean
+    /// "standalone": the window outlives stdin.
+    /// </summary>
+    private static bool StdinIsClientPipe()
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                // FILE_TYPE_PIPE; consoles and NUL report FILE_TYPE_CHAR.
+                return GetFileType(GetStdHandle(-10)) == 3;
+            }
+            var buf = new byte[256];
+            if (fstat(0, buf) != 0) return true; // can't tell → assume client
+            // struct stat: st_mode is a uint16 at offset 4 (st_dev then mode).
+            var fmt = BitConverter.ToUInt16(buf, 4) & 0xF000;
+            return fmt is 0x1000 or 0xC000; // S_IFIFO | S_IFSOCK
+        }
+        catch { return true; }
+    }
+
+    [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+    private static extern int fstat(int fd, [System.Runtime.InteropServices.Out] byte[] buf);
+
+    [System.Runtime.InteropServices.DllImport("kernel32")]
+    private static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [System.Runtime.InteropServices.DllImport("kernel32")]
+    private static extern uint GetFileType(IntPtr hFile);
 }

@@ -10,104 +10,75 @@
   window.__brainHelp = 1;
 </script>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    min-height: 100vh; background: #0b0b13; color: #e8e8f0;
-    font-family: "Segoe UI Variable Text", system-ui, -apple-system, "Segoe UI", sans-serif;
-    position: relative; padding: 96px 24px 80px;
-  }
-  /* pre-softened gradients — filter:blur was a costly first raster */
-  .orb { position: fixed; border-radius: 50%; opacity: .45; pointer-events: none; }
-  .orb.a { width: 720px; height: 720px; top: -300px; left: -240px;
-    background: radial-gradient(circle closest-side, rgba(74,63,184,.85), rgba(74,63,184,.32) 45%, rgba(74,63,184,0)); }
-  .orb.b { width: 640px; height: 640px; bottom: -280px; right: -220px;
-    background: radial-gradient(circle closest-side, rgba(31,122,104,.85), rgba(31,122,104,.32) 45%, rgba(31,122,104,0)); }
+/*@THEME*/
+  body { padding: 96px 24px 90px; }
+  .wrap { max-width: 780px; }
+  .logo { font-size: 46px; margin-bottom: 8px; }
+  .sub { font-size: 15.5px; margin-bottom: 44px; max-width: 640px; }
 
-  /* staggered entrance */
-  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
-  /* Entrance only on first launch — tab opens paint instantly (no replay). */
-  html.anim .wrap > * { animation: rise .6s cubic-bezier(.16,1,.3,1) both; }
+  h2 { margin: 42px 0 16px; }
 
-  .wrap { max-width: 760px; margin: 0 auto; position: relative; }
-  .logo {
-    font-size: 44px; font-weight: 800; letter-spacing: 2px; margin-bottom: 6px;
-    background: linear-gradient(120deg, #9c9cff, #4ec9b0);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-  .sub { color: #8a8aa0; font-size: 15px; margin-bottom: 40px; line-height: 1.6; }
-  .sub b { color: #4ec9b0; font-weight: 600; }
-
-  h2 {
-    font-size: 11px; font-weight: 600; letter-spacing: 1.6px; text-transform: uppercase;
-    color: #5f5f7c; margin: 38px 0 14px; display: flex; align-items: center; gap: 12px;
-  }
-  h2::after { content: ""; flex: 1; height: 1px; background: rgba(255,255,255,.07); }
-
-  .card {
-    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
-    border-radius: 16px; padding: 20px 22px;
-    box-shadow: 0 10px 34px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.05);
-    margin-bottom: 14px;
-  }
-  .card p { color: #b9b9cf; font-size: 14px; line-height: 1.75; }
+  .card { padding: 22px 24px; margin-bottom: 14px; }
+  .card p { color: #b6b6cc; font-size: 14px; line-height: 1.75; }
   .card p + p { margin-top: 10px; }
-  .card b { color: #ececfd; font-weight: 600; }
-  .card code, .keys code {
-    background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.09);
-    border-radius: 6px; padding: 1px 7px; color: #9a9ab8; font-size: 12.5px;
-    font-family: "Cascadia Code", Consolas, monospace; white-space: nowrap;
-  }
+  .card b { color: #f0f0fd; font-weight: 600; }
+  .keys code { white-space: nowrap; }
+  .card code { white-space: normal; overflow-wrap: anywhere; }
 
   /* config snippet */
   .cfg {
     position: relative; margin-top: 14px;
-    background: #0d0d17; border: 1px solid rgba(255,255,255,.09); border-radius: 12px;
-    padding: 16px 18px; overflow-x: auto;
+    background: #0a0a13; border: 1px solid rgba(255,255,255,.08); border-radius: 14px;
+    padding: 18px 20px; overflow-x: auto; box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
   }
-  .cfg pre {
-    font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px;
-    line-height: 1.7; color: #a8e6d4; white-space: pre;
-  }
-  .cfg .k { color: #9c9cff; } .cfg .s { color: #e6c78a; }
+  .cfg pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.75; color: #a8e6d4; white-space: pre; }
+  .cfg .k { color: var(--ac); } .cfg .s { color: #e6c78a; }
   .copy {
-    position: absolute; top: 10px; right: 10px;
-    padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,.1);
-    background: rgba(255,255,255,.06); color: #b9b9cf; font-size: 11.5px;
-    font-weight: 600; cursor: pointer; font-family: inherit;
+    position: absolute; top: 12px; right: 12px;
+    padding: 6px 14px; border-radius: 9px; border: 1px solid rgba(255,255,255,.1);
+    background: rgba(255,255,255,.06); color: #b9b9cf; font: 600 11.5px var(--font); cursor: pointer;
     transition: background .15s, color .15s;
   }
-  .copy:hover { background: rgba(255,255,255,.11); color: #fff; }
+  .copy:hover { background: rgba(255,255,255,.12); color: #fff; }
+
+  /* platform toggle */
+  .ptoggle { display: inline-flex; margin: 16px 0 -2px; border-radius: 12px; padding: 3px;
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); }
+  .ptoggle button {
+    padding: 7px 18px; border: 0; border-radius: 9px; background: transparent; color: var(--mut);
+    font: 600 12px var(--font); cursor: pointer; transition: all .15s;
+  }
+  .ptoggle button.on { background: hsl(var(--h) 100% 74% / .2); color: #ececff; }
+  .mac-note { font-size: 13px !important; color: #9a9ab8 !important; }
 
   /* shortcuts grid */
-  .keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 9px 22px; }
+  .keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 26px; }
   .keys .row { display: flex; align-items: center; justify-content: space-between; gap: 14px;
-    padding: 8px 2px; font-size: 13px; color: #b9b9cf; }
+    padding: 9px 2px; font-size: 13px; color: #b6b6cc; border-bottom: 1px solid rgba(255,255,255,.04); }
   .keys .row span:last-child { flex: none; }
 
   /* tool chips */
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
   .chip {
-    padding: 6px 13px; border-radius: 999px; font-size: 12px; color: #a8e6d4;
+    padding: 6px 13px; border-radius: 10px; font-size: 12px; color: #a8e6d4;
     background: rgba(78,201,176,.08); border: 1px solid rgba(78,201,176,.18);
-    font-family: "Cascadia Code", Consolas, monospace;
+    font-family: var(--mono);
   }
 
   .steps { counter-reset: s; }
-  .steps .st { display: flex; gap: 14px; padding: 8px 0; font-size: 14px; color: #b9b9cf; line-height: 1.6; }
+  .steps .st { display: flex; gap: 14px; padding: 9px 0; font-size: 14px; color: #b6b6cc; line-height: 1.6; }
   .steps .st::before {
     counter-increment: s; content: counter(s);
-    width: 24px; height: 24px; flex: none; border-radius: 50%;
-    background: linear-gradient(120deg, #7c7cff, #4ec9b0); color: #fff;
-    font-size: 12px; font-weight: 700; display: grid; place-items: center; margin-top: 1px;
+    width: 26px; height: 26px; flex: none; border-radius: 9px;
+    background: linear-gradient(130deg, hsl(var(--h) 80% 64%), hsl(calc(var(--h) - 72) 56% 52%)); color: #fff;
+    font-size: 12px; font-weight: 700; display: grid; place-items: center; margin-top: 0;
+    box-shadow: 0 6px 14px -4px hsl(var(--h) 90% 60% / .55), inset 0 1px 0 rgba(255,255,255,.25);
   }
 
-  .foot { margin-top: 44px; text-align: center; color: #4c4c62; font-size: 12.5px; line-height: 1.8; }
-  a { color: #9c9cff; text-decoration: none; }
-  a:hover { text-decoration: underline; }
+  .foot { margin-top: 48px; text-align: center; color: #50506a; font-size: 12.5px; line-height: 1.8; }
 </style>
 </head>
 <body>
-  <div class="orb a"></div><div class="orb b"></div>
   <div class="wrap">
     <div class="logo">BrAIn</div>
     <div class="sub">A browser your <b>AI</b> can drive. One process, a real desktop
@@ -123,10 +94,12 @@
 
     <h2>Keyboard shortcuts</h2>
     <div class="card keys">
+      <div class="row"><span>Command palette</span><code>Ctrl+K</code></div>
       <div class="row"><span>New tab</span><code>Ctrl+T</code></div>
       <div class="row"><span>New private tab</span><code>Ctrl+Shift+N</code></div>
       <div class="row"><span>Close tab</span><code>Ctrl+W</code></div>
       <div class="row"><span>Reopen closed tab</span><code>Ctrl+Shift+T</code></div>
+      <div class="row"><span>History</span><code>Ctrl+H</code></div>
       <div class="row"><span>Next / prev tab</span><code>Ctrl+Tab</code></div>
       <div class="row"><span>Jump to tab 1–9</span><code>Ctrl+1…9</code></div>
       <div class="row"><span>Address bar</span><code>Ctrl+L / F6</code></div>
@@ -136,6 +109,8 @@
       <div class="row"><span>Next / prev match</span><code>F3 / Shift+F3</code></div>
       <div class="row"><span>Bookmark page</span><code>Ctrl+D</code></div>
       <div class="row"><span>Copy link address</span><code>Ctrl+Shift+C</code></div>
+      <div class="row"><span>Picture-in-picture</span><code>Ctrl+Shift+P</code></div>
+      <div class="row"><span>Mute tab</span><code>click the tab's speaker</code></div>
       <div class="row"><span>Zoom in / out / reset</span><code>Ctrl + − 0</code></div>
       <div class="row"><span>Print</span><code>Ctrl+P</code></div>
       <div class="row"><span>View source</span><code>Ctrl+U</code></div>
@@ -147,15 +122,18 @@
     <h2>Connect an AI via MCP</h2>
     <div class="card">
       <p>BrAIn hosts an <b>MCP server over stdio</b> — the AI client launches
-        <code>BrAIn.exe</code> itself. Point your client's MCP config at the exe:</p>
+        it directly. Point your client's MCP config at the binary:</p>
       <div class="steps">
-        <div class="st">Open your client's MCP settings — Claude Desktop: <code>%APPDATA%\Claude\claude_desktop_config.json</code>, Cursor: <code>~/.cursor/mcp.json</code>.</div>
-        <div class="st">Add the <code>brain</code> server block shown below, with the path to your <code>BrAIn.exe</code>.</div>
+        <div class="st">Open your client's MCP settings — Claude Desktop: <code>%APPDATA%\Claude\claude_desktop_config.json</code> (Win) / <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> (mac), Cursor: <code>~/.cursor/mcp.json</code>, Devin: <code>~/.config/devin/mcp_config.json</code>.</div>
+        <div class="st">Add the <code>brain</code> server block shown below for your platform.</div>
         <div class="st">Restart the client — a BrAIn window opens and the agent sees all <code>browser_*</code> tools.</div>
         <div class="st">Ask things like <i>"open github, find my unread notifications"</i> — the agent navigates, reads the page and clicks for you.</div>
       </div>
-      <div class="cfg">
-        <button class="copy" id="copy">Copy</button>
+      <div class="ptoggle" id="ptoggle">
+        <button data-p="win">Windows</button><button data-p="mac">macOS</button>
+      </div>
+      <div class="cfg" id="cfg-win">
+        <button class="copy" data-for="cfg-win">Copy</button>
 <pre>{
   <span class="k">"mcpServers"</span>: {
     <span class="k">"brain"</span>: {
@@ -164,6 +142,23 @@
   }
 }</pre>
       </div>
+      <div class="cfg" id="cfg-mac">
+        <button class="copy" data-for="cfg-mac">Copy</button>
+<pre>{
+  <span class="k">"mcpServers"</span>: {
+    <span class="k">"brain"</span>: {
+      <span class="k">"command"</span>: <span class="s">"/usr/local/share/dotnet/dotnet"</span>,
+      <span class="k">"args"</span>: [<span class="s">"/path/to/BrAIn.dll"</span>]
+    }
+  }
+}</pre>
+      </div>
+      <p class="mac-note">On macOS there is no <code>.exe</code> — the client runs
+        <code>dotnet</code> on the built DLL. Use the <b>absolute</b> dotnet path
+        (<code>which dotnet</code>) and DLL path: GUI-launched clients don't see
+        your shell <code>PATH</code>. Or publish once —
+        <code>dotnet publish -c Release -r osx-arm64 --self-contained</code> —
+        and point <code>"command"</code> straight at the native binary.</p>
       <p>Optional args: <code>"args": ["https://example.com"]</code> opens a start page,
         <code>"--cdp-port", "9333"</code> pins the DevTools port,
         <code>"--no-toolbar"</code> hides the browser chrome.</p>
@@ -207,14 +202,33 @@
   Array.prototype.forEach.call(document.querySelectorAll('.wrap > *'), function (el, i) {
     el.style.animationDelay = Math.min(i * 45, 450) + 'ms';
   });
-  document.getElementById('copy').addEventListener('click', function () {
-    var t = document.querySelector('.cfg pre').innerText;
-    var b = this;
-    try {
-      navigator.clipboard.writeText(t).then(function () {
-        b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500);
-      });
-    } catch (e) { }
+  // macOS vs Windows config blocks — default to the running platform.
+  var isMac = /Mac|iP/.test(navigator.platform || '');
+  function pickPlatform(p) {
+    document.getElementById('cfg-win').style.display = p === 'win' ? 'block' : 'none';
+    document.getElementById('cfg-mac').style.display = p === 'mac' ? 'block' : 'none';
+    document.querySelectorAll('.mac-note').forEach(function (el) {
+      el.style.display = p === 'mac' ? 'block' : 'none';
+    });
+    document.querySelectorAll('#ptoggle button').forEach(function (b) {
+      b.classList.toggle('on', b.getAttribute('data-p') === p);
+    });
+  }
+  document.querySelectorAll('#ptoggle button').forEach(function (b) {
+    b.addEventListener('click', function () { pickPlatform(b.getAttribute('data-p')); });
+  });
+  pickPlatform(isMac ? 'mac' : 'win');
+
+  document.querySelectorAll('.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var t = document.querySelector('#' + btn.getAttribute('data-for') + ' pre').innerText;
+      var b = btn;
+      try {
+        navigator.clipboard.writeText(t).then(function () {
+          b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500);
+        });
+      } catch (e) { }
+    });
   });
 </script>
 </body>

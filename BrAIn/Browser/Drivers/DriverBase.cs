@@ -35,13 +35,22 @@ public abstract class DriverBase : IBrowserDriver
 
     protected void RaiseConsole(ConsoleEntry e) => ConsoleMessage?.Invoke(this, e);
     protected void RaiseNetwork(NetworkEntry e) => NetworkEvent?.Invoke(this, e);
-    protected void RaiseLoadStarted() => LoadStarted?.Invoke(this, EventArgs.Empty);
-    protected void RaiseLoadCompleted() => LoadCompleted?.Invoke(this, EventArgs.Empty);
+    protected virtual void RaiseLoadStarted() => LoadStarted?.Invoke(this, EventArgs.Empty);
+    protected virtual void RaiseLoadCompleted() => LoadCompleted?.Invoke(this, EventArgs.Empty);
+
+    /// <summary>The engine's own "a page load is in flight" flag, when it has one.</summary>
+    protected virtual bool PageLoading => false;
 
     public virtual Task InitializeAsync(BrowserController controller, CancellationToken ct)
         => Task.CompletedTask;
 
     public abstract Task<JsonElement?> EvaluateAsync(string expression, bool awaitPromise, CancellationToken ct);
+
+    /// <summary>Whole-program eval — Runtime.evaluate accepts statement
+    /// lists natively, so the default shares the expression path. WebKit
+    /// overrides this because its envelope needs a different shape.</summary>
+    public virtual Task<JsonElement?> EvalScriptAsync(string script, bool awaitPromise, CancellationToken ct)
+        => EvaluateAsync(script, awaitPromise, ct);
 
     // ---------------- navigation ----------------
 
@@ -111,7 +120,7 @@ public abstract class DriverBase : IBrowserDriver
             {
                 var rs = await EvaluateAsync("document.readyState", false, ct);
                 if (rs?.ValueKind == JsonValueKind.String &&
-                    rs.Value.GetString() is "complete" or "interactive")
+                    (rs.Value.GetString() is "complete" or "interactive") && !PageLoading)
                 {
                     // Small settle delay so SPA hydration/late scripts run.
                     await Task.Delay(150, ct);
@@ -215,7 +224,19 @@ public abstract class DriverBase : IBrowserDriver
     /// <summary>No origin-scoped wipe on this transport — CDP overrides it.</summary>
     public virtual Task ClearSiteDataAsync(string origin, CancellationToken ct) => Task.CompletedTask;
 
+    /// <summary>-1 = no bulk cookie-store write on this transport
+    /// (WebKitDriver overrides with WKHTTPCookieStore injection).</summary>
+    public virtual Task<int> ImportCookiesAsync(
+        IReadOnlyList<Import.ImportedCookie> cookies, CancellationToken ct)
+        => Task.FromResult(-1);
+
     public virtual Task SetBootStateAsync(string stateJson, CancellationToken ct) => Task.CompletedTask;
+
+    /// <summary>Pull any buffered network entries into NetworkEvent. CDP
+    /// drivers stream events live (no-op); WebKit polls resource timing.</summary>
+    public virtual Task PullNetworkAsync(CancellationToken ct) => Task.CompletedTask;
+
+    public virtual void SetPageMuted(bool muted) { }
 
     // ---------------- viewport ----------------
 

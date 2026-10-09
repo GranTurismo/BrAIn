@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Text.Json;
 using BrAIn.Browser.Drivers;
+using BrAIn.Browser.Import;
 using Photino.NET;
 
 namespace BrAIn.Browser;
@@ -48,8 +49,10 @@ public sealed class BrowserController : IAsyncDisposable
     private int _loadDepth;
     private bool _canBack;
     private bool _canFwd;
-    private readonly List<(string Url, string? Icon)> _history = new();
-    private const int HistoryCap = 40;
+    private readonly List<HistoryEntry> _history = new();
+    // Sized for imported browser history (real Firefox/Chrome profiles carry
+    // thousands of entries). The omnibox only ever pushes the top 40.
+    private const int HistoryCap = 5000;
     private readonly ConcurrentStack<(string Url, string? Icon)> _closedTabs = new();
     // DevTools panel survives document swaps: chrome.js reports its state and
     // every boot/push carries it so the panel reopens on the new document.
@@ -64,8 +67,30 @@ public sealed class BrowserController : IAsyncDisposable
     private string? _pendingFresh;
     private static readonly int[] ZoomSteps = [25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500];
 
+    private static readonly SearchEngine[] SearchEngines =
+    [
+        new("google",     "Google",       "https://www.google.com/search?q="),
+        new("bing",       "Bing",         "https://www.bing.com/search?q="),
+        new("duckduckgo", "DuckDuckGo",   "https://duckduckgo.com/?q="),
+        new("brave",      "Brave Search", "https://search.brave.com/search?q="),
+        new("yahoo",      "Yahoo",        "https://search.yahoo.com/search?p="),
+        new("ecosia",     "Ecosia",       "https://www.ecosia.org/search?q="),
+        new("startpage",  "Startpage",    "https://www.startpage.com/sp/search?query="),
+    ];
+    private SearchEngine _engine = SearchEngines[0];
+
+    /// <summary>Encrypted credential vault — passwords.dat, key in the OS
+    /// keystore. <c>_pwSkip</c> holds origins where the user picked "Never".</summary>
+    private PasswordStore? _pw;
+    private readonly HashSet<string> _pwSkip = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Save-prompts survive navigation: a submit usually loads a new
+    /// document, so the b:24 push may land on a dying page. The pending entry
+    /// is re-flushed when the next document mounts (its 'tabs' hello) and
+    /// cleared by save/skip/dismiss or after a couple of attempts.</summary>
+    private readonly Dictionary<Guid, (string O, string U, string P, int Attempts)> _pwPending = new();
+
     private readonly List<(string Url, string? Title, string? Icon)> _bookmarks = new();
-    private const int BookmarkCap = 100;
+    private const int BookmarkCap = 2000;
 
     // URLs open when the previous run exited — offered via "Restore session".
     // The file is continuously overwritten while running, so keep the startup
@@ -83,13 +108,63 @@ public sealed class BrowserController : IAsyncDisposable
     /// the driver for the remaining tabs.</summary>
     private BrowserTab? _driverTab;
 
+    /// <summary>Browser-wide downloads; engine glue funnels lifecycle here,
+    /// changes are pushed to the toolbar as {b:20}.</summary>
+    internal Downloads Downloads { get; } = new Downloads(
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"));
+
     /// <summary>The tab whose document currently lives in the shared webview.
     /// Blank new tabs are "virtual": chrome.js paints the start page as an
     /// overlay over this document instead of loading a new one — every
     /// document load spins a fresh renderer process (~200ms cold start), which
     /// was the visible new-tab delay. Switching back to this tab is instant.</summary>
-    private Guid? _docTabId;
+    private Guid? _docTabIdValue;
+    private Guid? _docTabId
+    {
+        get => _docTabIdValue;
+        set
+        {
+            _docTabIdValue = value;
+            // Mute follows the document: apply the new owner's flag before its
+            // page starts making sound, so a muted tab never leaks audio.
+            SyncPageMute();
+        }
+    }
     private BrowserTab? DocTab => _docTabId is { } id ? Tabs.Find(id) : null;
+
+    /// <summary>The tab that owns the shared webview's live document (drivers stamp URL changes onto it).</summary>
+    internal BrowserTab? DocOwner => DocTab;
+
+    /// <summary>Pushes the document owner's mute flag to the webview and
+    /// clears the speaker indicator on every other tab (their pages are gone).</summary>
+    internal void SyncPageMute()
+    {
+        try
+        {
+            var owner = DocTab;
+            foreach (var t in Tabs.All)
+                if (t != owner && t.IsAudible) t.IsAudible = false;
+            _driverTab?.Driver?.SetPageMuted(owner?.IsMuted == true);
+        }
+        catch { /* no window/driver yet — applied again once the driver is ready */ }
+    }
+
+    /// <summary>The page's audio state changed (native poll on macOS, in-page
+    /// detection elsewhere). Attributed to the document owner.</summary>
+    internal void SetPageAudible(bool on)
+    {
+        var t = DocTab;
+        if (t is null || t.IsAudible == on) return;
+        t.IsAudible = on;
+        PushChromeStateAll();
+    }
+
+    private void ToggleTabMute(BrowserTab tab)
+    {
+        tab.IsMuted = !tab.IsMuted;
+        SyncPageMute();
+        PushChromeStateAll();
+    }
 
     /// <summary>Active tab is a blank new tab painted as an overlay.</summary>
     private bool OverlayActive =>
@@ -105,6 +180,10 @@ public sealed class BrowserController : IAsyncDisposable
     /// lights; --no-toolbar automation keeps native chrome so the window
     /// stays movable/closable without our bar).</summary>
     private bool Chromeless => IsWindows && !_noToolbar;
+
+    /// <summary>JS the document-start user script and post-load fallback
+    /// inject — brain.js alone for chromeless windows, both libs otherwise.</summary>
+    internal string PageLibSource => _noToolbar ? Assets.BrainJs : Assets.CombinedLib;
     private bool _winMax;
 
     public BrowserController(string[] args)
@@ -130,8 +209,10 @@ public sealed class BrowserController : IAsyncDisposable
             $"profile-{Environment.ProcessId}");
         _storeDir = Path.GetDirectoryName(_userDataDir)!;
         Directory.CreateDirectory(_userDataDir);
+        _pw = new PasswordStore(_storeDir);
         LoadStores();
-        CleanupStaleProfiles();
+        Downloads.Changed += PushDownloads;
+        Task.Run(CleanupStaleProfiles);
     }
 
     // ---------------- persisted stores (bookmarks + history) ----------------
@@ -153,9 +234,25 @@ public sealed class BrowserController : IAsyncDisposable
             if (File.Exists(hPath))
             {
                 foreach (var el in JsonDocument.Parse(File.ReadAllText(hPath)).RootElement.EnumerateArray())
-                    _history.Add((
+                    _history.Add(new HistoryEntry(
                         el.GetProperty("u").GetString() ?? "",
-                        el.TryGetProperty("i", out var i) ? i.GetString() : null));
+                        el.TryGetProperty("t", out var t) ? t.GetString() : null,
+                        el.TryGetProperty("i", out var i) ? i.GetString() : null,
+                        el.TryGetProperty("d", out var d) && d.ValueKind == JsonValueKind.Number ? d.GetInt64() : 0,
+                        el.TryGetProperty("v", out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 1));
+            }
+            var pPath = Path.Combine(_storeDir, "prefs.json");
+            if (File.Exists(pPath))
+            {
+                var root = JsonDocument.Parse(File.ReadAllText(pPath)).RootElement;
+                if (root.TryGetProperty("se", out var se))
+                    _engine = SearchEngines.FirstOrDefault(x => x.Id == se.GetString()) ?? _engine;
+            }
+            var kPath = Path.Combine(_storeDir, "pwskip.json");
+            if (File.Exists(kPath))
+            {
+                foreach (var el in JsonDocument.Parse(File.ReadAllText(kPath)).RootElement.EnumerateArray())
+                    if (el.GetString() is { } o && o.Length > 0) _pwSkip.Add(o);
             }
             var sPath = Path.Combine(_storeDir, "session.json");
             if (File.Exists(sPath))
@@ -243,6 +340,14 @@ public sealed class BrowserController : IAsyncDisposable
         }
     }
 
+    /// <summary>Photino's default agent is the literal string "Photino WebView".
+    /// Sites sniff the UA, and an unknown one gets a degraded legacy page —
+    /// Facebook served a light-theme layout with no sidebars to it, rendering
+    /// dark-on-dark and unreadable. Present as the engine's own browser.</summary>
+    private static string DesktopUserAgent => OperatingSystem.IsMacOS()
+        ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0";
+
     private (PhotinoWindow Window, BrowserTab Tab) CreatePhotinoWindow()
     {
         var tab = new BrowserTab
@@ -253,16 +358,17 @@ public sealed class BrowserController : IAsyncDisposable
         };
 
         var window = new PhotinoWindow()
+            .SetLogVerbosity(0) // NEVER write to stdout — stdio MCP lives there (set first to suppress title logging)
             .SetTitle(AppName)
-            .SetLogVerbosity(0) // NEVER write to stdout — stdio MCP lives there
             .SetUseOsDefaultSize(false)
             .SetUseOsDefaultLocation(false)
             .SetSize(1440, 900)
             .Center()
-            .SetDevToolsEnabled(true)
+            .SetDevToolsEnabled(false) // no WebKit inspector — ours lives in the page (F12)
             .SetContextMenuEnabled(true)
             .SetGrantBrowserPermissions(true)
             .SetJavascriptClipboardAccessEnabled(true)
+            .SetUserAgent(DesktopUserAgent)
             .SetTemporaryFilesPath(Path.Combine(_userDataDir, "webview"));
         if (Chromeless) window.SetChromeless(true);
         window.IconFile = ResolveIconPath();
@@ -286,6 +392,10 @@ public sealed class BrowserController : IAsyncDisposable
             // Logical tabs share this single window/webview; only the main
             // driver needs wiring.
             _windowCreated.TrySetResult();
+            // Pushes are skipped while _driverReady is pending — flush the
+            // current state the moment init settles (success or failure) so
+            // a page mounted during init isn't left without tabs/history.
+            _ = _driverReady.Task.ContinueWith(_ => PushChromeStateAll(), TaskScheduler.Default);
             Task.Run(InitializeMainDriverAsync);
         });
         window.RegisterMaximizedHandler((_, _) =>
@@ -298,6 +408,23 @@ public sealed class BrowserController : IAsyncDisposable
             _winMax = window.Maximized;
             PushChromeStateAll();
         });
+        if (IsMac)
+        {
+            // The webview's autoresizing mask keeps it pinned top-left; if a
+            // fullscreen transition or display move leaves its frame offset
+            // (page rendered to one side, blank on the other), snap it back.
+            window.RegisterSizeChangedHandler((_, _) =>
+            {
+                var nsWin = Mac.MacWindow.NsWindowForTab(tab);
+                if (nsWin != IntPtr.Zero)
+                {
+                    Mac.MacWindow.RepairWebViewFrame(nsWin);
+                    // Window resizes re-lay out the titlebar; re-pin the
+                    // traffic lights to the toolbar's vertical center.
+                    Mac.MacWindow.CenterTrafficLights(nsWin, 23);
+                }
+            });
+        }
         window.RegisterWindowClosingHandler((_, _) =>
         {
             tab.IsClosed = true;
@@ -337,10 +464,23 @@ public sealed class BrowserController : IAsyncDisposable
             tab.Driver = await CreateDriverAsync(tab);
             WireDriverEvents(tab, tab.Driver);
             await tab.Driver.InitializeAsync(this, CancellationToken.None);
+            if (IsMac && !_noToolbar && tab.MacWindowNumber != 0)
+            {
+                // Fold the titlebar into the toolbar — traffic lights overlay
+                // the bar's left inset. The webview exists now, so the window
+                // is unambiguous.
+                try { InvokeOnUi(() => Mac.MacWindow.ApplyInlineTitlebar(Mac.MacWindow.WindowByNumber(tab.MacWindowNumber))); }
+                catch (Exception ex) { Log("inline titlebar failed: " + ex.Message); }
+            }
             _driverTab = tab;
             tab.Bound.TrySetResult();
             _driverReady.TrySetResult();
             Log("driver ready: " + tab.Driver.Name);
+            // Post-startup memory trim: reclaim temporary startup allocations
+            _ = Task.Delay(400).ContinueWith(_ =>
+            {
+                GC.Collect(2, GCCollectionMode.Aggressive, blocking: false, compacting: true);
+            }, TaskScheduler.Default);
         }
         catch (Exception ex)
         {
@@ -377,6 +517,7 @@ public sealed class BrowserController : IAsyncDisposable
         {
             Interlocked.Increment(ref _loadDepth);
             PushChromeStateAll();
+            _ = Task.Delay(160).ContinueWith(_ => { if (IsLoading) SetLoadBar(tab, true); }, TaskScheduler.Default);
             // A document is being created — refresh the boot payload it will
             // carry (covers back/forward and page-initiated navigations where
             // NavigateAsync isn't on the path).
@@ -386,6 +527,7 @@ public sealed class BrowserController : IAsyncDisposable
         {
             if (Interlocked.Decrement(ref _loadDepth) < 0)
                 Interlocked.Exchange(ref _loadDepth, 0);
+            if (!IsLoading) SetLoadBar(tab, false);
             // Refresh the tab that OWNS the document — with a new-tab overlay
             // up, the active tab is virtual and must not inherit the hidden
             // page's URL/title.
@@ -420,6 +562,17 @@ public sealed class BrowserController : IAsyncDisposable
         return await driver.EvaluateAsync(expression, awaitPromise, ct);
     }
 
+    /// <summary>Evaluates a full JS program (statements + 'return'). Use for
+    /// helper injection and user-typed scripts; expression callers should
+    /// use EvaluateAsync.</summary>
+    public async Task<JsonElement?> EvalScriptAsync(
+        string script, bool awaitPromise = true, BrowserTab? tab = null, CancellationToken ct = default)
+    {
+        tab ??= ActiveTabOrThrow();
+        var driver = await DriverOrThrowAsync(tab, ct);
+        return await driver.EvalScriptAsync(script, awaitPromise, ct);
+    }
+
     /// <summary>Evaluates a JS expression and converts the result to T.</summary>
     public async Task<T?> EvaluateAsync<T>(
         string expression, bool awaitPromise = true, BrowserTab? tab = null, CancellationToken ct = default)
@@ -444,7 +597,7 @@ public sealed class BrowserController : IAsyncDisposable
         // Navigating a tab implies making it the shown/active one.
         if (Tabs.Active?.Id != tab.Id) Tabs.Activate(tab.Id);
         url = NormalizeUrl(url);
-        if (url is "about:newtab" or "about:help")
+        if (url is "about:newtab" or "about:help" or "about:history" or "about:import" or "about:passwords")
             return await LoadInternalPageAsync(tab, url);
         // materialize:false — a virtual new tab navigating away must not
         // first load the start-page document it's about to replace.
@@ -454,18 +607,25 @@ public sealed class BrowserController : IAsyncDisposable
         // final tab state on first paint (no empty-strip flash).
         try { await driver.SetBootStateAsync(BuildChromeStateJson(ConsumeFresh(), "inj"), ct); } catch { }
         var result = await driver.NavigateAsync(url, ct);
-        if (result.Ok) tab.LastUrl = result.Url;
+        if (result.Ok) SetTabUrl(tab, result.Url);
         return result;
     }
 
     /// <summary>Loads an internal about: page as a real document.</summary>
     private async Task<NavigateResult> LoadInternalPageAsync(BrowserTab tab, string url)
     {
-        var nt = url == "about:newtab";
         _docTabId = tab.Id;
-        tab.LastUrl = url;
-        tab.LastTitle = nt ? "New Tab" : "How to use";
-        var html = InjectBootState(nt ? Assets.NewTabHtml : Assets.HelpHtml);
+        SetTabUrl(tab, url);
+        var (page, title) = url switch
+        {
+            "about:help" => (Assets.HelpHtml, "How to use"),
+            "about:history" => (BuildHistoryHtml(), "History"),
+            "about:import" => (Assets.ImportHtml, "Import browser data"),
+            "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
+            _ => (Assets.NewTabHtml, "New Tab"),
+        };
+        tab.LastTitle = title;
+        var html = InjectBootState(page);
         InvokeOnUi(() => tab.Window.LoadRawString(html));
         try { await EnsurePageHelpersAsync(tab); } catch { }
         // NavigateToString docs never emit frameStoppedLoading — settle
@@ -568,7 +728,7 @@ public sealed class BrowserController : IAsyncDisposable
         {
             // Blank tab: no document load — chrome.js paints the start page
             // over the current document (instant; no renderer cold start).
-            tab.LastUrl = "about:newtab";
+            SetTabUrl(tab, "about:newtab");
             tab.LastTitle = "New Tab";
             SetWindowTitleFor(tab);
         }
@@ -694,7 +854,9 @@ public sealed class BrowserController : IAsyncDisposable
         }
         else if (IsMac)
         {
-            await Task.Run(() => Mac.MacWindow.Activate(tab), ct);
+            // AppKit window ordering is main-thread only — off-thread it can
+            // spin forever inside WindowManagement when the app isn't frontmost.
+            await Task.Run(() => InvokeOnUi(() => Mac.MacWindow.Activate(tab)), ct);
         }
     }
 
@@ -706,6 +868,31 @@ public sealed class BrowserController : IAsyncDisposable
     public void SetWindowState(BrowserTab tab, string state)
         => tab.Window.Invoke(() =>
         {
+            if (IsMac)
+            {
+                var nsWin = Mac.MacWindow.NsWindowForTab(tab);
+                switch (state.ToLowerInvariant())
+                {
+                    case "maximized": tab.Window.Maximized = true; return;
+                    case "minimized": tab.Window.Minimized = true; return;
+                    case "fullscreen":
+                        if (nsWin == IntPtr.Zero) return;
+                        Mac.MacWindow.ExitLegacyFullScreen(nsWin);
+                        if (!Mac.MacWindow.IsFullScreen(nsWin)) Mac.MacWindow.ToggleFullScreen(nsWin);
+                        return;
+                    case "normal":
+                        tab.Window.Minimized = false;
+                        tab.Window.Maximized = false;
+                        if (nsWin != IntPtr.Zero)
+                        {
+                            Mac.MacWindow.ExitLegacyFullScreen(nsWin);
+                            if (Mac.MacWindow.IsFullScreen(nsWin)) Mac.MacWindow.ToggleFullScreen(nsWin);
+                            Mac.MacWindow.RepairWebViewFrame(nsWin);
+                        }
+                        return;
+                    default: throw new ArgumentException($"Unknown state '{state}'");
+                }
+            }
             switch (state.ToLowerInvariant())
             {
                 case "maximized": tab.Window.Maximized = true; break;
@@ -817,8 +1004,15 @@ public sealed class BrowserController : IAsyncDisposable
                     if (root.GetProperty("ok").GetBoolean())
                         tcs.TrySetResult(root.TryGetProperty("v", out var v) ? v.Clone() : default);
                     else
-                        tcs.TrySetException(new JavaScriptException(
-                            root.TryGetProperty("e", out var e) ? e.GetString() ?? "unknown JS error" : "unknown JS error"));
+                    {
+                        // The envelope reports failures as ok:false with the
+                        // error text in v (e only exists when sendMessage
+                        // itself threw inside the envelope).
+                        var err = root.TryGetProperty("e", out var e) ? e.GetString()
+                            : root.TryGetProperty("v", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString()
+                            : null;
+                        tcs.TrySetException(new JavaScriptException(err ?? "unknown JS error"));
+                    }
                 }
             }
             catch { /* malformed envelope — ignore */ }
@@ -838,6 +1032,15 @@ public sealed class BrowserController : IAsyncDisposable
                     tab.LastUrl, null));
             }
             catch { /* ignore */ }
+            return;
+        }
+
+        // brain.js pagehide beacon — a navigation away is starting; mark the
+        // load in progress so the toolbar progress bar appears. No-op on
+        // other drivers (CDP gets real navigation events already).
+        if (message.StartsWith("{\"b\":30", StringComparison.Ordinal))
+        {
+            (_driverTab?.Driver as Drivers.WebKitDriver)?.MarkLoadStarted();
             return;
         }
 
@@ -879,6 +1082,10 @@ public sealed class BrowserController : IAsyncDisposable
                                 SaveSessionSoon();
                             }
                             break;
+                        case "mute":
+                            if (Tabs.FindByPrefix(arg) is { } mu) ToggleTabMute(mu);
+                            break;
+                        case "audible": SetPageAudible(arg == "1"); break;
                         case "restoresession":
                             {
                                 var urls = _savedSession;
@@ -931,12 +1138,35 @@ public sealed class BrowserController : IAsyncDisposable
                                 }
                                 break;
                             }
-                        case "tabs": PushChromeStateAll(); break;
+                        case "tabs":
+                            // A freshly mounted toolbar is asking because it has no
+                            // state — never dedupe against the previous document's push.
+                            _lastPushedStateJson = null;
+                            PushChromeStateAll();
+                            // A login submit navigated away before its prompt could
+                            // land — offer it on the fresh document now.
+                            FlushPwPending(tab);
+                            break;
                         case "zoomin": ZoomBy(+1); break;
                         case "zoomout": ZoomBy(-1); break;
                         case "zoomreset": SetZoomLevel(100); break;
                         case "fullscreen":
-                            try { InvokeOnUi(() => { if (_mainWindow is not null) _mainWindow.FullScreen = !_mainWindow.FullScreen; }); } catch { }
+                            try { InvokeOnUi(() =>
+                            {
+                                if (_mainWindow is null) return;
+                                if (IsMac)
+                                {
+                                    var nsWin = active is not null ? Mac.MacWindow.NsWindowForTab(active) : IntPtr.Zero;
+                                    if (nsWin == IntPtr.Zero) return;
+                                    // Legacy enterFullScreenMode presentation trumps: exit it,
+                                    // don't stack a real fullscreen on top.
+                                    if (!Mac.MacWindow.ExitLegacyFullScreen(nsWin))
+                                        Mac.MacWindow.ToggleFullScreen(nsWin);
+                                    else
+                                        Mac.MacWindow.RepairWebViewFrame(nsWin);
+                                }
+                                else _mainWindow.FullScreen = !_mainWindow.FullScreen;
+                            }); } catch { }
                             break;
                         case "topmost":
                             _topmost = !_topmost;
@@ -960,7 +1190,15 @@ public sealed class BrowserController : IAsyncDisposable
                             try { InvokeOnUi(() => _mainWindow?.Close()); } catch { }
                             break;
                         case "wdrag":
-                            try { InvokeOnUi(() => Native.Win32.BeginNcDrag(_mainWindow?.WindowHandle ?? IntPtr.Zero, Native.Win32.HtCaption)); } catch { }
+                            try { InvokeOnUi(() =>
+                            {
+                                if (IsMac)
+                                {
+                                    var nsWin = active is not null ? Mac.MacWindow.NsWindowForTab(active) : IntPtr.Zero;
+                                    if (nsWin != IntPtr.Zero) Mac.MacWindow.BeginWindowDrag(nsWin);
+                                }
+                                else Native.Win32.BeginNcDrag(_mainWindow?.WindowHandle ?? IntPtr.Zero, Native.Win32.HtCaption);
+                            }); } catch { }
                             break;
                         case "wresize" when int.TryParse(arg, out var ht):
                             try { InvokeOnUi(() => Native.Win32.BeginNcDrag(_mainWindow?.WindowHandle ?? IntPtr.Zero, ht)); } catch { }
@@ -968,7 +1206,27 @@ public sealed class BrowserController : IAsyncDisposable
                         case "bm": ToggleBookmark(active); break;
                         case "scroll": RecordScroll(DocTab ?? active, arg); break;
                         // DevTools panel feed + REPL
-                        case "dtget": PushDevTools(tab); break;
+                        // Downloads
+                        case "dllist": PushDownloads(); break;
+                        case "dlopen": Downloads.Open(arg); break;
+                        case "dlreveal": Downloads.Reveal(arg); break;
+                        case "dlcancel": Downloads.Cancel(arg); break;
+                        case "dlclear": Downloads.ClearDone(); break;
+                        case "se": SetEngine(arg); break;
+                        case "clipread": PushClipboardText(tab); break;
+                        // Password vault — page-side asks for this origin's
+                        // creds (b:23), submits a detected login for the save
+                        // prompt (b:24), and the manager page lists all (b:25).
+                        case "pwlist": await PushPwCreds(tab); break;
+                        case "pwcand": PwCandidate(tab, arg); break;
+                        case "pwsave": _pwPending.TryGetValue(tab.Id, out var pps); PwSave(tab, arg, pps.O); _pwPending.Remove(tab.Id); break;
+                        case "pwskip": _pwPending.TryGetValue(tab.Id, out var ppk); PwSkip(tab, ppk.O); _pwPending.Remove(tab.Id); break;
+                        case "pwdismiss": _pwPending.Remove(tab.Id); break;
+                        case "pwget": PushPwAll(tab); break;
+                        case "pwfill": await PwFillAsync(tab, arg); break;
+                        case "pwreveal": await PwRevealAsync(tab, arg); break;
+                        case "pwdel": await PwDeleteAsync(tab, arg); break;
+                        case "dtget": await PushDevTools(tab); break;
                         case "dtclearc": _console.Clear(); break;
                         case "dtclearn": _network.Clear(); break;
                         case "dteval": await DevToolsEvalAsync(active, arg); break;
@@ -982,6 +1240,11 @@ public sealed class BrowserController : IAsyncDisposable
                             _dtOpen = arg.Length > 0;
                             if (arg.Length > 0) _dtTab = arg;
                             break;
+                        case "histget": PushHistory(tab); break;
+                        case "histdel": if (arg.Length > 0) { DeleteHistory(arg); PushHistory(tab); } break;
+                        case "histclear": ClearHistory(); PushHistory(tab); break;
+                        case "importscan": await ImportScanAsync(tab); break;
+                        case "importgo": await ImportRunAsync(tab, arg); break;
                         case "dtunclose":
                             {
                                 // Restore a specific closed entry (not just
@@ -1019,19 +1282,21 @@ public sealed class BrowserController : IAsyncDisposable
         var tabs = Tabs.All.Where(t => !t.IsClosed).Select(t => new
         {
             id = t.Id.ToString("N")[..8],
-            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl),
+            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl),
             url = t.LastUrl,
             icon = t.LastIcon,
             active = t.Id == activeId,
             priv = t.IsPrivate,
             pin = t.IsPinned,
+            mute = t.IsMuted,
+            aud = t.IsAudible && t.Id == _docTabId,
             // owns the live document — lets chrome.js predict whether a
             // switch is instant (doc/overlay) or a navigation
             doc = t.Id == _docTabId,
         }).ToList();
         object[] hist;
         lock (_history)
-            hist = _history.Take(12).Select(h => (object)new { u = h.Url, i = h.Icon }).ToArray();
+            hist = _history.Take(40).Select(h => (object)new { u = h.Url, t = h.Title, i = h.Icon, d = h.Time, v = h.Visits }).ToArray();
         object[] bmarks;
         lock (_bookmarks)
             bmarks = _bookmarks.Take(10).Select(bm => (object)new { u = bm.Url, t = bm.Title, i = bm.Icon }).ToArray();
@@ -1055,14 +1320,25 @@ public sealed class BrowserController : IAsyncDisposable
             zoom = _zoom,
             topmost = _topmost,
             wc = Chromeless,
+            // macOS: real traffic lights float over the toolbar's left inset
+            // (FullSizeContentView + transparent titlebar) — the bar pads for
+            // them and empty bar space starts a native window drag.
+            mtl = IsMac && !_noToolbar,
+            // mute/audio handled natively by the engine; otherwise chrome.js
+            // enforces and detects it inside the page
+            nat = IsMac,
             w = _winMax ? 1 : 0,
             dt = _dtOpen ? _dtTab : "",
             privActive = Tabs.Active?.IsPrivate == true,
+            se = _engine.Id,
+            sel = SearchEngines.Select(e => new { i = e.Id, n = e.Name }).ToArray(),
             sess = _savedSession.Count,
             fresh,
             src,
         });
     }
+
+    private string? _lastPushedStateJson;
 
     /// <summary>Push current tab/URL state to a window's injected chrome bar.</summary>
     public void PushChromeState(BrowserTab tab)
@@ -1072,6 +1348,8 @@ public sealed class BrowserController : IAsyncDisposable
         // and without brain.js there's nothing listening anyway.
         if (_noToolbar || tab.IsClosed || !_driverReady.Task.IsCompleted) return;
         var json = BuildChromeStateJson(null);
+        if (json == _lastPushedStateJson) return; // duplicate push elision
+        _lastPushedStateJson = json;
         try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
         catch { /* window mid-close */ }
     }
@@ -1086,7 +1364,7 @@ public sealed class BrowserController : IAsyncDisposable
     {
         // '<' inside a <script> would break parsing — escape it in the JSON.
         var json = BuildChromeStateJson(ConsumeFresh(), "emb").Replace("<", "\\u003c");
-        var lib = _noToolbar ? Assets.BrainJs : Assets.BrainJs + "\n" + Assets.ChromeJs;
+        var lib = _noToolbar ? Assets.BrainJs : Assets.CombinedLib;
         // The new-document injection normally already ran brain.js+chrome.js
         // in this doc — executing the inlined copy again cost ~40ms before
         // first paint. Ship it as inert text/plain (no compile) and eval only
@@ -1107,6 +1385,17 @@ public sealed class BrowserController : IAsyncDisposable
         return f;
     }
 
+    /// <summary>macOS: drives the native load indicator. The in-page bar can't paint
+    /// during a pending navigation (WKWebView freezes the page), so it is the only
+    /// indicator that shows while a slow page is loading.</summary>
+    private void SetLoadBar(BrowserTab tab, bool on)
+    {
+        if (!IsMac || _noToolbar) return;
+        var nsWin = Mac.MacWindow.NsWindowForTab(tab);
+        if (nsWin == IntPtr.Zero) return;
+        try { InvokeOnUi(() => Mac.MacWindow.SetLoadingBar(nsWin, on)); } catch { }
+    }
+
     public void PushChromeStateAll()
     {
         // All logical tabs share the single window — one push updates chrome.
@@ -1114,14 +1403,310 @@ public sealed class BrowserController : IAsyncDisposable
         if (t is not null) PushChromeState(t);
     }
 
+    /// <summary>Push the full downloads snapshot to the toolbar ({b:20}).
+    /// Fired by Downloads.Changed and on the chrome's dllist request.</summary>
+    /// <summary>Switch the default search provider. Id arrives from the
+    /// ⋮ menu flyout or a palette action; persists to prefs.json and pushes
+    /// fresh state so omnibox/NTP labels re-label themselves.</summary>
+    private void SetEngine(string id)
+    {
+        var e = SearchEngines.FirstOrDefault(x => x.Id == id);
+        if (e is null || e == _engine) return;
+        _engine = e;
+        SaveStore("prefs.json", new { se = e.Id });
+        PushChromeStateAll();
+    }
+
+    /// <summary>Page-menu Paste — the webviews expose no in-page clipboard
+    /// read (navigator.clipboard is absent in this context), so the text is
+    /// fetched host-side and pushed back for caret insertion (b:22).</summary>
+    private void PushClipboardText(BrowserTab tab)
+    {
+        if (_noToolbar || tab.IsClosed || !_driverReady.Task.IsCompleted) return;
+        string? text = null;
+        try
+        {
+            text = IsMac
+                ? InvokeOnUi(() => Mac.WkClipboard.Text())
+                : Native.Win32.ClipboardText();
+        }
+        catch { }
+        if (string.IsNullOrEmpty(text)) return;
+        var json = JsonSerializer.Serialize(new { b = 22, t = text });
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { /* window mid-close */ }
+    }
+
+    private void PushDownloads()
+    {
+        if (_noToolbar || !_driverReady.Task.IsCompleted) return;
+        var t = Tabs.Main ?? Tabs.All.FirstOrDefault();
+        if (t is null || t.IsClosed) return;
+        var json = Downloads.SnapshotJson();
+        try { InvokeOnUi(() => { if (!t.IsClosed) t.Window.SendWebMessage(json); }); }
+        catch { /* window mid-close */ }
+    }
+
+    // ------------------------------------------------------------------
+    // Password vault — capture → prompt → fill. The page never names an
+    // origin: every credential read/write is bound to the sender tab's real
+    // URL so a hostile page can't pull or plant creds for another site.
+    // Private tabs get nothing in either direction.
+    // ------------------------------------------------------------------
+
+    private static string? OriginOf(string url)
+    {
+        try
+        {
+            var u = new Uri(url);
+            return u.Scheme is "http" or "https" ? u.GetLeftPart(UriPartial.Authority) : null;
+        }
+        catch { return null; }
+    }
+
+    private void PushJson(BrowserTab tab, string json)
+    {
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { /* window mid-close */ }
+    }
+
+    /// <summary>The live document's own origin — an eval of location.href on
+    /// the tab's driver, with tab.LastUrl as fallback. pwlist asks at
+    /// document-start, when LastUrl can still be the *previous* page.</summary>
+    private async Task<string?> DocOriginAsync(BrowserTab tab)
+    {
+        try
+        {
+            var d = (DocTab ?? tab).Driver ?? _driverTab?.Driver;
+            if (d is { SupportsEval: true })
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                var r = await d.EvaluateAsync("location.href", false, cts.Token);
+                if (r?.ValueKind == JsonValueKind.String)
+                {
+                    var o = OriginOf(r.Value.GetString()!);
+                    if (o is not null) return o;
+                }
+            }
+        }
+        catch { }
+        return OriginOf(tab.LastUrl);
+    }
+
+    // ---------------- OS unlock gate ----------------
+
+    private long _pwAuthUntilMs;
+    private readonly SemaphoreSlim _pwAuthSem = new(1, 1);
+
+    /// <summary>Touch ID / Mac password (LocalAuthentication) or the Windows
+    /// Hello PIN prompt, before any plaintext leaves the vault. A two-minute
+    /// grace window avoids a prompt per click during one session. Auths are
+    /// serialized — a second reveal during an active prompt just waits.</summary>
+    private async Task<bool> PwAuthAsync(string reason)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (now < _pwAuthUntilMs) return true;
+        await _pwAuthSem.WaitAsync();
+        try
+        {
+            now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (now < _pwAuthUntilMs) return true;
+            bool ok;
+            if (OperatingSystem.IsMacOS())
+                ok = await Mac.WkLaAuth.EvaluateAsync(reason, InvokeOnUi);
+            else if (OperatingSystem.IsWindows())
+            {
+                var hwnd = _mainWindow?.WindowHandle ?? IntPtr.Zero;
+                ok = await Task.Run(() => Native.Win32.ConsentPrompt(hwnd, reason));
+            }
+            else ok = false;
+            if (ok) _pwAuthUntilMs = now + 120_000;
+            return ok;
+        }
+        catch { return false; }
+        finally { _pwAuthSem.Release(); }
+    }
+
+    /// <summary>Looks up an entry the page is allowed to touch: for fills the
+    /// id must belong to the document's real origin; for manager ops any id.
+    /// Keeps hostile pages from fishing other sites' passwords by id.</summary>
+    private async Task<PasswordStore.Entry?> PwEntryForFillAsync(BrowserTab tab, string id)
+    {
+        var o = await DocOriginAsync(tab);
+        return o is null ? null : _pw?.ListFor(o).FirstOrDefault(e => e.Id == id);
+    }
+
+    private static string PwHost(string origin)
+    {
+        try { return new Uri(origin).Host; } catch { return origin; }
+    }
+
+    /// <summary>pwfill:&lt;id&gt; — dropdown pick from a login page. Authenticates,
+    /// then b:26 hands the credential back for the page to fill.</summary>
+    private async Task PwFillAsync(BrowserTab tab, string id)
+    {
+        if (_noToolbar || tab.IsClosed || tab.IsPrivate || _pw is null) return;
+        var e = await PwEntryForFillAsync(tab, id);
+        if (e is null) return;
+        if (!await PwAuthAsync($"autofill your {PwHost(e.Origin)} login"))
+        {
+            PushJson(tab, JsonSerializer.Serialize(new { b = 26, deny = true }));
+            return;
+        }
+        _pw.Upsert(e.Origin, e.User, e.Pass); // bump last-used without altering
+        PushJson(tab, JsonSerializer.Serialize(new { b = 26, id = e.Id, u = e.User, p = e.Pass }));
+    }
+
+    /// <summary>pwreveal:&lt;id&gt; — the manager's eye/copy. Authenticates, then
+    /// b:27 returns just that password to the requesting tab.</summary>
+    private async Task PwRevealAsync(BrowserTab tab, string id)
+    {
+        if (_noToolbar || tab.IsClosed || tab.IsPrivate || _pw is null) return;
+        var e = _pw.All().FirstOrDefault(x => x.Id == id);
+        if (e is null) return;
+        if (!await PwAuthAsync($"reveal the password for {PwHost(e.Origin)}"))
+        {
+            PushJson(tab, JsonSerializer.Serialize(new { b = 27, id, deny = true }));
+            return;
+        }
+        PushJson(tab, JsonSerializer.Serialize(new { b = 27, id = e.Id, p = e.Pass }));
+    }
+
+    /// <summary>pwdel:&lt;id&gt; — delete is gated like reveal.</summary>
+    private async Task PwDeleteAsync(BrowserTab tab, string id)
+    {
+        if (tab.IsClosed || tab.IsPrivate || _pw is null) return;
+        var e = _pw.All().FirstOrDefault(x => x.Id == id);
+        if (e is null) return;
+        // Denied → repush the authoritative list so the dimmed row restores.
+        if (!await PwAuthAsync($"delete the saved password for {PwHost(e.Origin)}"))
+        {
+            PushPwAll(tab);
+            return;
+        }
+        if (_pw.Delete(id)) PushPwAll(tab);
+    }
+
+    /// <summary>b:23 — usernames saved for the sender tab's origin. Passwords
+    /// never ride this push: filling goes through the authenticated pwfill →
+    /// b:26 path, so a page can't grab plaintext just by loading.</summary>
+    private async Task PushPwCreds(BrowserTab tab)
+    {
+        if (_noToolbar || tab.IsClosed || _pw is null) return;
+        var o = tab.IsPrivate ? null : await DocOriginAsync(tab);
+        var items = o is null
+            ? Array.Empty<object>()
+            : _pw.ListFor(o).Select(e => (object)new { id = e.Id, u = e.User }).ToArray();
+        PushJson(tab, JsonSerializer.Serialize(new { b = 23, items }));
+    }
+
+    /// <summary>A page detected a login (form submit / pagehide with a filled
+    /// password field). If the vault already holds it, stay silent; if the
+    /// origin is on the Never list, stay silent; otherwise b:24 asks.</summary>
+    private void PwCandidate(BrowserTab tab, string arg)
+    {
+        if (_noToolbar || tab.IsClosed || tab.IsPrivate || _pw is null) return;
+        try
+        {
+            var j = JsonDocument.Parse(arg).RootElement;
+            // The page reports its own origin at submit time — that IS the
+            // credential's site even when a cross-origin redirect follows
+            // (evaluating now could already see the landing page). The arg's
+            // o is still normalized through OriginOf so junk can't pass.
+            var o = OriginOf(j.TryGetProperty("o", out var oo) ? oo.GetString() ?? "" : "");
+            var u = j.TryGetProperty("u", out var uu) ? uu.GetString() ?? "" : "";
+            var p = j.TryGetProperty("p", out var pp) ? pp.GetString() ?? "" : "";
+            if (o is null || p.Length == 0 || _pwSkip.Contains(o) || _pw.HasExact(o, u, p)) return;
+            _pwPending[tab.Id] = (o, u, p, 0);
+            // Same-document delay: XHR logins never navigate, so the prompt
+            // shows right on the login page; a real navigation instead gets
+            // its prompt from FlushPwPending when the new document mounts.
+            var id = tab.Id;
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(700);
+                FlushPwPending(tab, id);
+            });
+        }
+        catch { }
+    }
+
+    /// <summary>Pushes a pending save prompt if one is queued for the tab —
+    /// drops it after two deliveries so an ignored prompt can't shadow every
+    /// future page forever.</summary>
+    private void FlushPwPending(BrowserTab tab, Guid? id = null)
+    {
+        var key = id ?? tab.Id;
+        if (!_pwPending.TryGetValue(key, out var pp) || tab.IsClosed) return;
+        if (pp.Attempts >= 2) { _pwPending.Remove(key); return; }
+        _pwPending[key] = pp with { Attempts = pp.Attempts + 1 };
+        PushJson(tab, JsonSerializer.Serialize(new { b = 24, o = pp.O, u = pp.U, p = pp.P }));
+    }
+
+    /// <summary>Save-now answer to the b:24 prompt — the origin comes from
+    /// the pending entry captured at submit time, not from the page.</summary>
+    private void PwSave(BrowserTab tab, string arg, string? origin)
+    {
+        if (tab.IsPrivate || _pw is null || origin is null) return;
+        try
+        {
+            var j = JsonDocument.Parse(arg).RootElement;
+            var u = j.TryGetProperty("u", out var uu) ? uu.GetString() ?? "" : "";
+            var p = j.TryGetProperty("p", out var pp) ? pp.GetString() ?? "" : "";
+            _pw.Upsert(origin, u, p);
+        }
+        catch { }
+    }
+
+    /// <summary>"Never for this site" — suppresses future prompts on the
+    /// origin; persisted with the other store files.</summary>
+    private void PwSkip(BrowserTab tab, string? origin)
+    {
+        if (origin is null) return;
+        _pwSkip.Add(origin);
+        SaveStore("pwskip.json", _pwSkip.ToArray());
+    }
+
+    /// <summary>b:25 — the vault's metadata for about:passwords. Plaintext
+    /// stays host-side; rows fetch a single password via authenticated
+    /// pwreveal → b:27 when the eye/copy is clicked.</summary>
+    private void PushPwAll(BrowserTab tab)
+    {
+        if (tab.IsClosed || tab.IsPrivate || _pw is null) return;
+        var items = _pw.All()
+            .Select(e => (object)new { id = e.Id, o = e.Origin, u = e.User, c = e.Created, m = e.Used })
+            .ToArray();
+        PushJson(tab, JsonSerializer.Serialize(new { b = 25, items }));
+    }
+
+    /// <summary>about:passwords with the vault baked in — same pattern as
+    /// BuildHistoryHtml; b:25 keeps it live after that.</summary>
+    private string BuildPasswordsHtml(bool isPrivate = false)
+    {
+        var items = (_pw is null || isPrivate ? Array.Empty<PasswordStore.Entry>() : _pw.All())
+            .Select(e => new { id = e.Id, o = e.Origin, u = e.User, c = e.Created, m = e.Used })
+            .ToArray();
+        var json = JsonSerializer.Serialize(items);
+        return Assets.PasswordsHtml.Replace("__BRAIN_PW_JSON__", json.Replace("<", "\\u003c"));
+    }
+
     // ------------------------------------------------------------------
     // DevTools feed — the in-window panel polls (dtget) and the REPL
     // evals through the driver (CSP-safe unlike page-side eval()).
     // ------------------------------------------------------------------
 
-    private void PushDevTools(BrowserTab tab)
+    private async Task PushDevTools(BrowserTab tab)
     {
         if (_noToolbar || tab.IsClosed || !_driverReady.Task.IsCompleted) return;
+        // macOS has no network event stream — harvest the live document's
+        // performance entries on each panel poll (no-op for CDP drivers).
+        try
+        {
+            var netDriver = (DocTab ?? tab).Driver ?? _driverTab?.Driver;
+            if (netDriver is not null)
+                await netDriver.PullNetworkAsync(CancellationToken.None);
+        }
+        catch { }
         // Windows gets console events from both CDP and the brain.js hook —
         // collapse identical entries the double feed produces (levels differ:
         // hook says "warn", Log.entryAdded says "warning" — normalize first).
@@ -1159,7 +1744,7 @@ public sealed class BrowserController : IAsyncDisposable
         try
         {
             var driver = await DriverOrThrowAsync(tab, CancellationToken.None);
-            var v = await driver.EvaluateAsync(expr, awaitPromise: true, CancellationToken.None);
+            var v = await driver.EvalScriptAsync(expr, awaitPromise: true, CancellationToken.None);
             json = JsonSerializer.Serialize(new { b = 11, ok = true, v });
         }
         catch (Exception ex)
@@ -1297,7 +1882,10 @@ public sealed class BrowserController : IAsyncDisposable
                 host,
                 ck = cookies.OrderBy(c => c.Domain).ThenBy(c => c.Name).Select(c => new
                 {
-                    n = c.Name, v = c.Value, d = c.Domain, p = c.Path,
+                    // document.cookie (macOS) carries no domain — these are
+                    // by definition the current site's cookies; attribute the
+                    // host so the pane's site filter and editor see them.
+                    n = c.Name, v = c.Value, d = c.Domain ?? host, p = c.Path,
                     e = c.Expires, h = c.HttpOnly, s = c.Secure,
                 }),
             });
@@ -1382,36 +1970,63 @@ public sealed class BrowserController : IAsyncDisposable
         // internal about: pages lose the chrome bar entirely).
         var driver = tab.Driver ?? _driverTab?.Driver;
         if (driver is null || !driver.SupportsEval) return;
+        // Evals submitted while WKWebView is mid-navigation get dropped with
+        // no reply — cap the wait so driver init and post-load injection
+        // aren't stalled for the full 30s eval timeout.
+        using var hcts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
         try
         {
             var installed = await driver.EvaluateAsync(
-                "window.__brain && window.__brain.v === " + Assets.BrainJsVersion, false, CancellationToken.None);
+                "window.__brain && window.__brain.v === " + Assets.BrainJsVersion, false, hcts.Token);
             if (installed?.ValueKind == JsonValueKind.True)
             {
                 if (!_noToolbar)
-                    await driver.EvaluateAsync("window.__brainChrome && window.__brainChrome.mount()", false, CancellationToken.None);
+                    await driver.EvaluateAsync("window.__brainChrome && window.__brainChrome.mount()", false, hcts.Token);
                 return;
             }
-            var script = Assets.BrainJs + (_noToolbar ? "" : "\n" + Assets.ChromeJs);
-            await driver.EvaluateAsync(script, false, CancellationToken.None);
+            var script = _noToolbar ? Assets.BrainJs : Assets.CombinedLib;
+            await driver.EvalScriptAsync(script, false, hcts.Token);
         }
         catch (Exception ex) { Log($"helper inject failed: {ex.Message}"); }
     }
 
+    /// <summary>Favicons belong to a document, not the tab — when the URL
+    /// moves to a different site, drop the old icon so it can't linger on the
+    /// new page if the next refresh eval is dropped mid-navigation.
+    /// Same-host navs keep it (pages on a site share the icon).</summary>
+    internal static void SetTabUrl(BrowserTab tab, string url)
+    {
+        try
+        {
+            var o = new Uri(tab.LastUrl); var n = new Uri(url);
+            if (!o.Authority.Equals(n.Authority, StringComparison.OrdinalIgnoreCase)
+                || o.Scheme != n.Scheme)
+                tab.LastIcon = null;
+        }
+        catch { if (tab.LastUrl != url) tab.LastIcon = null; }
+        tab.LastUrl = url;
+    }
+
     public async Task RefreshTabInfoAsync(BrowserTab tab)
     {
-        var driver = tab.Driver ?? _driverTab?.Driver;
+        // tab.Driver == null means the tab has never owned the shared
+        // webview — evaluating it would stamp another tab's url/title/icon
+        // onto this one.
+        var driver = tab.Driver;
         if (driver is null || !driver.SupportsEval) return;
+        using var rcts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
         try
         {
             var info = await driver.EvaluateAsync(
                 """
                 JSON.stringify({
                   u: location.href, t: document.title,
-                  n: !!window.__brainNewTab, h: !!window.__brainHelp,
-                  i: (document.querySelector("link[rel~='icon']") || document.querySelector("link[rel='shortcut icon']") || {}).href || ''
+                  n: !!window.__brainNewTab, h: !!window.__brainHelp, y: !!window.__brainHist,
+                  p: !!window.__brainImport, w: !!window.__brainPw,
+                  i: (document.querySelector("link[rel~='icon']") || document.querySelector("link[rel='shortcut icon']") || {}).href ||
+                     (/^https?:$/.test(location.protocol) ? location.origin + '/favicon.ico' : '')
                 })
-                """, false, CancellationToken.None);
+                """, false, rcts.Token);
             if (info?.ValueKind == JsonValueKind.String)
             {
                 using var doc = JsonDocument.Parse(info.Value.GetString()!);
@@ -1421,12 +2036,22 @@ public sealed class BrowserController : IAsyncDisposable
                 // reloads the start page instead of a literal blank page.
                 var isNt = root.TryGetProperty("n", out var n) && n.GetBoolean();
                 var isHelp = root.TryGetProperty("h", out var h) && h.GetBoolean();
-                tab.LastUrl = isNt ? "about:newtab" : isHelp ? "about:help" : root.GetProperty("u").GetString() ?? tab.LastUrl;
-                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : root.GetProperty("t").GetString();
-                var icon = root.GetProperty("i").GetString();
-                if (!string.IsNullOrEmpty(icon)) tab.LastIcon = icon;
-                (_canBack, _canFwd) = await driver.GetNavStateAsync(CancellationToken.None);
-                if (!tab.IsPrivate) RecordHistory(tab.LastUrl, tab.LastIcon);
+                var isHist = root.TryGetProperty("y", out var y) && y.GetBoolean();
+                var isImp = root.TryGetProperty("p", out var pp) && pp.GetBoolean();
+                var isPw = root.TryGetProperty("w", out var ww) && ww.GetBoolean();
+                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : root.GetProperty("u").GetString() ?? tab.LastUrl);
+                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : root.GetProperty("t").GetString();
+                // u and i come from the same document — always reassign so a
+                // cross-site navigation can never keep the old site's icon.
+                var iRaw = root.GetProperty("i").GetString();
+                // "data:," is an intentionally empty favicon (example.com uses
+                // it to suppress icon fetches) — treat as no icon so the tab
+                // face falls back to the letter instead of a blank img.
+                tab.LastIcon = !string.IsNullOrEmpty(iRaw)
+                    && !(iRaw.StartsWith("data:") && iRaw.IndexOf(',') == iRaw.Length - 1)
+                    ? iRaw : null;
+                (_canBack, _canFwd) = await driver.GetNavStateAsync(rcts.Token);
+                if (!tab.IsPrivate) RecordHistory(tab.LastUrl, tab.LastTitle, tab.LastIcon);
                 SaveSessionSoon();
                 if (Tabs.Active?.Id == tab.Id) SetWindowTitleFor(tab);
                 PushChromeStateAll();
@@ -1435,16 +2060,215 @@ public sealed class BrowserController : IAsyncDisposable
         catch { /* page mid-navigation */ }
     }
 
-    private void RecordHistory(string url, string? icon)
+    private void RecordHistory(string url, string? title, string? icon)
     {
         if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return;
         lock (_history)
         {
-            _history.RemoveAll(h => h.Url == url);
-            _history.Insert(0, (url, icon));
+            var i = _history.FindIndex(h => h.Url == url);
+            var old = i >= 0 ? _history[i] : null;
+            if (i >= 0) _history.RemoveAt(i);
+            _history.Insert(0, new HistoryEntry(
+                url,
+                string.IsNullOrWhiteSpace(title) ? old?.Title : title,
+                icon ?? old?.Icon,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                (old?.Visits ?? 0) + 1));
             if (_history.Count > HistoryCap) _history.RemoveAt(HistoryCap);
-            SaveStore("history.json", _history.Select(h => new { u = h.Url, i = h.Icon }));
+            SaveHistoryStore();
         }
+    }
+
+    private void SaveHistoryStore()
+    {
+        SaveStore("history.json",
+            _history.Select(h => new { u = h.Url, t = h.Title, i = h.Icon, d = h.Time, v = h.Visits }));
+    }
+
+    /// <summary>about:history row delete (one URL) / clear — the page also
+    /// re-fetches via histget, and b:9 refresh updates the omnibox tiles.</summary>
+    private void DeleteHistory(string url)
+    {
+        lock (_history)
+        {
+            if (_history.RemoveAll(h => h.Url == url) == 0) return;
+            SaveHistoryStore();
+        }
+        PushChromeStateAll();
+    }
+
+    private void ClearHistory()
+    {
+        lock (_history)
+        {
+            if (_history.Count == 0) return;
+            _history.Clear();
+            SaveHistoryStore();
+        }
+        PushChromeStateAll();
+    }
+
+    /// <summary>Full history list for the about:history page (b:16).</summary>
+    private void PushHistory(BrowserTab tab)
+    {
+        if (tab.IsClosed) return;
+        object[] items;
+        lock (_history)
+            items = _history.Select(h => (object)new { u = h.Url, t = h.Title, i = h.Icon, d = h.Time, v = h.Visits }).ToArray();
+        var json = JsonSerializer.Serialize(new { b = 16, items });
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { /* window mid-close */ }
+    }
+
+    /// <summary>about:history with the current list baked in — the page also
+    /// sends histget on load and re-renders on b:16 pushes.</summary>
+    private string BuildHistoryHtml()
+    {
+        string json;
+        lock (_history)
+            json = JsonSerializer.Serialize(
+                _history.Select(h => new { u = h.Url, t = h.Title, i = h.Icon, d = h.Time, v = h.Visits }));
+        return Assets.HistoryHtml.Replace("__BRAIN_HISTORY_JSON__", json.Replace("<", "\\u003c"));
+    }
+
+    // ---------------- browser data import (about:import) ----------------
+
+    private List<BrowserSource>? _importScan;
+    private sealed record ImportPick(string id, bool hist, bool bm, bool ck, bool pw);
+
+    /// <summary>about:import asks which browsers are installed — b:17 pushes
+    /// the detected sources with per-store counts so the page can render
+    /// pickers. Runs off-thread: SQLite copies + a possible Keychain prompt
+    /// mustn't stall the message loop.</summary>
+    private async Task ImportScanAsync(BrowserTab tab)
+    {
+        List<BrowserSource> sources;
+        try { sources = await Task.Run(BrowserImporter.Scan); }
+        catch (Exception ex) { Log($"import scan failed: {ex.Message}"); sources = new(); }
+        _importScan = sources;
+        var json = JsonSerializer.Serialize(new
+        {
+            b = 17,
+            browsers = sources.Select(s => new
+            {
+                id = s.Id, name = s.Name, kind = s.Kind,
+                hist = s.Hist, bm = s.Bm, ck = s.Ck, pw = s.Pw, note = s.Note,
+            }).ToArray(),
+        });
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { /* window mid-close */ }
+    }
+
+    /// <summary>Runs the selected imports and reports per-source counts via
+    /// b:18. Cookie values are never serialized — they go straight from the
+    /// source database into the native cookie store.</summary>
+    private async Task ImportRunAsync(BrowserTab tab, string arg)
+    {
+        List<ImportPick> picks;
+        try { picks = JsonSerializer.Deserialize<List<ImportPick>>(arg) ?? new(); }
+        catch { return; }
+        var results = new List<object>();
+        foreach (var pick in picks)
+        {
+            var src = _importScan?.FirstOrDefault(s => s.Id == pick.id);
+            if (src is null || (!pick.hist && !pick.bm && !pick.ck && !pick.pw)) continue;
+            int hist = -1, bm = -1, ck = -1, pw = -1;
+            string? err = null;
+            try
+            {
+                if (pick.hist)
+                    hist = MergeImportedHistory(await Task.Run(() => BrowserImporter.ReadHistory(src)));
+                if (pick.bm)
+                    bm = MergeImportedBookmarks(await Task.Run(() => BrowserImporter.ReadBookmarks(src)));
+                if (pick.ck)
+                {
+                    // Expired cookies are useless — filter before touching the store.
+                    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                    var cookies = (await Task.Run(() => BrowserImporter.ReadCookies(src)))
+                        .Where(c => c.Expires is null || c.Expires.Value > now).ToList();
+                    var driver = tab.Driver ?? _driverTab?.Driver;
+                    ck = driver is null ? -1 : await driver.ImportCookiesAsync(cookies, default);
+                    if (ck < 0)
+                        Log($"cookie import skipped for {src.Name}: no cookie-store write on this platform");
+                    else
+                        Log($"cookie import {src.Name}: read {cookies.Count}, wrote {ck}");
+                }
+                if (pick.pw)
+                {
+                    // Plaintext goes straight into the encrypted vault — never
+                    // serialized to the page. Upsert dedupes by origin+user.
+                    var logins = await Task.Run(() => BrowserImporter.ReadPasswords(src));
+                    pw = 0;
+                    if (_pw is null) { pw = -1; }
+                    else foreach (var l in logins)
+                    {
+                        var o = OriginOf(l.Origin);
+                        if (o is null) continue;
+                        _pw.Upsert(o, l.User, l.Pass);
+                        pw++;
+                    }
+                    Log($"password import {src.Name}: read {logins.Count}, merged {pw}");
+                }
+            }
+            catch (Exception ex) { err = ex.Message; }
+            results.Add(new { id = src.Id, name = src.Name, hist, bm, ck, pw, err });
+        }
+        var json = JsonSerializer.Serialize(new { b = 18, results });
+        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        catch { }
+        PushChromeStateAll();
+        PushHistory(tab);
+    }
+
+    /// <summary>Imported URLs merge into the existing list: known URLs keep
+    /// their entry but take the newer timestamp / higher visit count / a
+    /// title if ours is empty. New URLs append, then everything re-sorts by
+    /// recency. Returns the count of URLs not previously known.</summary>
+    private int MergeImportedHistory(List<HistoryEntry> imported)
+    {
+        var added = 0;
+        lock (_history)
+        {
+            foreach (var e in imported)
+            {
+                var i = _history.FindIndex(h => h.Url == e.Url);
+                if (i >= 0)
+                {
+                    var old = _history[i];
+                    _history[i] = old with
+                    {
+                        Title = string.IsNullOrWhiteSpace(old.Title) ? e.Title : old.Title,
+                        Time = Math.Max(old.Time, e.Time),
+                        Visits = Math.Max(old.Visits, e.Visits),
+                    };
+                }
+                else { _history.Add(e); added++; }
+            }
+            _history.Sort((a, b) => b.Time.CompareTo(a.Time));
+            if (_history.Count > HistoryCap)
+                _history.RemoveRange(HistoryCap, _history.Count - HistoryCap);
+            if (imported.Count > 0) SaveHistoryStore();
+        }
+        return added;
+    }
+
+    /// <summary>Bookmarks merge by URL; imported entries append after the
+    /// user's own (they're the imported browser's pins, not ours).</summary>
+    private int MergeImportedBookmarks(List<ImportedBookmark> imported)
+    {
+        var added = 0;
+        lock (_bookmarks)
+        {
+            var have = _bookmarks.Select(b => b.Url).ToHashSet();
+            foreach (var b in imported)
+                if (have.Add(b.Url)) { _bookmarks.Add((b.Url, b.Title, null)); added++; }
+            if (added == 0) return 0;
+            if (_bookmarks.Count > BookmarkCap)
+                _bookmarks.RemoveRange(BookmarkCap, _bookmarks.Count - BookmarkCap);
+            SaveStore("bookmarks.json",
+                _bookmarks.Select(b => new { u = b.Url, t = b.Title, i = b.Icon }));
+        }
+        return added;
     }
 
     // ------------------------------------------------------------------
@@ -1517,7 +2341,7 @@ public sealed class BrowserController : IAsyncDisposable
         };
     }
 
-    internal static string NormalizeUrl(string url)
+    internal string NormalizeUrl(string url)
     {
         url = url.Trim();
         if (url.Equals("newtab", StringComparison.OrdinalIgnoreCase) ||
@@ -1525,6 +2349,13 @@ public sealed class BrowserController : IAsyncDisposable
             return "about:newtab";
         if (url.Equals("help", StringComparison.OrdinalIgnoreCase))
             return "about:help";
+        if (url.Equals("history", StringComparison.OrdinalIgnoreCase))
+            return "about:history";
+        if (url.Equals("import", StringComparison.OrdinalIgnoreCase))
+            return "about:import";
+        if (url.Equals("passwords", StringComparison.OrdinalIgnoreCase) ||
+            url.Equals("password", StringComparison.OrdinalIgnoreCase))
+            return "about:passwords";
         if (!url.Contains("://") && !url.StartsWith("about:") && !url.StartsWith("file:") &&
             !url.StartsWith("data:") && !url.StartsWith("javascript:"))
         {
@@ -1532,7 +2363,7 @@ public sealed class BrowserController : IAsyncDisposable
             if (url.Contains('.') && !url.Contains(' '))
                 url = "https://" + url;
             else
-                url = "https://www.google.com/search?q=" + Uri.EscapeDataString(url);
+                url = _engine.Query + Uri.EscapeDataString(url);
         }
         if (url == "about:newtab") return url; // caller renders start page
         return url;
@@ -1583,12 +2414,24 @@ internal static class Assets
 
     private static readonly Lazy<string> _brainJs = new(() => Load("BrAIn.Assets.brain.js"));
     private static readonly Lazy<string> _chromeJs = new(() => Load("BrAIn.Assets.chrome.js"));
-    private static readonly Lazy<string> _newTab = new(() => Load("BrAIn.Assets.newtab.html"));
-    private static readonly Lazy<string> _help = new(() => Load("BrAIn.Assets.help.html"));
+    private static readonly Lazy<string> _theme = new(() => Load("BrAIn.Assets.theme.css"));
+    // Internal pages share one stylesheet, inlined where they say /*@THEME*/.
+    private static string Themed(string name) => Load(name).Replace("/*@THEME*/", _theme.Value);
+    private static readonly Lazy<string> _newTab = new(() => Themed("BrAIn.Assets.newtab.html"));
+    private static readonly Lazy<string> _help = new(() => Themed("BrAIn.Assets.help.html"));
+    private static readonly Lazy<string> _hist = new(() => Themed("BrAIn.Assets.history.html"));
+    private static readonly Lazy<string> _imp = new(() => Themed("BrAIn.Assets.import.html"));
+    private static readonly Lazy<string> _pw = new(() => Themed("BrAIn.Assets.passwords.html"));
+    private static readonly Lazy<string> _combinedLib = new(() => BrainJs + "\n" + ChromeJs);
 
     public static string BrainJs => _brainJs.Value;
     public static string ChromeJs => _chromeJs.Value;
+    public static string CombinedLib => _combinedLib.Value;
+
     public static string NewTabHtml => _newTab.Value;
     public static string HelpHtml => _help.Value;
-    public const int BrainJsVersion = 1;
+    public static string HistoryHtml => _hist.Value;
+    public static string ImportHtml => _imp.Value;
+    public static string PasswordsHtml => _pw.Value;
+    public const int BrainJsVersion = 2;
 }

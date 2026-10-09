@@ -67,6 +67,33 @@ public sealed class CdpDriver : DriverBase
         }
         catch { /* older runtimes lack this method; controller reinjects anyway */ }
 
+        // Downloads: page-level behavior is deprecated but still honored by
+        // WebView2 and its events arrive on this session; Browser-level is
+        // the modern path but needs the browser target (sessionId null).
+        try
+        {
+            await _session.SendAsync("Page.setDownloadBehavior",
+                new { behavior = "allow", downloadPath = Controller.Downloads.Dir }, ct);
+        }
+        catch
+        {
+            try
+            {
+                await _cdp.SendAsync("Browser.setDownloadBehavior",
+                    new { behavior = "allow", downloadPath = Controller.Downloads.Dir, eventsEnabled = true },
+                    null, ct);
+            }
+            catch { /* engine keeps its own download UI */ }
+        }
+
+        // Let the shared registry stop engine-side transfers on user cancel.
+        Controller.Downloads.EngineCancel = it =>
+        {
+            if (it.CdpGuid is null) return Task.CompletedTask;
+            return _cdp.SendAsync("Browser.cancelDownload",
+                new { guid = it.CdpGuid }, null, CancellationToken.None);
+        };
+
         // And into the current document right away.
         await Controller.EnsurePageHelpersAsync(Tab);
     }
@@ -139,6 +166,18 @@ public sealed class CdpDriver : DriverBase
 
     private void OnCdpEvent(object? sender, (string? SessionId, string Method, JsonElement Params) e)
     {
+        // Browser.download* events arrive with no sessionId; Page.download*
+        // arrive on ours. Both carry a guid keying one Downloads.Item.
+        if (e.Method is "Browser.downloadWillBegin" or "Page.downloadWillBegin")
+        {
+            HandleDownloadWillBegin(e.Params);
+            return;
+        }
+        if (e.Method is "Browser.downloadProgress" or "Page.downloadProgress")
+        {
+            HandleDownloadProgress(e.Params);
+            return;
+        }
         if (e.SessionId != _session?.SessionId) return;
         try
         {
@@ -204,6 +243,44 @@ public sealed class CdpDriver : DriverBase
             }
         }
         catch { /* event handling must never throw into the reader */ }
+    }
+
+    private readonly Dictionary<string, Downloads.Item> _cdpDownloads = new();
+
+    private void HandleDownloadWillBegin(JsonElement p)
+    {
+        try
+        {
+            var guid = p.GetProperty("guid").GetString()!;
+            var url = p.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+            var suggested = p.TryGetProperty("suggestedFilename", out var f) ? f.GetString() : null;
+            var it = Controller.Downloads.Begin(url);
+            it.CdpGuid = guid;
+            // The engine writes into Downloads.Dir itself — pre-resolve the
+            // name so the UI shows a filename and Open/Reveal have a path.
+            Controller.Downloads.DestinationFor(it, suggested);
+            _cdpDownloads[guid] = it;
+        }
+        catch { }
+    }
+
+    private void HandleDownloadProgress(JsonElement p)
+    {
+        try
+        {
+            var guid = p.TryGetProperty("guid", out var g) ? g.GetString() : null;
+            if (guid is null || !_cdpDownloads.TryGetValue(guid, out var it)) return;
+            var state = p.TryGetProperty("state", out var s) ? s.GetString() : null;
+            if (state == "completed") { Controller.Downloads.Finish(it); _cdpDownloads.Remove(guid); }
+            else if (state == "canceled") { Controller.Downloads.Cancel(it.Id); _cdpDownloads.Remove(guid); }
+            else
+            {
+                var recv = p.TryGetProperty("receivedBytes", out var r) ? (long)r.GetDouble() : 0;
+                var total = p.TryGetProperty("totalBytes", out var t) ? (long)t.GetDouble() : -1;
+                Controller.Downloads.Progress(it, recv, total);
+            }
+        }
+        catch { }
     }
 
     /// <summary>True if the frame event params refer to the main frame.</summary>

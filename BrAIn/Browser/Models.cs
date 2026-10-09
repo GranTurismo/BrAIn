@@ -28,11 +28,19 @@ public sealed record CookieInfo(
     bool HttpOnly,
     bool Secure);
 
+/// <summary>One visited URL — feeds the omnibox dropdown, new-tab tiles and
+/// the about:history page. Time is unix seconds; Visits counts every load.</summary>
+public sealed record HistoryEntry(string Url, string? Title, string? Icon, long Time, int Visits);
+
 public sealed record NavigateResult(bool Ok, string Url, string? Title, string? Error)
 {
     public static NavigateResult Success(string url, string? title) => new(true, url, title, null);
     public static NavigateResult Fail(string url, string error) => new(false, url, null, error);
 }
+
+/// <summary>Search provider — Query is the URL prefix the escaped query
+/// appends to. Picked in the ⋮ menu / palette, persisted in prefs.json.</summary>
+public sealed record SearchEngine(string Id, string Name, string Query);
 
 public sealed record KeyModifiers(bool Alt, bool Ctrl, bool Shift, bool Meta)
 {

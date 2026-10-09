@@ -10,138 +10,109 @@
   window.__brainNewTab = 1;
 </script>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; background: #0b0b13; color: #e8e8f0;
-    font-family: "Segoe UI Variable Text", system-ui, -apple-system, "Segoe UI", sans-serif;
-    overflow: hidden; position: relative;
-  }
-  /* ambient gradient orbs */
-  /* Pre-softened gradients instead of filter:blur(90px) — the blur made the
-     first raster of every new tab ~45ms slower for a near-identical look. */
-  .orb { position: fixed; border-radius: 50%; opacity: .5; pointer-events: none; will-change: transform; }
-  .orb.a { width: 760px; height: 760px; top: -320px; left: -240px;
-    background: radial-gradient(circle closest-side, rgba(74,63,184,.85), rgba(74,63,184,.32) 45%, rgba(74,63,184,0));
-    animation: drift1 26s ease-in-out infinite alternate; }
-  .orb.b { width: 680px; height: 680px; bottom: -300px; right: -220px;
-    background: radial-gradient(circle closest-side, rgba(31,122,104,.85), rgba(31,122,104,.32) 45%, rgba(31,122,104,0));
-    animation: drift2 30s ease-in-out infinite alternate; }
-  .orb.c { width: 480px; height: 480px; top: calc(40% - 90px); right: calc(22% - 90px);
-    background: radial-gradient(circle closest-side, rgba(109,63,160,.85), rgba(109,63,160,.3) 45%, rgba(109,63,160,0)); opacity: .28;
-    animation: drift1 34s ease-in-out infinite alternate-reverse; }
-  @keyframes drift1 { from { transform: translate(0,0) scale(1); } to { transform: translate(70px,40px) scale(1.12); } }
-  @keyframes drift2 { from { transform: translate(0,0) scale(1.05); } to { transform: translate(-60px,-50px) scale(.95); } }
+/*@THEME*/
+  body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  #ntp { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; }
 
-  /* Staggered entrance — only on the app's first launch (html.anim). Opening
-     or switching tabs re-renders this page and replaying the rise reads as
-     flicker, so those loads paint final state instantly. */
-  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
-  html.anim .clock, html.anim .date, html.anim .logo, html.anim .tag,
-  html.anim form, html.anim #recent, html.anim .hint {
-    animation: rise .7s cubic-bezier(.16,1,.3,1) both;
-  }
-  html.anim .date { animation-delay: .05s; }
-  html.anim .logo { animation-delay: .11s; }
-  html.anim .tag { animation-delay: .18s; }
-  html.anim form { animation-delay: .25s; }
-  html.anim #recent { animation-delay: .34s; }
-  html.anim .hint { animation-delay: .45s; }
+/*NTP-CSS-START*/
+  /* Same rules drive the real start page and chrome.js's in-document overlay
+     (generated from this block), so swapping between them never jumps. */
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  html.anim #ntp > * { animation: rise .6s cubic-bezier(.16,1,.3,1) both; }
+  html.anim #ntp > :nth-child(2) { animation-delay: .04s; }
+  html.anim #ntp > :nth-child(3) { animation-delay: .08s; }
+  html.anim #ntp > :nth-child(4) { animation-delay: .12s; }
+  html.anim #ntp > :nth-child(5) { animation-delay: .18s; }
+  html.anim #ntp > :nth-child(6) { animation-delay: .24s; }
+  html.anim #ntp > :nth-child(7) { animation-delay: .3s; }
 
-  .clock { font-size: 64px; font-weight: 200; letter-spacing: 1px; color: #f2f2fc;
-    font-variant-numeric: tabular-nums; line-height: 1; margin-bottom: 4px; }
-  .date { font-size: 13px; color: #7a7a96; margin-bottom: 42px; letter-spacing: .3px; }
+  #ntp .lg { font-size: 13px; font-weight: 800; letter-spacing: 7px; margin: 0 0 38px 7px;
+    background: linear-gradient(115deg, #a9a9ff 10%, #6fe0c6 95%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  #ntp .pv { display: none; margin: 0 0 26px; padding: 5px 14px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    color: #d3c2ff; background: rgba(150,100,255,.14); border: 1px solid rgba(170,130,255,.3); align-items: center; gap: 7px; }
+  #ntp .pv svg { width: 14px; height: 14px; }
+  #ntp.priv .pv { display: inline-flex; }
+  #ntp.priv .lg { margin-bottom: 22px; }
+  #ntp .gr { display: inline-flex; align-items: center; gap: 9px; margin-bottom: 14px; font-size: 11.5px; font-weight: 700;
+    letter-spacing: 2px; text-transform: uppercase; color: var(--mut); }
+  #ntp .gr::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ac);
+    box-shadow: 0 0 12px hsl(var(--h) 100% 70%); }
+  #ntp .ck { font-size: 84px; font-weight: 200; letter-spacing: -1.5px; line-height: 1; font-variant-numeric: tabular-nums;
+    background: linear-gradient(180deg, #ffffff 25%, #adadd8); -webkit-background-clip: text; background-clip: text; color: transparent;
+    margin-bottom: 8px; padding: 0 4px; }
+  #ntp .dt { font-size: 14px; color: var(--mut); margin-bottom: 44px; letter-spacing: .2px; }
 
-  .logo {
-    font-size: 52px; font-weight: 800; letter-spacing: 2px; margin-bottom: 8px;
-    background: linear-gradient(120deg, #9c9cff, #4ec9b0);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-  .tag { color: #8a8aa0; margin-bottom: 38px; font-size: 14px; }
-  .tag b { color: #4ec9b0; font-weight: 600; }
+  #ntp form { display: flex; align-items: center; gap: 8px; width: min(680px, 88vw); height: 62px; padding: 0 9px 0 22px;
+    border-radius: 19px; background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.04));
+    border: 1px solid rgba(255,255,255,.09);
+    box-shadow: 0 20px 56px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.08);
+    transition: border-color .2s, box-shadow .25s; }
+  #ntp form:focus-within { border-color: hsl(var(--h) 100% 74% / .6);
+    box-shadow: 0 0 0 4px hsl(var(--h) 100% 74% / .14), 0 24px 64px -14px hsl(var(--h) 100% 66% / .55), inset 0 1px 0 rgba(255,255,255,.08); }
+  #ntp form > svg { width: 18px; height: 18px; flex: none; color: var(--dim); }
+  #ntp input { flex: 1; min-width: 0; padding: 0 6px; border: 0; outline: 0; background: transparent; color: #f4f4fd;
+    font: 500 16.5px var(--font); user-select: text; -webkit-user-select: text; caret-color: var(--ac); }
+  #ntp input::placeholder { color: #5f5f7c; font-weight: 400; }
+  #ntp form button { width: 46px; height: 46px; padding: 0; border-radius: 14px; border: 0; cursor: pointer; flex: none;
+    display: grid; place-items: center; color: #fff;
+    background: linear-gradient(130deg, hsl(var(--h) 80% 64%), hsl(calc(var(--h) - 40) 70% 56%));
+    box-shadow: 0 10px 22px -6px hsl(var(--h) 90% 60% / .7), inset 0 1px 0 rgba(255,255,255,.25);
+    transition: filter .15s, transform .12s; }
+  #ntp form button svg { width: 18px; height: 18px; }
+  #ntp form button:hover { filter: brightness(1.12); transform: translateX(1px); }
+  #ntp form button:active { transform: scale(.94); }
 
-  form {
-    display: flex; gap: 10px; width: min(640px, 86vw);
-    padding: 8px; border-radius: 999px;
-    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08);
-    box-shadow: 0 12px 40px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.05);
-    transition: border-color .2s, box-shadow .2s;
-  }
-  form:focus-within {
-    border-color: rgba(124,124,255,.45);
-    box-shadow: 0 12px 40px rgba(0,0,0,.35), 0 0 0 4px rgba(124,124,255,.12), inset 0 1px 0 rgba(255,255,255,.05);
-  }
-  input {
-    flex: 1; padding: 13px 18px; border: none; outline: none;
-    background: transparent; color: #eeeefc; font-size: 15px;
-  }
-  input::placeholder { color: #5e5e78; }
-  button {
-    padding: 12px 26px; border-radius: 999px; border: none; cursor: pointer;
-    background: linear-gradient(120deg, #7c7cff, #6868f0); color: #fff;
-    font-size: 14px; font-weight: 600; letter-spacing: .2px;
-    transition: filter .15s, transform .1s; box-shadow: 0 4px 16px rgba(124,124,255,.35);
-  }
-  button:hover { filter: brightness(1.12); }
-  button:active { transform: scale(.96); }
+  #ntp .qa { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 22px; max-width: 88vw; }
+  #ntp .qc { display: inline-flex; align-items: center; gap: 8px; padding: 8px 15px; border-radius: 12px; cursor: pointer;
+    font-size: 12.5px; font-weight: 600; color: #a9a9c6; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.07);
+    transition: color .15s, background .15s, border-color .15s, transform .15s; user-select: none; -webkit-user-select: none; }
+  #ntp .qc:hover { color: #fff; background: hsl(var(--h) 100% 74% / .14); border-color: hsl(var(--h) 100% 74% / .4); transform: translateY(-1px); }
+  #ntp .qc kbd { font-size: 10.5px; padding: 0 6px; line-height: 17px; border-radius: 6px; color: #8c8cab; }
 
-  #recent { display: none; margin-top: 46px; max-width: 700px; width: min(700px, 88vw); }
-  #recent h2 {
-    font-size: 11px; font-weight: 600; letter-spacing: 1.4px; text-transform: uppercase;
-    color: #5f5f7c; margin-bottom: 14px; text-align: center;
-  }
-  #tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-  .tile {
-    display: flex; align-items: center; gap: 10px; padding: 13px 14px; cursor: pointer;
-    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
-    border-radius: 14px; color: #c5c5dd; font-size: 12.5px; font-weight: 500;
-    transition: transform .15s, border-color .15s, background .15s, color .15s;
-    overflow: hidden; white-space: nowrap;
-  }
-  html.anim .tile { animation: rise .4s cubic-bezier(.16,1,.3,1) both; }
-  .tile:hover {
-    transform: translateY(-2px); background: rgba(255,255,255,.07);
-    border-color: rgba(124,124,255,.4); color: #f0f0fc;
-    box-shadow: 0 8px 24px rgba(0,0,0,.3);
-  }
-  .tile .ic {
-    width: 26px; height: 26px; flex: none; border-radius: 8px; display: grid;
-    place-items: center; font-size: 12px; font-weight: 700; color: #fff;
-    position: relative; box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
-  }
-  .tile .ic img { position: absolute; inset: 4px; width: 18px; height: 18px; border-radius: 5px; }
-  .tile > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+  #ntp .rc { display: none; margin-top: 46px; width: min(720px, 90vw); }
+  #ntp .rc.has { display: block; }
+  #ntp .rc h2 { display: block; text-align: center; margin-bottom: 14px; font-size: 11px; font-weight: 700; letter-spacing: 1.6px;
+    text-transform: uppercase; color: var(--dim); }
+  #ntp .rc h2::before, #ntp .rc h2::after { display: none; }
+  #ntp .tl { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  #ntp .ti { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 15px; min-width: 0; cursor: pointer;
+    border-radius: 17px; overflow: hidden; color: #c4c4de; font-size: 12.5px; font-weight: 600;
+    background: linear-gradient(180deg, rgba(255,255,255,.065), rgba(255,255,255,.03)); border: 1px solid rgba(255,255,255,.07);
+    transition: transform .16s, border-color .16s, box-shadow .22s, color .16s; }
+  #ntp .ti:hover { transform: translateY(-3px); color: #fff; border-color: rgba(255,255,255,.17);
+    box-shadow: 0 18px 36px -14px var(--tc, hsl(var(--h) 90% 60%)), 0 10px 24px rgba(0,0,0,.3); }
+  #ntp .ti .ic { width: 36px; height: 36px; flex: none; border-radius: 11px; display: grid; place-items: center; position: relative;
+    font-size: 14px; font-weight: 700; color: #fff; background: var(--tc, #555); box-shadow: inset 0 1px 0 rgba(255,255,255,.2); }
+  #ntp .ti .ic img { position: absolute; inset: 6px; width: 24px; height: 24px; border-radius: 7px; }
+  #ntp .ti > span:last-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  html.anim #ntp .ti { animation: rise .45s cubic-bezier(.16,1,.3,1) both; }
 
-  .hint { position: fixed; bottom: 26px; color: #4c4c62; font-size: 12.5px;
-    max-width: 620px; text-align: center; line-height: 1.7; padding: 0 20px; }
-  .hint code { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08);
-    border-radius: 6px; padding: 1px 7px; color: #9a9ab8; }
-  .help {
-    display: inline-block; margin-top: 8px; padding: 6px 16px; cursor: pointer;
-    border-radius: 999px; border: 1px solid rgba(255,255,255,.09);
-    background: rgba(255,255,255,.05); color: #8f8fb0; font-size: 12px; font-weight: 600;
-    transition: background .15s, color .15s, border-color .15s;
-  }
-  .help:hover { background: rgba(124,124,255,.12); border-color: rgba(124,124,255,.35); color: #c9c9ff; }
+  #ntp .hn { position: fixed; bottom: 22px; left: 0; right: 0; display: flex; align-items: center; justify-content: center; gap: 9px;
+    color: #55556f; font-size: 12px; padding: 0 20px; text-align: center; pointer-events: none; }
+  #ntp .hn i { width: 6px; height: 6px; border-radius: 50%; background: #5fd9a8; box-shadow: 0 0 10px rgba(95,217,168,.8); flex: none; }
+/*NTP-CSS-END*/
 </style>
 </head>
 <body>
-  <div class="orb a"></div><div class="orb b"></div><div class="orb c"></div>
-
-  <div class="clock" id="clock"></div>
-  <div class="date" id="date"></div>
-  <div class="logo">BrAIn</div>
-  <div class="tag">A browser your <b>AI</b> can drive &mdash; MCP server built in</div>
+<div id="ntp">
+  <div class="lg">BrAIn</div>
+  <div class="gr" id="greet"></div>
+  <div class="ck" id="clock"></div>
+  <div class="dt" id="date"></div>
   <form id="f">
-    <input id="q" autofocus placeholder="Search Google or type a URL" autocomplete="off" />
-    <button type="submit">Go</button>
+    <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10.4 10.4 3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <input id="q" autofocus placeholder="Search Google or type a URL" autocomplete="off" spellcheck="false" />
+    <button type="submit" title="Go"><svg viewBox="0 0 16 16"><path d="M3 8h9.4M8.6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   </form>
-  <div id="recent"><h2>Recent</h2><div id="tiles"></div></div>
-  <div class="hint">
-    Connect an MCP client to this process over <code>stdio</code> and the agent
-    can navigate, click, type, snapshot and screenshot this browser.<br/>
-    <span class="help" id="help">How to use &rarr;</span>
+  <div class="qa">
+    <span class="qc" data-k="1">Command palette <kbd id="kb"></kbd></span>
+    <span class="qc" data-go="about:history">History</span>
+    <span class="qc" data-go="about:import">Import data</span>
+    <span class="qc" data-go="about:help" id="help">How to use</span>
   </div>
+  <div class="rc" id="recent"><h2>Recent</h2><div class="tl" id="tiles"></div></div>
+  <div class="hn"><i></i><span>MCP server ready &middot; connect any client over <code>stdio</code></span></div>
+</div>
 <script>
   function send(cmd) {
     try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
@@ -151,8 +122,15 @@
     var v = document.getElementById('q').value.trim();
     if (v) send('navigate:' + v);
   });
-  document.getElementById('help').addEventListener('click', function () {
-    send('navigate:about:help');
+  var mac = /Mac/.test(navigator.platform);
+  document.getElementById('kb').textContent = mac ? '\u2318K' : 'Ctrl K';
+  document.querySelector('.qa').addEventListener('click', function (e) {
+    var c = e.target.closest && e.target.closest('.qc');
+    if (!c) return;
+    if (c.getAttribute('data-k')) {
+      // chrome.js owns the palette — ask it the way a keystroke would
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }));
+    } else send('navigate:' + c.getAttribute('data-go'));
   });
 
   function tick() {
@@ -162,6 +140,8 @@
       (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
     document.getElementById('date').textContent =
       d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+    document.getElementById('greet').textContent =
+      hh < 5 ? 'Still up' : hh < 12 ? 'Good morning' : hh < 18 ? 'Good afternoon' : 'Good evening';
   }
   tick(); setInterval(tick, 10000);
 
@@ -177,7 +157,7 @@
   function renderTiles(hist) {
     var box = document.getElementById('recent');
     var tiles = document.getElementById('tiles');
-    if (!hist || !hist.length) { box.style.display = 'none'; return; }
+    if (!hist || !hist.length) { box.classList.remove('has'); return; }
     // one tile per site, single row (matches the in-chrome overlay)
     var picks = [], seen = {};
     for (var k = 0; k < hist.length && picks.length < 4; k++) {
@@ -195,15 +175,15 @@
       var u = typeof it === 'string' ? it : it.u;
       var icon = typeof it === 'object' ? it.i : null;
       var h = hostOf(u);
-      html += '<div class="tile" style="animation-delay:' + (i * 45) + 'ms" data-u="' + u.replace(/"/g, '&quot;') + '" title="' + u.replace(/"/g, '&quot;') + '">' +
-        '<span class="ic" style="background:' + hue(h) + '">' +
-        (h.charAt(0) || '?').toUpperCase() +
-        (icon ? '<img src="' + icon.replace(/"/g, '&quot;') + '" alt="" onerror="this.remove()">' : '') +
+      html += '<div class="ti" style="--tc:' + hue(h) + ';animation-delay:' + (i * 45) + 'ms" data-u="' + u.replace(/"/g, '&quot;') + '" title="' + u.replace(/"/g, '&quot;') + '">' +
+        '<span class="ic">' +
+        (icon ? '<img src="' + icon.replace(/"/g, '&quot;') + '" alt="" data-l="' + (h.charAt(0) || '?').toUpperCase() + '" onerror="this.parentNode.textContent=this.dataset.l">'
+              : (h.charAt(0) || '?').toUpperCase()) +
         '</span><span>' + h + '</span></div>';
     }
     tiles.innerHTML = html;
-    box.style.display = '';
-    tiles.querySelectorAll('.tile').forEach(function (el) {
+    box.classList.add('has');
+    tiles.querySelectorAll('.ti').forEach(function (el) {
       el.addEventListener('click', function () { send('navigate:' + el.getAttribute('data-u')); });
     });
   }

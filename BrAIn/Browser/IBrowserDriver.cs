@@ -40,6 +40,16 @@ public interface IBrowserDriver : IAsyncDisposable
     /// </summary>
     Task<JsonElement?> EvaluateAsync(string expression, bool awaitPromise, CancellationToken ct);
 
+    /// <summary>
+    /// Evaluate a JS program (statement lists allowed; completion value of the
+    /// last statement is returned). The default maps to EvaluateAsync, which is
+    /// correct for drivers whose eval already takes a program (CDP
+    /// Runtime.evaluate). WKWebView needs a different envelope, so WebKitDriver
+    /// overrides it.
+    /// </summary>
+    Task<JsonElement?> EvalScriptAsync(string script, bool awaitPromise, CancellationToken ct)
+        => EvaluateAsync(script, awaitPromise, ct);
+
     /// <summary>Whether the page can go back/forward in its navigation history.</summary>
     Task<(bool CanBack, bool CanFwd)> GetNavStateAsync(CancellationToken ct);
 
@@ -61,6 +71,11 @@ public interface IBrowserDriver : IAsyncDisposable
     Task<bool> SetCookieAsync(CookieInfo cookie, CancellationToken ct);
     Task<bool> DeleteCookiesAsync(string? name, string? url, CancellationToken ct);
 
+    /// <summary>Write imported cookies into the webview's shared cookie
+    /// store. Returns the number written, or -1 where the platform exposes
+    /// no cookie-store write API (import reports "not supported").</summary>
+    Task<int> ImportCookiesAsync(IReadOnlyList<Import.ImportedCookie> cookies, CancellationToken ct);
+
     /// <summary>Wipe all stored site data (cookies, localStorage, caches) for
     /// an origin — used when a private tab closes. Best-effort no-op where
     /// the platform can't reach it.</summary>
@@ -71,6 +86,14 @@ public interface IBrowserDriver : IAsyncDisposable
     /// final state on first paint instead of popping in after the state
     /// round-trip — kills the new-tab flicker. No-op where unsupported.</summary>
     Task SetBootStateAsync(string stateJson, CancellationToken ct);
+
+    /// <summary>Pull buffered network entries into <see cref="DriverBase.NetworkEvent"/>.
+    /// CDP drivers stream events live (no-op); WebKit polls resource timing.</summary>
+    Task PullNetworkAsync(CancellationToken ct);
+
+    /// <summary>Mute/unmute everything the current document plays. Native on
+    /// WKWebView; elsewhere the injected toolbar enforces it in-page.</summary>
+    void SetPageMuted(bool muted);
 
     Task SetViewportAsync(int width, int height, double deviceScaleFactor, bool mobile, CancellationToken ct);
 }

@@ -44,6 +44,14 @@ public sealed class BrowserTab
     /// edge; immune to close/middle-click until unpinned.</summary>
     public bool IsPinned { get; set; }
 
+    /// <summary>User muted this tab. Applies whenever the tab owns the live
+    /// document, so it survives navigation and tab switches.</summary>
+    public bool IsMuted { get; set; }
+
+    /// <summary>Tab's document is currently producing sound (only ever true
+    /// for the document owner — logical tabs unload when switched away).</summary>
+    public bool IsAudible { get; set; }
+
     public bool IsClosed { get; set; }
 
     public override string ToString() => $"{Id.ToString()[..8]} {(IsMain ? "(main) " : "")}{LastTitle ?? "?"} <{LastUrl}>";

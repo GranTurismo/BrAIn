@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Import — BrAIn</title>
+<script>
+  // Served via LoadRawString — flags itself so the host maps this document
+  // to about:import instead of the about:blank location.href reports.
+  window.__brainImport = 1;
+</script>
+<style>
+/*@THEME*/
+  body { padding: 84px 24px 90px; }
+  .wrap { max-width: 740px; }
+  .head { margin-bottom: 8px; }
+  .logo { font-size: 32px; }
+  .sub { font-size: 14px; margin-top: 8px; color: #7a7a98; }
+  .sub b { color: #c4c4e8; }
+
+  .card { margin-top: 22px; padding: 20px 22px; }
+  .brow { display: flex; align-items: center; gap: 16px; }
+  .bic {
+    width: 42px; height: 42px; flex: none; border-radius: 13px;
+    display: grid; place-items: center; font-size: 18px; font-weight: 800; color: #fff;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 8px 18px -6px rgba(0,0,0,.5);
+  }
+  .bname { font-size: 15.5px; font-weight: 700; color: #f0f0fd; }
+  .bmeta { font-size: 12px; color: #6e6e8c; margin-top: 2px; }
+  .bnote { font-size: 11.5px; color: #a3916a; margin-top: 3px; }
+
+  .opts { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .opt {
+    display: flex; align-items: center; gap: 8px; padding: 9px 15px;
+    border-radius: 12px; cursor: pointer; font-size: 12.5px; font-weight: 600;
+    background: var(--glass); border: 1px solid rgba(255,255,255,.09);
+    color: #b9b9d4; transition: all .15s; user-select: none; -webkit-user-select: none;
+  }
+  .opt:hover { border-color: hsl(var(--h) 100% 74% / .4); }
+  .opt.on { background: hsl(var(--h) 100% 74% / .16); border-color: hsl(var(--h) 100% 74% / .5); color: #ececff; }
+  .opt.off { opacity: .38; pointer-events: none; }
+  .opt .n { color: #7a7a96; font-weight: 500; }
+  .opt.on .n { color: hsl(var(--h) 100% 86%); }
+
+  .res { margin-top: 10px; font-size: 12.5px; color: var(--ac2); min-height: 18px; }
+  .res .bad { color: #ffb4b9; }
+
+  #go { margin-top: 26px; width: 100%; padding: 14px; border-radius: 14px; letter-spacing: .3px; }
+  #go:disabled { opacity: .45; cursor: default; filter: none; box-shadow: none; }
+
+  .empty {
+    margin-top: 40px; padding: 36px 22px; text-align: center; border-radius: 20px;
+    background: rgba(255,255,255,.025); border: 1px dashed rgba(255,255,255,.1);
+    color: #5f5f7c; font-size: 13.5px; line-height: 1.8;
+  }
+  .spin {
+    display: inline-block; width: 13px; height: 13px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.22); border-top-color: var(--ac);
+    animation: sp .7s linear infinite; vertical-align: -2px; margin-right: 8px;
+  }
+  @keyframes sp { to { transform: rotate(360deg); } }
+
+  .foot { margin-top: 44px; text-align: center; color: #50506a; font-size: 12.5px; line-height: 1.8; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <div class="logo">Import</div>
+      <div class="sub">
+        Bring <b>history</b>, <b>bookmarks</b>, <b>cookies</b> and <b>passwords</b> from other browsers.
+        Source data is only read &mdash; nothing is modified in the other browser.
+      </div>
+    </div>
+    <div id="list"><div class="empty"><span class="spin"></span>Looking for browsers&hellip;</div></div>
+    <button id="go" class="btn" hidden disabled>Select what to import</button>
+    <div class="foot">Internal page &middot; <a href="#" id="back">&larr; Back to new tab</a></div>
+  </div>
+<script>
+  var sources = [];
+  var running = false;
+
+  function send(cmd) {
+    try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
+  }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function fmt(n) { return n > 999 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+  function bicon(b) {
+    var k = b.kind === 'safari' ? 'linear-gradient(140deg,#4aa8ff,#2d6dd6)'
+          : b.kind === 'firefox' ? 'linear-gradient(140deg,#ff9c54,#e34f26)'
+          : 'linear-gradient(140deg,#5fb4ff,#3b78e7)';
+    return k;
+  }
+  function letter(b) { return esc((b.name || '?').trim().charAt(0).toUpperCase()); }
+
+  function render() {
+    var list = document.getElementById('list'), go = document.getElementById('go');
+    if (!sources.length) {
+      list.innerHTML = '<div class="empty">No other browsers with data found.<br>' +
+        'BrAIn looks in the standard Chrome, Edge, Brave, Arc, Vivaldi, Opera, Firefox and Safari profile folders.</div>';
+      go.hidden = true;
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < sources.length; i++) {
+      var b = sources[i];
+      var bits = [];
+      if (b.hist) bits.push(fmt(b.hist) + ' history');
+      if (b.bm) bits.push(fmt(b.bm) + ' bookmarks');
+      if (b.ck) bits.push(fmt(b.ck) + ' cookies');
+      if (b.pw) bits.push(fmt(b.pw) + ' passwords');
+      html += '<div class="card">' +
+        '<div class="brow"><div class="bic" style="background:' + bicon(b) + '">' + letter(b) + '</div>' +
+        '<div><div class="bname">' + esc(b.name) + '</div>' +
+        '<div class="bmeta">' + esc(bits.join(' \u00b7 ') || 'no data found') + '</div>' +
+        (b.note ? '<div class="bnote">' + esc(b.note) + '</div>' : '') + '</div></div>' +
+        '<div class="opts">' +
+          opt(b, 'hist', 'History', b.hist) +
+          opt(b, 'bm', 'Bookmarks', b.bm) +
+          opt(b, 'ck', 'Cookies', b.ck) +
+          opt(b, 'pw', 'Passwords', b.pw) +
+        '</div>' +
+        '<div class="res" id="res-' + esc(b.id) + '"></div></div>';
+    }
+    list.innerHTML = html;
+    go.hidden = false;
+    refreshGo();
+    Array.prototype.forEach.call(list.querySelectorAll('.opt'), function (o) {
+      o.addEventListener('click', function () {
+        if (running) return;
+        var src = sources[o.getAttribute('data-i') * 1];
+        var key = o.getAttribute('data-k');
+        src.sel[key] = !src.sel[key];
+        o.classList.toggle('on', src.sel[key]);
+        refreshGo();
+      });
+    });
+  }
+
+  function opt(b, key, label, count) {
+    var i = sources.indexOf(b);
+    var cls = count ? 'opt' + (b.sel[key] ? ' on' : '') : 'opt off';
+    return '<div class="' + cls + '" data-i="' + i + '" data-k="' + key + '">' +
+      label + ' <span class="n">' + (count ? fmt(count) : '0') + '</span></div>';
+  }
+
+  function refreshGo() {
+    var go = document.getElementById('go'), any = false;
+    for (var i = 0; i < sources.length; i++) {
+      var s = sources[i].sel;
+      if ((s.hist && sources[i].hist) || (s.bm && sources[i].bm) ||
+          (s.ck && sources[i].ck) || (s.pw && sources[i].pw)) { any = true; break; }
+    }
+    go.disabled = !any || running;
+  }
+
+  document.getElementById('go').addEventListener('click', function () {
+    if (running) return;
+    var picks = [];
+    for (var i = 0; i < sources.length; i++) {
+      var b = sources[i], s = b.sel;
+      var p = { id: b.id, hist: s.hist && b.hist > 0, bm: s.bm && b.bm > 0,
+                ck: s.ck && b.ck > 0, pw: s.pw && b.pw > 0 };
+      if (p.hist || p.bm || p.ck || p.pw) picks.push(p);
+    }
+    if (!picks.length) return;
+    running = true;
+    document.getElementById('go').textContent = 'Importing\u2026';
+    refreshGo();
+    send('importgo:' + JSON.stringify(picks));
+  });
+
+  // chrome.js relays host pushes as 'brain-msg': b:17 = scan, b:18 = results.
+  document.addEventListener('brain-msg', function (e) {
+    var j = e.detail;
+    if (j && j.b === 17 && Array.isArray(j.browsers)) {
+      sources = j.browsers.map(function (b) {
+        b.sel = { hist: b.hist > 0, bm: b.bm > 0, ck: b.ck > 0, pw: b.pw > 0 };
+        return b;
+      });
+      render();
+    } else if (j && j.b === 18 && Array.isArray(j.results)) {
+      running = false;
+      document.getElementById('go').textContent = 'Import selected';
+      refreshGo();
+      for (var i = 0; i < j.results.length; i++) {
+        var r = j.results[i];
+        var el = document.getElementById('res-' + r.id);
+        if (!el) continue;
+        var parts = [];
+        if (r.hist >= 0) parts.push(r.hist + ' pages');
+        if (r.bm >= 0) parts.push(r.bm + ' bookmarks');
+        if (r.ck >= 0) parts.push(r.ck + ' cookies');
+        if (r.ck === -1) parts.push('cookies not supported here');
+        if (r.pw >= 0) parts.push(r.pw + ' passwords');
+        el.innerHTML = r.err
+          ? '<span class="bad">Failed: ' + esc(r.err) + '</span>'
+          : 'Imported ' + esc(parts.join(' \u00b7 ') || 'nothing');
+      }
+    }
+  });
+
+  document.getElementById('back').addEventListener('click', function (e) {
+    e.preventDefault(); send('navigate:about:newtab');
+  });
+
+  send('importscan');
+</script>
+</body>
+</html>

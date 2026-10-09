@@ -14,6 +14,8 @@ public sealed class WebKitDriver : DriverBase
     private long _windowNumber;
     private Timer? _watcher;
     private string _watchedUrl = "";
+    private bool _loading, _sawLoad;
+    private DateTime _loadStartAt;
     private int _evalCounter;
 
     public WebKitDriver(BrowserTab tab, BrowserController controller) : base(tab, controller) { }
@@ -74,13 +76,39 @@ public sealed class WebKitDriver : DriverBase
                     break;
                 }
             }
-            await Task.Delay(300, ct);
+            await Task.Delay(25, ct);
         }
 
         if (_webview == IntPtr.Zero)
             throw new InvalidOperationException("Could not locate the WKWebView for this window");
 
-        await Controller.EnsurePageHelpersAsync(Tab);
+        // Wait for WKWebView's initial document to commit before releasing the driver as ready.
+        // This completely eliminates the 30-second eval stall on early tool calls.
+        var readyDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTime.UtcNow < readyDeadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            var loading = Controller.InvokeOnUi(() => MacWindow.IsWebViewLoading(_webview));
+            if (!loading)
+            {
+                try
+                {
+                    using var probeCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
+                    using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, probeCts.Token);
+                    var probeId = "init" + Interlocked.Increment(ref _evalCounter);
+                    var res = await EvalOnWebViewAsync(_webview, probeId, linked.Token, TimeSpan.FromMilliseconds(150),
+                        BuildEnvelope(probeId, "document.readyState === 'complete' || document.readyState === 'interactive'", false));
+                    if (res?.ValueKind == JsonValueKind.True)
+                        break;
+                }
+                catch
+                {
+                    // Frame still committing
+                }
+            }
+            await Task.Delay(10, ct);
+        }
+
         StartWatcher();
     }
 
@@ -90,6 +118,11 @@ public sealed class WebKitDriver : DriverBase
         _webview = webview;
         Tab.MacWindowNumber = windowNumber;
         try { _watchedUrl = ""; } catch { }
+        try { Controller.InvokeOnUi(() => MacWindow.EnablePictureInPicture(webview)); } catch { }
+        try { Controller.InvokeOnUi(() => WkDownloads.Install(webview, Controller)); } catch { }
+        // Document-start injection: mounts the chrome bar while the page is
+        // still parsing instead of waiting for the post-load eval path.
+        try { Controller.InvokeOnUi(() => WkUserScript.Install(webview, Controller.PageLibSource)); } catch { }
     }
 
     /// <summary>Re-resolve the webview by remembered window number
@@ -113,23 +146,53 @@ public sealed class WebKitDriver : DriverBase
         var wv = ResolveWebView();
         if (wv == IntPtr.Zero)
             throw new InvalidOperationException("WKWebView not available (window closed?)");
-        return await EvalOnWebViewAsync(wv, expression, ct, awaitPromise);
+        var id = "e" + Interlocked.Increment(ref _evalCounter);
+        return await EvalOnWebViewAsync(wv, id, ct, null, BuildEnvelope(id, expression, awaitPromise));
     }
 
-    private async Task<JsonElement?> EvalOnWebViewAsync(IntPtr webview, string expression, CancellationToken ct, bool awaitPromise = true)
+    /// <summary>Whole-program eval for helper injection and user scripts.
+    /// Pass 1 uses real eval() so statement completion values survive. When a
+    /// strict CSP refuses eval (EvalError → __ce sentinel), two raw-source
+    /// envelopes are sent under the same pending id: expression-wrap first so
+    /// expression-shaped scripts still return a value, then a statement body
+    /// — they cannot share one script because a parse failure in either would
+    /// kill the whole envelope before its try/catch ran. A __brk_<id>
+    /// window marker set by whichever runs first prevents double execution;
+    /// the loser's response is dropped by the pending table.</summary>
+    public override async Task<JsonElement?> EvalScriptAsync(string script, bool awaitPromise, CancellationToken ct)
     {
+        var wv = ResolveWebView();
+        if (wv == IntPtr.Zero)
+            throw new InvalidOperationException("WKWebView not available (window closed?)");
         var id = "e" + Interlocked.Increment(ref _evalCounter);
-        var script = BuildEnvelope(id, expression, awaitPromise);
+        var res = await EvalOnWebViewAsync(wv, id, ct, null, BuildScriptEnvelope(id, script, awaitPromise));
+        if (res is { ValueKind: JsonValueKind.Object } el
+            && el.TryGetProperty("__ce", out var ce) && ce.ValueKind == JsonValueKind.True)
+        {
+            res = await EvalOnWebViewAsync(wv, id, ct, null,
+                BuildRawExprEnvelope(id, script, awaitPromise),
+                BuildRawStmtEnvelope(id, script, awaitPromise));
+        }
+        return res;
+    }
+
+    private async Task<JsonElement?> EvalOnWebViewAsync(
+        IntPtr webview, string id, CancellationToken ct, TimeSpan? timeout = null, params string[] scripts)
+    {
         var pending = Controller.RegisterPendingEval(id, ct);
 
-        Controller.InvokeOnUi(() =>
+        foreach (var script in scripts)
         {
-            var ns = ObjC.NsString(script);
-            ObjC.Send(webview, ObjC.Sel("evaluateJavaScript:completionHandler:"), ns, IntPtr.Zero);
-        });
+            var s = script;
+            Controller.InvokeOnUi(() =>
+            {
+                var ns = ObjC.NsString(s);
+                ObjC.Send(webview, ObjC.Sel("evaluateJavaScript:completionHandler:"), ns, IntPtr.Zero);
+            });
+        }
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(30));
+        timeoutCts.CancelAfter(timeout ?? TimeSpan.FromSeconds(6));
         await using var reg = timeoutCts.Token.Register(() =>
             BrowserController.Log("webkit eval timed out")).ConfigureAwait(false);
 
@@ -146,21 +209,109 @@ public sealed class WebKitDriver : DriverBase
     /// <summary>
     /// Wraps a user expression in a promise-aware envelope that posts the
     /// JSON-serialized result back via window.external.sendMessage.
+    /// The expression is inlined as source: evaluateJavaScript's own script
+    /// is CSP-exempt, but an inner eval()/new Function() call is not — strict
+    /// script-src pages (github.com, most Google properties) rejected every
+    /// eval wrapped as (0,eval)("...").
     /// </summary>
     internal static string BuildEnvelope(string id, string expression, bool awaitPromise)
     {
         var idJson = JsonSerializer.Serialize(id);
-        var exprJson = JsonSerializer.Serialize(expression);
         var awaitFlag = awaitPromise ? "true" : "false";
         return
             "(function(){" +
             "var __id=" + idJson + ";" +
             "function __fin(ok,v){" +
             "try{window.external.sendMessage(JSON.stringify({b:1,id:__id,ok:ok,v:v===undefined?null:v}))}" +
-            "catch(e){try{window.external.sendMessage(JSON.stringify({b:1,id:__id,ok:false,e:String(e)}))}catch(_){}}" +
+            "catch(e){try{window.external.sendMessage(JSON.stringify({b:1,id:__id,ok:false,v:String(e)}))}catch(_){}}" +
             "}" +
             "try{" +
-            "var __r=(0,eval)(" + exprJson + ");" +
+            "var __r=(" + expression + ");" +
+            "if(" + awaitFlag + "&&__r&&typeof __r.then==='function'){" +
+            "__r.then(function(v){__fin(true,v)},function(e){__fin(false,String(e&&e.stack||e))});" +
+            "} else { __fin(true,__r); }" +
+            "}catch(e){ __fin(false,String(e&&e.stack||e)); }" +
+            "})();";
+    }
+
+    /// <summary>
+    /// Envelope for whole programs (statement lists, helper injection, user
+    /// scripts). Real eval() preserves the completion value of the last
+    /// statement. When CSP refuses eval it throws EvalError — reported back
+    /// as {__ce:true} so EvalScriptAsync can re-send the source embedded
+    /// raw in a pair of envelopes (evaluateJavaScript's own source is
+    /// CSP-exempt).
+    /// </summary>
+    internal static string BuildScriptEnvelope(string id, string script, bool awaitPromise)
+    {
+        var idJson = JsonSerializer.Serialize(id);
+        var scriptJson = JsonSerializer.Serialize(script);
+        var awaitFlag = awaitPromise ? "true" : "false";
+        return
+            "(function(){" +
+            "var __id=" + idJson + ";" +
+            FinFunc +
+            // CSP without unsafe-eval throws EvalError, but Trusted Types
+            // (YouTube, Google) throws a TypeError instead — so probe whether
+            // string eval is available at all rather than sniffing the error
+            // class, which would also misread a script's own TypeError.
+            "var __ok=true;try{(0,eval)('0')}catch(_){__ok=false}" +
+            "if(!__ok){__fin(true,{__ce:true});return}" +
+            "try{" +
+            "var __r=(0,eval)(" + scriptJson + ");" +
+            "if(" + awaitFlag + "&&__r&&typeof __r.then==='function'){" +
+            "__r.then(function(v){__fin(true,v)},function(e){__fin(false,String(e&&e.stack||e))});" +
+            "} else { __fin(true,__r); }" +
+            // A SyntaxError means nothing ran (e.g. a top-level 'return') —
+            // hand the source to the function-body envelopes instead.
+            "}catch(__ce){if(__ce instanceof SyntaxError){__fin(true,{__ce:true})}" +
+            "else{__fin(false,String(__ce&&__ce.stack||__ce))}}" +
+            "})();";
+    }
+
+    private const string FinFunc =
+        "function __fin(ok,v){" +
+        "try{window.external.sendMessage(JSON.stringify({b:1,id:__id,ok:ok,v:v===undefined?null:v}))}" +
+        "catch(e){try{window.external.sendMessage(JSON.stringify({b:1,id:__id,ok:false,v:String(e)}))}catch(_){}}" +
+        "}";
+
+    /// <summary>CSP fallback 1/2: the script embedded in expression position.
+    /// Sets a per-eval marker before running so the statement envelope (sent
+    /// alongside) skips itself; if the source isn't expression-shaped this
+    /// whole envelope fails to parse and simply never runs.</summary>
+    internal static string BuildRawExprEnvelope(string id, string script, bool awaitPromise)
+    {
+        var idJson = JsonSerializer.Serialize(id);
+        var awaitFlag = awaitPromise ? "true" : "false";
+        return
+            "(function(){" +
+            "var __id=" + idJson + ",__m=\"__brk_\"+__id;" +
+            FinFunc +
+            "window[__m]=1;" +
+            "try{" +
+            "var __r=(function(){return (" + script + "\n);})();" +
+            "if(" + awaitFlag + "&&__r&&typeof __r.then==='function'){" +
+            "__r.then(function(v){__fin(true,v)},function(e){__fin(false,String(e&&e.stack||e))});" +
+            "} else { __fin(true,__r); }" +
+            "}catch(e){ __fin(false,String(e&&e.stack||e)); }" +
+            "})();";
+    }
+
+    /// <summary>CSP fallback 2/2: the script embedded as a function body.
+    /// Runs only when the expression envelope never executed (marker unset)
+    /// — i.e. when the source is statement-shaped and the sibling envelope
+    /// failed to parse. Explicit 'return' still produces a value.</summary>
+    internal static string BuildRawStmtEnvelope(string id, string script, bool awaitPromise)
+    {
+        var idJson = JsonSerializer.Serialize(id);
+        var awaitFlag = awaitPromise ? "true" : "false";
+        return
+            "(function(){" +
+            "var __id=" + idJson + ",__m=\"__brk_\"+__id;" +
+            FinFunc +
+            "if(window[__m])return;window[__m]=1;" +
+            "try{" +
+            "var __r=(function(){" + script + "\n})();" +
             "if(" + awaitFlag + "&&__r&&typeof __r.then==='function'){" +
             "__r.then(function(v){__fin(true,v)},function(e){__fin(false,String(e&&e.stack||e))});" +
             "} else { __fin(true,__r); }" +
@@ -170,12 +321,125 @@ public sealed class WebKitDriver : DriverBase
 
     // ---------------- navigation ----------------
 
+    /// <summary>Guarded load events — WKWebView has no navigation callbacks,
+    /// so Started/Completed come from three sources that can overlap (explicit
+    /// navigation, the load-flag watcher, the pagehide beacon). Started
+    /// only fires once per load; Completed only fires while loading, so any
+    /// path may end it but no path can double-count it.</summary>
+    protected override void RaiseLoadStarted()
+    {
+        if (_loading) return;
+        _loading = true;
+        _sawLoad = false;
+        _loadStartAt = DateTime.UtcNow;
+        base.RaiseLoadStarted();
+    }
+
+    protected override bool PageLoading
+    {
+        get { var wv = _webview; return wv != IntPtr.Zero && Controller.InvokeOnUi(() => MacWindow.IsWebViewLoading(wv)); }
+    }
+
+    protected override void RaiseLoadCompleted()
+    {
+        if (!_loading) return;
+        _loading = false;
+        base.RaiseLoadCompleted();
+    }
+
+    /// <summary>brain.js 'pagehide' beacon: a navigation away from the live
+    /// document is starting (link click, form submit, JS redirect). The
+    /// watcher ends it when the next document is interactive — or sweeps it
+    /// on the next tick if the navigation aborted.</summary>
+    internal void MarkLoadStarted() => RaiseLoadStarted();
+
+    /// <summary>WKWebView has no network event stream — the DevTools pane
+    /// pulls PerformanceResourceTiming deltas out of the live document
+    /// (resource + navigation entries) and feeds them into the shared log.
+    /// Runs only while the panel polls dtget, so it costs nothing when
+    /// DevTools is closed.</summary>
+    private int _netCounter;
+
+    public override async Task PullNetworkAsync(CancellationToken ct)
+    {
+        if (_webview == IntPtr.Zero) return;
+        try
+        {
+            var res = await EvaluateAsync(
+                "window.__brain && window.__brain.networkLog ? JSON.stringify(window.__brain.networkLog()) : '[]'",
+                false, ct);
+            if (res?.ValueKind != JsonValueKind.String) return;
+            using var doc = JsonDocument.Parse(res.Value.GetString()!);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return;
+            foreach (var e in doc.RootElement.EnumerateArray())
+            {
+                var url = e.TryGetProperty("name", out var n) ? n.GetString() : null;
+                if (string.IsNullOrEmpty(url)) continue;
+                var when = e.TryGetProperty("t", out var t) && t.ValueKind == JsonValueKind.Number
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(t.GetInt64()).LocalDateTime
+                    : DateTime.Now;
+                RaiseNetwork(new NetworkEntry(
+                    when,
+                    "wk" + Interlocked.Increment(ref _netCounter),
+                    "GET", url,
+                    null, // status not exposed by the timing API
+                    e.TryGetProperty("type", out var ty) ? ty.GetString() : null,
+                    e.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number ? s.GetInt64() : 0,
+                    null));
+            }
+        }
+        catch { /* context mid-navigation */ }
+    }
+
+    /// <summary>Bulk cookie write into the webview's WKWebsiteDataStore for
+    /// the browser-data importer. ObjC calls must land on the UI thread.</summary>
+    public override Task<int> ImportCookiesAsync(
+        IReadOnlyList<Import.ImportedCookie> cookies, CancellationToken ct)
+    {
+        var wv = ResolveWebView();
+        if (wv == IntPtr.Zero) return Task.FromResult(0);
+        return Task.FromResult(Controller.InvokeOnUi(() => WkCookieStore.SetCookies(wv, cookies)));
+    }
+
     public override async Task<NavigateResult> NavigateAsync(string url, CancellationToken ct)
     {
+        // Mark the outgoing document so WaitForNewDocAsync can tell when the
+        // new one commits — readyState still describes the OLD page until then.
+        var navTok = "__navW" + Interlocked.Increment(ref _evalCounter);
+        try { await EvaluateAsync("window." + navTok + "=1", false, ct); } catch { }
+        RaiseLoadStarted();
         Controller.InvokeOnUi(() => Tab.Window.Load(new Uri(url)));
         _watchedUrl = url;
-        await WaitForLoadAsync(ct);
+        await WaitForNewDocAsync(navTok, ct);
         return NavigateResult.Success(await GetUrlSafeAsync(ct), await GetTitleSafeAsync(ct));
+    }
+
+    /// <summary>Polls until the pre-navigation marker is gone (new document
+    /// committed) and its readyState is interactive+. WKWebView exposes no
+    /// commit callback, so the token is the only reliable boundary.</summary>
+    private async Task WaitForNewDocAsync(string navTok, CancellationToken ct, int timeoutMs = 15000)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        await Task.Delay(120, ct);
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var rs = await EvaluateAsync(
+                    "window." + navTok + " ? 'pending' : document.readyState", false, ct);
+                if (rs?.ValueKind == JsonValueKind.String &&
+                    (rs.Value.GetString() is "interactive" or "complete") && !PageLoading)
+                {
+                    await Task.Delay(150, ct); // settle — SPA hydration
+                    RaiseLoadCompleted();
+                    return;
+                }
+            }
+            catch { /* context mid-swap */ }
+            await Task.Delay(200, ct);
+        }
+        RaiseLoadCompleted(); // timeout — still let helpers inject
     }
 
     // ---------------- screenshots ----------------
@@ -211,30 +475,75 @@ public sealed class WebKitDriver : DriverBase
 
     // ---------------- helpers ----------------
 
-    private void StartWatcher()
+    public override void SetPageMuted(bool muted)
     {
-        _watcher = new Timer(async _ =>
+        var wv = _webview;
+        if (wv == IntPtr.Zero) return;
+        Controller.InvokeOnUi(() => MacWindow.SetWebViewMuted(wv, muted));
+    }
+
+    private Timer? _audioTimer;
+    private bool _audible;
+
+    /// <summary>Polls WKWebView's native "is playing audio" flag so the tab
+    /// shows a speaker while sound plays; only pushes on change.</summary>
+    private void StartAudioWatcher()
+    {
+        _audioTimer = new Timer(_ =>
         {
             try
             {
-                var info = await EvaluateAsync(
-                    "JSON.stringify({u:location.href,r:document.readyState})", false, CancellationToken.None);
-                if (info?.ValueKind != JsonValueKind.String) return;
-                using var doc = JsonDocument.Parse(info.Value.GetString()!);
-                var url = doc.RootElement.GetProperty("u").GetString() ?? "";
-                if (url != _watchedUrl && !string.IsNullOrEmpty(url))
-                {
-                    _watchedUrl = url;
-                    Tab.LastUrl = url;
+                var wv = _webview;
+                if (wv == IntPtr.Zero) return;
+                var on = Controller.InvokeOnUi(() => MacWindow.IsWebViewPlayingAudio(wv));
+                if (on == _audible) return;
+                _audible = on;
+                Controller.SetPageAudible(on);
+            }
+            catch { /* webview gone or transitioning */ }
+        }, null, TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(700));
+    }
+
+    private int _watchTick;
+    private void StartWatcher()
+    {
+        StartAudioWatcher();
+        _watcher = new Timer(_ =>
+        {
+            try
+            {
+                // When idle, only check occasionally (~2.5s). When loading, check every tick.
+                if (!_loading && (Interlocked.Increment(ref _watchTick) % 5 != 0))
+                    return;
+
+                var loading = PageLoading;
+                if (loading) { RaiseLoadStarted(); _sawLoad = true; }
+
+                var age = DateTime.UtcNow - _loadStartAt;
+                if (_loading && (!loading && _sawLoad || !_sawLoad && age > TimeSpan.FromSeconds(4) || age > TimeSpan.FromSeconds(60)))
                     RaiseLoadCompleted();
+
+                // Native URL inspection — zero JS evaluation, zero allocations, zero CPU waste
+                var wv = _webview;
+                if (wv != IntPtr.Zero)
+                {
+                    var url = Controller.InvokeOnUi(() => MacWindow.GetWebViewUrl(wv));
+                    if (!string.IsNullOrEmpty(url) && url != _watchedUrl)
+                    {
+                        _watchedUrl = url;
+                        // the shared webview shows the doc owner's page, not necessarily the driver's own tab
+                        BrowserController.SetTabUrl(Controller.DocOwner ?? Tab, url);
+                        if (!loading) { RaiseLoadStarted(); RaiseLoadCompleted(); }
+                    }
                 }
             }
             catch { /* page transitioning or webview gone */ }
-        }, null, TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(800));
+        }, null, TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(500));
     }
 
     public override async ValueTask DisposeAsync()
     {
         try { if (_watcher is not null) await _watcher.DisposeAsync(); } catch { }
+        try { if (_audioTimer is not null) await _audioTimer.DisposeAsync(); } catch { }
     }
 }

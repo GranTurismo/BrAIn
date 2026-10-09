@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -12,6 +12,12 @@
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <!-- macOS bundle settings are applied when publishing for osx-* RIDs -->
     <RuntimeIdentifiers>win-x64;osx-arm64;osx-x64</RuntimeIdentifiers>
+    <!-- High-Performance Runtime & Memory Optimization Settings -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <GarbageCollectionAdaptationMode>1</GarbageCollectionAdaptationMode>
+    <TieredPGO>true</TieredPGO>
+    <TieredCompilation>true</TieredCompilation>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,8 +28,12 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\brain.js" LogicalName="BrAIn.Assets.brain.js" />
+    <EmbeddedResource Include="Assets\theme.css" LogicalName="BrAIn.Assets.theme.css" />
     <EmbeddedResource Include="Assets\newtab.html" LogicalName="BrAIn.Assets.newtab.html" />
     <EmbeddedResource Include="Assets\help.html" LogicalName="BrAIn.Assets.help.html" />
+    <EmbeddedResource Include="Assets\history.html" LogicalName="BrAIn.Assets.history.html" />
+    <EmbeddedResource Include="Assets\import.html" LogicalName="BrAIn.Assets.import.html" />
+    <EmbeddedResource Include="Assets\passwords.html" LogicalName="BrAIn.Assets.passwords.html" />
     <EmbeddedResource Include="Assets\chrome.js" LogicalName="BrAIn.Assets.chrome.js" />
     <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

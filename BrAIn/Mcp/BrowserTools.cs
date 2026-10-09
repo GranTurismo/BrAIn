@@ -383,7 +383,7 @@ public sealed class BrowserTools(BrowserController browser)
         CancellationToken ct = default)
     {
         var t = ResolveTab(tab);
-        var r = await browser.EvaluateAsync($"eval({Js(script)})", awaitPromise, t, ct);
+        var r = await browser.EvalScriptAsync(script, awaitPromise, t, ct);
         return BrowserController.JsonToText(r);
     }
 
@@ -565,6 +565,48 @@ public sealed class BrowserTools(BrowserController browser)
             throw new NotSupportedException("PDF printing requires the CDP driver (Windows)");
         var res = await cdp.PrintToPdfAsync(outputPath, ct);
         return res;
+    }
+
+    // ============================================================== FILES
+
+    [McpServerTool(Name = "browser_upload"), Description("Load a local file into an <input type=file> by injecting a File via a DataTransfer — no native dialog. The bytes are read by the browser process itself, so nothing traverses the network.")]
+    public async Task<string> Upload(
+        [Description("Absolute path to the local file")] string path,
+        [Description(SelHelp + " Defaults to the first input[type=file] (preferring one that accepts .aab).")] string? element = null,
+        [Description("Tab id/prefix")] string? tab = null,
+        CancellationToken ct = default)
+    {
+        var t = ResolveTab(tab);
+        await EnsureLibAsync(t, ct);
+        var bytes = await File.ReadAllBytesAsync(path, ct);
+        var name = Path.GetFileName(path);
+        var b64 = Convert.ToBase64String(bytes);
+
+        await browser.EvaluateTextAsync("window.__up=''", t, ct);
+        const int CH = 600_000;
+        for (var i = 0; i < b64.Length; i += CH)
+        {
+            var part = b64.Substring(i, Math.Min(CH, b64.Length - i));
+            await browser.EvaluateTextAsync($"window.__up+={Js(part)}", t, ct);
+        }
+
+        var target = element is null
+            ? "(document.querySelector('input[type=file][accept*=\".aab\"]')||document.querySelector('input[type=file]'))"
+            : $"window.__brain.resolve({Js(element)})";
+        var js =
+            "(function(){try{" +
+            "var bin=atob(window.__up),n=bin.length,arr=new Uint8Array(n);" +
+            "for(var i=0;i<n;i++)arr[i]=bin.charCodeAt(i);" +
+            "var f=new File([arr]," + Js(name) + ",{type:'application/octet-stream'});" +
+            "var dt=new DataTransfer(); dt.items.add(f);" +
+            "var inp=" + target + "; if(!inp) return 'no file input found';" +
+            "try{inp.files=dt.files}catch(e){}" +
+            "inp.dispatchEvent(new Event('input',{bubbles:true}));" +
+            "inp.dispatchEvent(new Event('change',{bubbles:true}));" +
+            "return 'injected '+f.name+' ('+f.size+' bytes); input.files='+inp.files.length;" +
+            "}catch(e){return 'ERR '+String(e&&e.stack||e)}})()";
+        var r = await browser.EvaluateTextAsync(js, t, ct);
+        return $"upload {name}: {r}";
     }
 
     // ============================================================== HELPERS

@@ -3,7 +3,7 @@
  * Windows, or on-demand eval on macOS). Exposes window.__brain.
  * Element refs are data-brain-ref attributes assigned during snapshots. */
 (function () {
-    if (window.__brain && window.__brain.v === 1) return;
+    if (window.__brain && window.__brain.v === 2) return;
 
     var REF = 'data-brain-ref';
     var refCounter = 0;
@@ -131,7 +131,7 @@
             if (!(node instanceof Element)) return;
             if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'NOSCRIPT' ||
                 node.tagName === 'META' || node.tagName === 'LINK' || node.tagName === 'TEMPLATE' ||
-                node.id === '__brain-toolbar-root') return;
+                node.id === '__brain-toolbar-root' || node.id === '__brain-chrome-host') return;
             if (!isVisible(node)) return;
 
             var role = roleOf(node);
@@ -584,14 +584,20 @@
 
     var _netSeen = 0;
     function networkLog(sinceIndex) {
-        var entries = performance.getEntriesByType('resource');
+        // document nav first, then subresources — the combined tail is what
+        // incremental calls (no sinceIndex) return.
+        var entries = performance.getEntriesByType('navigation')
+            .concat(performance.getEntriesByType('resource'));
         var start = sinceIndex !== undefined ? sinceIndex : _netSeen;
         _netSeen = entries.length;
+        var origin = performance.timeOrigin || 0;
         return entries.slice(start).map(function (e) {
             return {
-                name: e.name.slice(0, 300), type: e.initiatorType,
+                name: e.name.slice(0, 300),
+                type: e.initiatorType || (e.entryType === 'navigation' ? 'document' : 'other'),
                 duration: Math.round(e.duration), size: e.transferSize || 0,
                 start: Math.round(e.startTime),
+                t: Math.round(origin + e.startTime), // wall-clock epoch ms
             };
         });
     }
@@ -609,7 +615,7 @@
     function blurAll() { if (document.activeElement) document.activeElement.blur(); }
 
     window.__brain = {
-        v: 1,
+        v: 2,
         snapshot: snapshot, resolve: resolve, queryAll: queryAll,
         click: click, clickAt: clickAt, dblclick: dblclick, hover: hover,
         fill: fill, insertText: insertText, pressKey: pressKey,
@@ -622,6 +628,52 @@
         info: info, blurAll: blurAll,
         // toolbar() is attached by toolbar.js
     };
+
+    // Navigation beacon: pagehide fires as the document unloads (link click,
+    // form post, JS redirect, bfcache swap) — the earliest signal a load is
+    // starting, so the host can show the progress bar before the next
+    // document exists. The host-side watcher closes it out when the new
+    // document is interactive, or auto-heals if the navigation aborted.
+    window.addEventListener('pagehide', function () {
+        try {
+            window.external && window.external.sendMessage(JSON.stringify({ b: 30 }));
+        } catch (e) { }
+    });
+
+    // Earlier still: a qualifying link click or form submit means a load is
+    // *probably* starting right now — pagehide only fires at commit (after
+    // the server responds), so without this the bar waits out the whole TTFB.
+    // Deferred a tick so e.defaultPrevented reflects the page's handlers:
+    // SPA-intercepted clicks (pushState routing) don't light the bar, and if
+    // the doc unloads before the timer runs, the pagehide beacon covers it.
+    var navBeacon = function () {
+        try {
+            window.external && window.external.sendMessage(JSON.stringify({ b: 30 }));
+        } catch (err) { }
+    };
+    var qualifiesNavTarget = function (t) {
+        t = (t || '').toLowerCase();
+        return !t || t === '_self' || t === '_parent' || t === '_top';
+    };
+    window.addEventListener('click', function (e) {
+        try {
+            if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+            if (!a || a.hasAttribute('download') || !qualifiesNavTarget(a.getAttribute('target'))) return;
+            var h = a.getAttribute('href') || '';
+            if (!h || h.charAt(0) === '#' || /^(javascript|mailto|tel|data|blob):/i.test(h)) return;
+            // Same-document fragment nav doesn't load anything.
+            if (a.hash && a.href.split('#')[0] === location.href.split('#')[0]) return;
+            setTimeout(function () { if (!e.defaultPrevented) navBeacon(); }, 0);
+        } catch (err) { }
+    }, true);
+    window.addEventListener('submit', function (e) {
+        try {
+            var f = e.target;
+            if (!f || !qualifiesNavTarget(f.getAttribute && f.getAttribute('target'))) return;
+            setTimeout(function () { if (!e.defaultPrevented) navBeacon(); }, 0);
+        } catch (err) { }
+    }, true);
 
     try { installConsoleHook(); } catch (e) { }
 })();

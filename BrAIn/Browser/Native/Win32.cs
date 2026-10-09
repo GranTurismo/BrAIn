@@ -116,4 +116,154 @@ internal static class Win32
         }
         catch { /* older OS — skip */ }
     }
+
+    // ---------------- clipboard ----------------
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseClipboard();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetClipboardData(uint uFormat);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GlobalLock(IntPtr hMem);
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalUnlock(IntPtr hMem);
+
+    /// <summary>Unicode text on the clipboard, or null. Serves the page
+    /// menu's Paste command — WebView2's in-page clipboard.readText needs a
+    /// permission grant real apps can't assume.</summary>
+    internal static string? ClipboardText()
+    {
+        const uint CfUnicodeText = 13;
+        if (!OpenClipboard(IntPtr.Zero)) return null;
+        try
+        {
+            var h = GetClipboardData(CfUnicodeText);
+            if (h == IntPtr.Zero) return null;
+            var p = GlobalLock(h);
+            if (p == IntPtr.Zero) return null;
+            try { return Marshal.PtrToStringUni(p); }
+            finally { GlobalUnlock(h); }
+        }
+        finally { CloseClipboard(); }
+    }
+
+    // ---------------- consent prompt (password-vault unlock) ----------------
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct CredUiInfo
+    {
+        public uint cbSize;
+        public IntPtr hwndParent;
+        public string pszMessageText;
+        public string pszCaptionText;
+        public IntPtr hbmBanner;
+    }
+
+    [DllImport("credui.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CredUIPromptForWindowsCredentialsW(
+        ref CredUiInfo pUiInfo, uint dwAuthError, ref uint pulAuthPackage,
+        IntPtr pvInAuthBuffer, uint ulInAuthBufferSize,
+        IntPtr ppvOutAuthBuffer, ref uint pulOutAuthBufferSize,
+        [MarshalAs(UnmanagedType.Bool)] ref bool pfSave, uint dwFlags);
+
+    /// <summary>Windows Security credential dialog pinned to the current user —
+    /// PIN, fingerprint and face tiles are verified by the Hello credential
+    /// providers before the call returns. We discard the packed credential
+    /// buffer; only the verified/not-verified outcome matters.</summary>
+    internal static bool ConsentPrompt(IntPtr hwndParent, string reason)
+    {
+        const uint Generic = 0x1, EnumerateCurrentUser = 0x200;
+        var info = new CredUiInfo
+        {
+            cbSize = (uint)Marshal.SizeOf<CredUiInfo>(),
+            hwndParent = hwndParent,
+            pszMessageText = reason,
+            pszCaptionText = "BrAIn Passwords",
+            hbmBanner = IntPtr.Zero,
+        };
+        uint authPackage = 0;
+        bool save = false;
+        var buf = Marshal.AllocHGlobal(64 * 1024);
+        uint bufSize = 64 * 1024;
+        try
+        {
+            var rc = CredUIPromptForWindowsCredentialsW(ref info, 0, ref authPackage,
+                IntPtr.Zero, 0, buf, ref bufSize, ref save,
+                Generic | EnumerateCurrentUser);
+            return rc == 0; // 0 = verified; 1223 (cancelled) or error → denied
+        }
+        catch { return false; }
+        finally { Marshal.FreeHGlobal(buf); }
+    }
+
+    // ---------------- DPAPI (password-vault key protection) ----------------
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DataBlob { public int cbData; public IntPtr pbData; }
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptProtectData(ref DataBlob pDataIn, IntPtr szDataDescr,
+        IntPtr pOptionalEntropy, IntPtr pvReserved, IntPtr pPromptStruct, uint dwFlags, out DataBlob pDataOut);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptUnprotectData(ref DataBlob pDataIn, IntPtr ppszDataDescr,
+        IntPtr pOptionalEntropy, IntPtr pvReserved, IntPtr pPromptStruct, uint dwFlags, out DataBlob pDataOut);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr hMem);
+
+    private const uint CryptProtectUiForbidden = 0x1;
+
+    /// <summary>Per-user DPAPI protection — the vault key file can only be
+    /// unwrapped by the same Windows account, no prompt, no key UI.</summary>
+    internal static byte[]? DpapiProtect(byte[] data)
+    {
+        var input = new DataBlob { cbData = data.Length, pbData = Marshal.AllocHGlobal(data.Length) };
+        try
+        {
+            Marshal.Copy(data, 0, input.pbData, data.Length);
+            if (!CryptProtectData(ref input, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
+                    IntPtr.Zero, CryptProtectUiForbidden, out var output)) return null;
+            try
+            {
+                var buf = new byte[output.cbData];
+                Marshal.Copy(output.pbData, buf, 0, output.cbData);
+                return buf;
+            }
+            finally { LocalFree(output.pbData); }
+        }
+        catch { return null; }
+        finally { Marshal.FreeHGlobal(input.pbData); }
+    }
+
+    internal static byte[]? DpapiUnprotect(byte[] data)
+    {
+        var input = new DataBlob { cbData = data.Length, pbData = Marshal.AllocHGlobal(data.Length) };
+        try
+        {
+            Marshal.Copy(data, 0, input.pbData, data.Length);
+            if (!CryptUnprotectData(ref input, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
+                    IntPtr.Zero, CryptProtectUiForbidden, out var output)) return null;
+            try
+            {
+                var buf = new byte[output.cbData];
+                Marshal.Copy(output.pbData, buf, 0, output.cbData);
+                return buf;
+            }
+            finally { LocalFree(output.pbData); }
+        }
+        catch { return null; }
+        finally { Marshal.FreeHGlobal(input.pbData); }
+    }
 }

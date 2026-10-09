@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>History — BrAIn</title>
+<script>
+  // Served via LoadRawString — flags itself so the host maps the tab to
+  // about:history instead of the literal about:blank that location.href reports.
+  window.__brainHist = 1;
+  // Snapshot baked in by the host; live updates arrive as b:16 pushes that
+  // chrome.js forwards to us via the 'brain-msg' document event.
+  window.__brainHistData = __BRAIN_HISTORY_JSON__;
+</script>
+<style>
+/*@THEME*/
+  body { padding: 84px 24px 90px; }
+  .wrap { max-width: 880px; }
+  .head { display: flex; align-items: center; gap: 16px; margin-bottom: 28px; }
+  .logo { font-size: 30px; flex: none; }
+  #q {
+    flex: 1; min-width: 0; height: 46px; padding: 0 18px; border-radius: 14px; outline: none;
+    background: var(--glass); border: 1px solid rgba(255,255,255,.09);
+    color: #f0f0fc; font: 14px var(--font); transition: border-color .15s, box-shadow .2s, background .15s;
+  }
+  #q:focus { background: var(--glass-hi); border-color: hsl(var(--h) 100% 74% / .55); box-shadow: 0 0 0 4px hsl(var(--h) 100% 74% / .13); }
+  #q::placeholder { color: #5f5f7c; }
+  #clear {
+    flex: none; height: 46px; padding: 0 18px; border-radius: 14px; cursor: pointer;
+    border: 1px solid rgba(255,255,255,.09); background: var(--glass);
+    color: var(--mut); font: 600 12.5px var(--font); transition: all .15s;
+  }
+  #clear:hover { background: rgba(232,17,35,.12); border-color: rgba(232,80,90,.4); color: #ffb4b9; }
+  #clear.armed { background: rgba(232,17,35,.22); border-color: rgba(232,80,90,.6); color: #ffd7da; }
+
+  .day {
+    font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase;
+    color: var(--dim); margin: 30px 0 8px; display: flex; align-items: center; gap: 12px;
+  }
+  .day::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ac); box-shadow: 0 0 10px hsl(var(--h) 100% 70% / .8); }
+  .day::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+  .row {
+    display: flex; align-items: center; gap: 14px; padding: 10px 14px; border-radius: 14px;
+    cursor: pointer; position: relative; transition: background .12s;
+  }
+  .row:hover { background: rgba(255,255,255,.055); }
+  .row::before {
+    content: ""; position: absolute; left: 0; top: 11px; bottom: 11px; width: 3px; border-radius: 3px;
+    background: linear-gradient(180deg, var(--ac), var(--ac2)); opacity: 0; transition: opacity .12s;
+  }
+  .row:hover::before { opacity: 1; }
+  .ic {
+    width: 30px; height: 30px; flex: none; border-radius: 9px; display: grid; place-items: center;
+    font-size: 13px; font-weight: 700; color: #fff; position: relative; overflow: hidden;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
+  }
+  .ic img { position: absolute; inset: 5px; width: 20px; height: 20px; border-radius: 6px; }
+  .tt { color: #efeffd; font-size: 13.5px; font-weight: 600; max-width: 34%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
+  .uu { color: #74749a; font-size: 12.5px; flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vc { color: var(--dim); font-size: 11px; flex: none; min-width: 30px; text-align: right; }
+  .tm { color: var(--dim); font-size: 11.5px; flex: none; min-width: 52px; text-align: right;
+    font-variant-numeric: tabular-nums; }
+  .del {
+    width: 24px; height: 24px; flex: none; border: 0; border-radius: 8px;
+    background: transparent; color: var(--dim); font-size: 11px; cursor: pointer;
+    opacity: 0; transition: opacity .12s, background .12s, color .12s;
+  }
+  .row:hover .del { opacity: 1; }
+  .del:hover { background: rgba(232,17,35,.18); color: #ffb4b9; }
+
+  .empty { padding: 72px 0; text-align: center; color: #50506a; font-size: 14px; line-height: 1.8; }
+  .foot { margin-top: 48px; text-align: center; color: #50506a; font-size: 12.5px; line-height: 1.8; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <div class="logo">History</div>
+      <input id="q" placeholder="Search history" autocomplete="off" spellcheck="false" />
+      <button id="clear" title="Delete all browsing history">Clear browsing data</button>
+    </div>
+    <div id="list"></div>
+    <div class="foot">Internal page &middot; <a href="#" id="back">&larr; Back to new tab</a></div>
+  </div>
+<script>
+  var items = Array.isArray(window.__brainHistData) ? window.__brainHistData : [];
+
+  function send(cmd) {
+    try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
+  }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function host(u) {
+    try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return u; }
+  }
+  function pretty(u) {
+    try {
+      var x = new URL(u);
+      return x.hostname.replace(/^www\./, '') + x.pathname + x.search + x.hash;
+    } catch (e) { return u; }
+  }
+  function hue(s) {
+    var h = 0;
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return 'hsl(' + (((h % 360) + 360) % 360) + ' 60% 55%)';
+  }
+  function dayLabel(d) {
+    var t = new Date(d * 1000), now = new Date();
+    var day = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
+    var diff = Math.round((day(now) - day(t)) / 86400000);
+    return diff <= 0 ? 'Today' : diff === 1 ? 'Yesterday' :
+      t.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  }
+  function hm(d) {
+    return new Date(d * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function render() {
+    var box = document.getElementById('list');
+    var q = document.getElementById('q').value.trim().toLowerCase();
+    var html = '', lastDay = '', n = 0;
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it.u) continue;
+      if (q && it.u.toLowerCase().indexOf(q) < 0 && (it.t || '').toLowerCase().indexOf(q) < 0) continue;
+      var dk = it.d ? dayLabel(it.d) : 'Earlier';
+      if (dk !== lastDay) { html += '<div class="day">' + esc(dk) + '</div>'; lastDay = dk; }
+      var title = it.t || host(it.u);
+      html += '<div class="row" data-u="' + esc(it.u) + '" title="' + esc(it.u) + '">' +
+        '<span class="ic" style="background:' + hue(host(it.u)) + '">' +
+          (it.i ? '<img src="' + esc(it.i) + '" alt="" data-l="' + esc(title.charAt(0).toUpperCase()) + '" onerror="this.parentNode.textContent=this.dataset.l">'
+                : esc(title.charAt(0).toUpperCase())) + '</span>' +
+        '<span class="tt">' + esc(title) + '</span>' +
+        '<span class="uu">' + esc(pretty(it.u)) + '</span>' +
+        '<span class="vc">' + (it.v > 1 ? it.v + '&times;' : '') + '</span>' +
+        '<span class="tm">' + (it.d ? esc(hm(it.d)) : '') + '</span>' +
+        '<button class="del" title="Remove from history">&#10005;</button></div>';
+      n++;
+    }
+    box.innerHTML = n ? html :
+      '<div class="empty">' + (items.length ? 'No matches.' : 'No history yet &mdash; pages you visit will appear here.') + '</div>';
+  }
+
+  document.getElementById('q').addEventListener('input', render);
+  document.getElementById('q').addEventListener('keydown', function (e) {
+    e.stopPropagation();
+    if (e.key === 'Escape') { this.value = ''; render(); }
+    else if (e.key === 'Enter') {
+      var r = document.querySelector('.row');
+      if (r) send('navigate:' + r.getAttribute('data-u'));
+    }
+  });
+
+  document.getElementById('list').addEventListener('click', function (e) {
+    var del = e.target && e.target.closest ? e.target.closest('.del') : null;
+    if (del) {
+      e.stopPropagation();
+      var u = del.parentNode.getAttribute('data-u');
+      send('histdel:' + u);
+      items = items.filter(function (x) { return x.u !== u; });
+      render();
+      return;
+    }
+    var row = e.target && e.target.closest ? e.target.closest('.row') : null;
+    if (row) send('navigate:' + row.getAttribute('data-u'));
+  });
+
+  // Two-click confirm instead of window.confirm (JS dialogs aren't guaranteed).
+  var clearBtn = document.getElementById('clear'), clearTimer = 0;
+  clearBtn.addEventListener('click', function () {
+    if (clearBtn.classList.contains('armed')) {
+      clearTimeout(clearTimer);
+      clearBtn.classList.remove('armed');
+      clearBtn.textContent = 'Clear browsing data';
+      send('histclear');
+      items = [];
+      render();
+      return;
+    }
+    clearBtn.classList.add('armed');
+    clearBtn.textContent = 'Click again to clear everything';
+    clearTimer = setTimeout(function () {
+      clearBtn.classList.remove('armed');
+      clearBtn.textContent = 'Clear browsing data';
+    }, 3500);
+  });
+
+  document.getElementById('back').addEventListener('click', function (e) {
+    e.preventDefault(); send('navigate:about:newtab');
+  });
+
+  // chrome.js relays every host push as a 'brain-msg' event — b:16 is our list.
+  document.addEventListener('brain-msg', function (e) {
+    var j = e.detail;
+    if (j && j.b === 16 && Array.isArray(j.items)) { items = j.items; render(); }
+  });
+  send('histget'); // refresh the baked-in snapshot
+  render();
+</script>
+</body>
+</html>
