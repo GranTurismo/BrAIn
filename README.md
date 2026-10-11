@@ -224,6 +224,27 @@ wait, running flows stop before their next step, and read-only tools (state,
 snapshot, text, screenshot…) keep working. The button turns amber and counts
 blocked attempts. Click again to resume. Pause is per app run (not persisted).
 
+## Performance vs Chrome
+
+25 real sites opened as 25 tabs in a single window (tabs never closed),
+`loadEventEnd` timing per page and total process-tree RSS sampled after each
+tab. macOS, Apple Silicon, same machine, same network, sequential runs.
+Full data and methodology: [BENCHMARK.md](BENCHMARK.md).
+
+| | Chrome 131 | BrAIn |
+|---|---:|---:|
+| RAM — idle (new tab) | 1,211 MB | **156 MB** |
+| RAM — 25 tabs open | 14,102 MB | **174 MB** |
+| RAM per tab (avg) | ~516 MB | **~7 MB** |
+| Page-load wins (24 comparable sites) | 13 | 11 |
+
+**The memory gap is the story: ~81×.** Chrome's site isolation keeps a
+dedicated renderer per site; BrAIn's WebKit webviews share a process pool
+and suspend background pages aggressively — after 25 real sites it still
+uses less than Chrome does *sitting idle*. Page-load speed is competitive
+(11 wins, 13 losses, mostly within TTFB variance; notable BrAIn wins on
+GitHub −67%, NYT −64%, Cloudflare −43%, Forbes −28%).
+
 ## Known limitations
 
 - macOS build is compile-verified only; the WKWebView bridge needs on-device
