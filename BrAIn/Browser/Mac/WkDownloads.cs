@@ -45,6 +45,10 @@ internal static partial class WkDownloads
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void VoidDlImp(IntPtr self, IntPtr sel, IntPtr dl);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void ProcTermImp(IntPtr self, IntPtr sel, IntPtr wv);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NavFailImp(IntPtr self, IntPtr sel, IntPtr wv, IntPtr nav, IntPtr err);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void FailImp(IntPtr self, IntPtr sel, IntPtr dl, IntPtr err, IntPtr resume);
 
     // ObjC block invoke pointers: block layout has `invoke` at offset 16.
@@ -59,6 +63,14 @@ internal static partial class WkDownloads
     private static readonly DestImp _dest = OnDecideDestination;
     private static readonly VoidDlImp _didFinish = OnDownloadFinish;
     private static readonly FailImp _didFail = OnDownloadFail;
+    private static readonly ProcTermImp _procTerm = OnProcessTerminated;
+    private static readonly NavFailImp _navFail = OnNavFailed;
+    private static readonly IntPtr _selProcTerm = ObjC.Sel("webViewWebContentProcessDidTerminate:");
+    private static readonly IntPtr _selFailProv = ObjC.Sel("webView:didFailProvisionalNavigation:withError:");
+    private static readonly IntPtr _selFailNav = ObjC.Sel("webView:didFailNavigation:withError:");
+    private static IntPtr _origProcTerm, _origFailProv, _origFailNav;
+    private static string? _retryUrl;
+    private static long _retryAt;
 
     private static readonly IntPtr _selDecResp = ObjC.Sel("webView:decidePolicyForNavigationResponse:decisionHandler:");
     private static readonly IntPtr _selBecameR = ObjC.Sel("webView:navigationResponse:didBecomeDownload:");
@@ -123,6 +135,12 @@ internal static partial class WkDownloads
             Marshal.GetFunctionPointerForDelegate(_became), "v@:@@@");
         _origBecameA = AddOrGet(cls, _selBecameA,
             Marshal.GetFunctionPointerForDelegate(_became), "v@:@@@");
+        _origProcTerm = AddOrGet(cls, _selProcTerm,
+            Marshal.GetFunctionPointerForDelegate(_procTerm), "v@:@");
+        _origFailProv = AddOrGet(cls, _selFailProv,
+            Marshal.GetFunctionPointerForDelegate(_navFail), "v@:@@@");
+        _origFailNav = AddOrGet(cls, _selFailNav,
+            Marshal.GetFunctionPointerForDelegate(_navFail), "v@:@@@");
     }
 
     /// <summary>class_addMethod; returns IntPtr.Zero on success, or the
@@ -140,6 +158,9 @@ internal static partial class WkDownloads
         ClassAddMethod(cls, _selDecResp, Marshal.GetFunctionPointerForDelegate(_decResp), "v@:@@?");
         ClassAddMethod(cls, _selBecameR, Marshal.GetFunctionPointerForDelegate(_became), "v@:@@@");
         ClassAddMethod(cls, _selBecameA, Marshal.GetFunctionPointerForDelegate(_became), "v@:@@@");
+        ClassAddMethod(cls, _selProcTerm, Marshal.GetFunctionPointerForDelegate(_procTerm), "v@:@");
+        ClassAddMethod(cls, _selFailProv, Marshal.GetFunctionPointerForDelegate(_navFail), "v@:@@@");
+        ClassAddMethod(cls, _selFailNav, Marshal.GetFunctionPointerForDelegate(_navFail), "v@:@@@");
         objc_registerClassPair(cls);
         return cls;
     }
@@ -168,9 +189,23 @@ internal static partial class WkDownloads
         var download = false;
         try
         {
-            var forAttach = BoolProp(resp, "isForAttachment") || BoolProp(resp, "forAttachment");
+            var forAttach = BoolProp(resp, "isForAttachment") || BoolProp(resp, "forAttachment")
+                            || IsAttachmentHeader(resp);
             var canShow = BoolProp(resp, "canShowMIMEType");
-            download = forAttach || !canShow;
+            var mime = ResponseMime(resp);
+            // A web page must never turn into a download: a transient
+            // "can't show" answer for an HTML main document used to leave a
+            // blank view plus a stray .html in Downloads until the next reload.
+            // Only an explicit Content-Disposition: attachment wins for HTML.
+            var isHtml = mime is not null &&
+                (mime.StartsWith("text/html", StringComparison.OrdinalIgnoreCase) ||
+                 mime.StartsWith("application/xhtml", StringComparison.OrdinalIgnoreCase));
+            // Only download what we positively know is a non-page file. A response
+            // with no MIME type / URL at all (seen on the first navigation after
+            // launch) is NOT a file — let WebKit handle it as a normal page load.
+            download = forAttach || (!canShow && mime is not null && !isHtml);
+            if (download || !canShow)
+                DiagLog($"response {(download ? "DOWNLOAD" : "kept-as-page")} mime={mime ?? "?"} canShow={canShow} attach={forAttach} main={BoolProp(resp, "isForMainFrame")} url={ExtractUrl(resp)}");
         }
         catch { }
 
@@ -180,6 +215,106 @@ internal static partial class WkDownloads
             return;
         }
         CallBlock(handler, download ? 2 : 1); // 2 = Download, 1 = Allow
+    }
+
+    /// <summary>NSURLResponse.MIMEType of a WKNavigationResponse, or null.</summary>
+    private static string? ResponseMime(IntPtr navResp)
+    {
+        var r = ObjC.Send(navResp, ObjC.Sel("response"));
+        if (r == IntPtr.Zero) return null;
+        var m = ObjC.Send(r, ObjC.Sel("MIMEType"));
+        return m == IntPtr.Zero ? null : ObjC.NsStringToString(m);
+    }
+
+    /// <summary>True when the HTTP response carries Content-Disposition: attachment.</summary>
+    private static bool IsAttachmentHeader(IntPtr navResp)
+    {
+        var r = ObjC.Send(navResp, ObjC.Sel("response"));
+        if (r == IntPtr.Zero) return false;
+        var sel = ObjC.Sel("valueForHTTPHeaderField:");
+        if (ObjC.SendBool(r, ObjC.Sel("respondsToSelector:"), sel) == 0) return false;
+        var v = ObjC.Send(r, sel, ObjC.NsString("Content-Disposition"));
+        if (v == IntPtr.Zero) return false;
+        var str = ObjC.NsStringToString(v);
+        return str is not null && str.TrimStart().StartsWith("attachment", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Appends a line to download-decisions.log in the app data folder
+    /// (only written when a response is turned into a download, or an HTML page
+    /// is rescued from becoming one) so odd downloads can be diagnosed.</summary>
+    private static void DiagLog(string line)
+    {
+        try
+        {
+            var dir = _ctl?.StoreDir;
+            Console.Error.WriteLine("[BrAIn] " + line);
+            if (string.IsNullOrEmpty(dir)) return;
+            var path = System.IO.Path.Combine(dir, "download-decisions.log");
+            if (System.IO.File.Exists(path) && new System.IO.FileInfo(path).Length > 200_000)
+                System.IO.File.Delete(path);
+            System.IO.File.AppendAllText(path, DateTime.Now.ToString("s") + " " + line + "\n");
+        }
+        catch { }
+    }
+
+    /// <summary>The WebKit content process died (memory pressure, crash): the view
+    /// stays blank until something reloads it — which is exactly what a manual
+    /// reload does. Reload it ourselves.</summary>
+    private static void OnProcessTerminated(IntPtr self, IntPtr sel, IntPtr wv)
+    {
+        if (_origProcTerm != IntPtr.Zero)
+            try { Marshal.GetDelegateForFunctionPointer<ProcTermImp>(_origProcTerm)(self, sel, wv); } catch { }
+        DiagLog("web content process terminated — reloading");
+        try { ObjC.Send(wv, ObjC.Sel("reload")); } catch { }
+    }
+
+    /// <summary>Navigation failures were invisible before. Log them (not -999 cancels).</summary>
+    private static void OnNavFailed(IntPtr self, IntPtr sel, IntPtr wv, IntPtr nav, IntPtr err)
+    {
+        var orig = sel == _selFailProv ? _origFailProv : _origFailNav;
+        if (orig != IntPtr.Zero)
+            try { Marshal.GetDelegateForFunctionPointer<NavFailImp>(orig)(self, sel, wv, nav, err); } catch { }
+        try
+        {
+            var code = err == IntPtr.Zero ? 0L : (long)ObjC.SendNInt(err, ObjC.Sel("code"));
+            if (code == -999) return; // cancelled by a newer navigation — normal
+            var msg = err == IntPtr.Zero ? "" : ObjC.NsStringToString(ObjC.Send(err, ObjC.Sel("localizedDescription")));
+            var url = "";
+            try
+            {
+                var u = ObjC.Send(wv, ObjC.Sel("URL"));
+                if (u != IntPtr.Zero) url = ObjC.NsStringToString(ObjC.Send(u, ObjC.Sel("absoluteString"))) ?? "";
+            }
+            catch { }
+            DiagLog($"navigation failed ({(sel == _selFailProv ? "provisional" : "committed")}) code={code} \"{msg}\" url={url}");
+            // "Frame load interrupted" (102) on the FIRST navigation after launch
+            // leaves the view blank until the user reloads. Re-issue the load once.
+            if (code == 102 && sel == _selFailProv &&
+                (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
+            {
+                var now = Environment.TickCount64;
+                if (_retryUrl == url && now - _retryAt < 15000) return; // already retried
+                _retryUrl = url; _retryAt = now;
+                DiagLog("retrying interrupted load once: " + url);
+                var ctl = _ctl;
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(200);
+                    try
+                    {
+                        ctl?.InvokeOnUi(() =>
+                        {
+                            var nsUrl = ObjC.Send(ObjC.GetClass("NSURL"), ObjC.Sel("URLWithString:"), ObjC.NsString(url));
+                            if (nsUrl == IntPtr.Zero) return;
+                            var req = ObjC.Send(ObjC.GetClass("NSURLRequest"), ObjC.Sel("requestWithURL:"), nsUrl);
+                            if (req != IntPtr.Zero) ObjC.Send(wv, ObjC.Sel("loadRequest:"), req);
+                        });
+                    }
+                    catch { }
+                });
+            }
+        }
+        catch { }
     }
 
     private static void OnDidBecomeDownload(IntPtr self, IntPtr sel, IntPtr wv, IntPtr mid, IntPtr dl)

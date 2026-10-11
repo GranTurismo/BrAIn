@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Keyboard shortcuts — BrAIn</title>
+<script>
+  // Served via LoadRawString — flags itself so the host maps the tab to
+  // about:shortcuts instead of the literal about:blank that location.href reports.
+  window.__brainShortcuts = 1;
+</script>
+<style>
+/*@THEME*/
+  body { padding: 88px 24px 90px; }
+  .wrap { max-width: 860px; }
+  .logo { font-size: 46px; margin-bottom: 8px; }
+  .sub { font-size: 15.5px; margin-bottom: 14px; max-width: 640px; }
+  .sub b { color: #ececff; }
+
+  /* platform toggle */
+  .plat { display: inline-flex; gap: 2px; padding: 3px; margin-bottom: 26px;
+    border-radius: 11px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); }
+  .plat button {
+    border: 0; padding: 5px 14px; border-radius: 8px; cursor: pointer;
+    font: 600 12px var(--font); color: #8f8fae; background: transparent; transition: all .15s;
+  }
+  .plat button.on { color: #fff; background: hsl(var(--h) 90% 60% / .3);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12); }
+
+  /* search */
+  .sbox { position: sticky; top: 58px; z-index: 5; margin-bottom: 30px; }
+  .sbox input {
+    width: 100%; box-sizing: border-box; padding: 13px 18px 13px 44px;
+    border-radius: 14px; border: 1px solid rgba(255,255,255,.1);
+    background: rgba(14,14,24,.92); color: #ececff; font: 400 14.5px var(--font);
+    outline: none; backdrop-filter: blur(14px); box-shadow: 0 8px 24px -10px rgba(0,0,0,.6);
+    transition: border-color .15s;
+  }
+  .sbox input:focus { border-color: hsl(var(--h) 100% 74% / .55); }
+  .sbox input::placeholder { color: #5c5c78; }
+  .sbox::before {
+    content: ''; position: absolute; left: 16px; top: 50%; width: 15px; height: 15px;
+    transform: translateY(-50%); opacity: .55;
+    background: no-repeat center/contain url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a9a9c6' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E");
+  }
+  .sbox .cnt { position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+    font: 600 11.5px var(--mono); color: #5c5c78; }
+
+  h3 { margin: 34px 0 12px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--mut); font-weight: 700; }
+  .keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr)); gap: 4px 26px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 8px 6px; margin: 0 -6px; border-radius: 8px;
+    font-size: 13px; color: #b6b6cc; border-bottom: 1px solid rgba(255,255,255,.04);
+    cursor: pointer; transition: background .12s; position: relative; }
+  .row:hover { background: rgba(255,255,255,.04); }
+  .row.fixed { cursor: default; }
+  .row.fixed:hover { background: none; }
+  .row .nm { min-width: 0; }
+  .row .nm i { font-style: normal; color: #4c4c66; font-size: 10.5px; margin-left: 6px; }
+  .row.edited .nm::after { content: ''; display: inline-block; width: 5px; height: 5px;
+    border-radius: 50%; background: hsl(var(--h) 90% 65%); margin-left: 7px; vertical-align: 2px; }
+  .row .sc { flex: none; display: flex; gap: 4px; align-items: center; }
+  kbd {
+    display: inline-block; padding: 1px 7px; border-radius: 7px; font: 600 11.5px var(--mono);
+    color: #d8d8ee; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+    border-bottom-width: 2px; white-space: nowrap;
+  }
+  .row .rst { display: none; border: 0; background: none; color: #6c6c8c; cursor: pointer;
+    font: 400 13px var(--font); padding: 0 2px; border-radius: 5px; }
+  .row .rst:hover { color: #ececff; background: rgba(255,255,255,.09); }
+  .row.edited .rst { display: inline; }
+  .row .unb { color: #4c4c66; font: 600 11.5px var(--mono); }
+
+  /* capture state — message takes over the whole row so nothing overlaps */
+  .row.cap { background: hsl(var(--h) 90% 60% / .1); outline: 1px solid hsl(var(--h) 90% 65% / .4); }
+  .row.cap .nm { visibility: hidden; }
+  .row.cap .sc { position: absolute; inset: 4px 8px; display: flex; align-items: center; justify-content: center; }
+  .capmsg { font: 600 11.5px var(--mono); color: hsl(var(--h) 90% 75%); white-space: normal; text-align: center; }
+  .capmsg.warn { color: #ffb86b; }
+  .capmsg.bad { color: #ff7b7b; }
+  .none-msg { display: none; padding: 30px 0; color: #5c5c78; font-size: 13.5px; text-align: center; }
+  .none-msg.on { display: block; }
+
+  .foot { margin-top: 48px; text-align: center; color: #50506a; font-size: 12.5px; line-height: 1.8; }
+  .foot a { color: #7c7ca6; }
+  .foot button { border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.05);
+    color: #8f8fae; font: 600 11.5px var(--font); padding: 5px 14px; border-radius: 9px;
+    cursor: pointer; margin-top: 10px; }
+  .foot button:hover { color: #ececff; border-color: rgba(255,255,255,.24); }
+  .hint { margin-top: -18px; margin-bottom: 24px; font-size: 12px; color: #55556e; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="logo">Shortcuts</div>
+    <div class="sub">Click any row to rebind it. Changes save instantly and sync everywhere.</div>
+    <div class="plat" id="plat">
+      <button data-p="mac">macOS</button>
+      <button data-p="win">Windows</button>
+    </div>
+
+    <div class="sbox">
+      <input id="q" type="text" placeholder="Filter shortcuts… (try “tab”, “find”, “copy”)" autocomplete="off" spellcheck="false" />
+      <span class="cnt" id="cnt"></span>
+    </div>
+
+    <div id="groups"></div>
+
+    <div class="none-msg" id="none">No shortcuts match — try a different word.</div>
+
+    <div class="foot">
+      Internal page · <a href="#" id="back">← Back to new tab</a><br/>
+      <button id="rstall">Reset all shortcuts</button>
+    </div>
+  </div>
+<script>
+  function send(cmd) {
+    try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
+  }
+  document.getElementById('back').addEventListener('click', function (e) {
+    e.preventDefault(); send('navigate:about:newtab');
+  });
+
+  // One row per bindable action — ids match KEYS in chrome.js. w/m hold the
+  // default gestures per platform; nw/nm + sw/sm cover the bindings whose
+  // meaning (and section) differs per platform. fixed rows can't be rebound.
+  var SEC_ORDER = ['Tabs & windows', 'Navigation', 'Address bar & clipboard',
+    'Find in page', 'Tools & panels', 'AI agent', 'Developer tools', 'Window'];
+  var ROWS = [
+    { sec: 'Tabs & windows', rows: [
+      { id: 'newtab',   n: 'New tab',            w: ['mod+t'], m: ['mod+t'] },
+      { id: 'privtab',  n: 'New private tab',    w: ['mod+shift+n'], m: ['mod+shift+n'] },
+      { id: 'closetab', n: 'Close tab',          w: ['mod+w'], m: ['mod+w'] },
+      { id: 'reopen',   n: 'Reopen closed tab',  w: ['mod+shift+t'], m: ['mod+shift+t'] },
+      { id: 'dupe',     n: 'Duplicate tab',      w: ['mod+shift+d'], m: ['mod+shift+d'] },
+      { id: 'pin',      n: 'Pin / unpin tab',    w: ['mod+alt+p'], m: ['mod+alt+p'] },
+      { id: 'mute',     n: 'Mute / unmute tab',  w: ['mod+alt+m'], m: ['mod+alt+m'] },
+      { id: 'closeothers', n: 'Close other tabs', w: ['mod+alt+w'], m: ['mod+alt+w'] },
+      { id: 'wclose',   n: 'Close window',       w: ['mod+shift+w', 'mod+shift+q'], m: ['mod+shift+w', 'mod+shift+q'] },
+      { id: 'nexttab',  n: 'Next tab',           w: ['mod+tab', 'mod+pagedown'], m: ['mod+alt+arrowright', 'mod+pagedown'] },
+      { id: 'prevtab',  n: 'Previous tab',       w: ['mod+shift+tab', 'mod+pageup'], m: ['mod+alt+arrowleft', 'mod+pageup'] },
+      { id: 'movetabL', n: 'Move tab left',      w: ['mod+shift+pageup'], m: ['mod+shift+pageup'] },
+      { id: 'movetabR', n: 'Move tab right',     w: ['mod+shift+pagedown'], m: ['mod+shift+pagedown'] },
+      { fixed: 1, n: 'Jump to tab 1–9', w: ['mod+1…9'], m: ['mod+1…9'] },
+    ]},
+    { sec: 'Navigation', rows: [
+      { id: 'back',     n: 'Back',               w: ['alt+arrowleft', 'mod+['], m: ['alt+arrowleft', 'mod+['] },
+      { id: 'forward',  n: 'Forward',            w: ['alt+arrowright', 'mod+]'], m: ['alt+arrowright', 'mod+]'] },
+      { id: 'reload',   n: 'Reload',             w: ['mod+r', 'f5'], m: ['mod+r', 'f5'] },
+      { id: 'hardreload', n: 'Hard reload (ignore cache)', w: ['mod+shift+r'], m: ['mod+shift+r'] },
+      { fixed: 1, n: 'Stop loading',             w: ['escape'], m: ['escape'] },
+      { id: 'home',     n: 'Home (start page)',  w: ['alt+home'], m: ['alt+home'] },
+      { id: 'history',  n: 'History',            w: ['mod+h'], m: ['mod+h'] },
+      { id: 'viewsource', n: 'View source',      w: ['mod+u'], m: ['mod+u'] },
+    ]},
+    { sec: 'Address bar & clipboard', rows: [
+      { id: 'omnibox',  n: 'Focus address bar',  w: ['mod+l', 'mod+e', 'alt+d', 'f6'], m: ['mod+l', 'mod+e', 'alt+d', 'f6'] },
+      { id: 'altf',     n: 'Focus address bar',  sw: 'Window', sm: 'Address bar & clipboard',
+                        nw: 'Fullscreen',        w: ['mod+alt+f'], m: ['mod+alt+f'] },
+      { fixed: 1, n: 'Open result in a new tab', w: ['alt+enter'], m: ['alt+enter'] },
+      { id: 'pastego',  n: 'Paste and go',       w: ['mod+shift+v'], m: ['mod+shift+v'] },
+      { id: 'copylink', n: 'Copy link address',  w: ['mod+shift+c'], m: ['mod+shift+c'] },
+      { id: 'markdown', n: 'Copy page as Markdown', w: ['mod+shift+m'], m: ['mod+shift+m'] },
+    ]},
+    { sec: 'Find in page', rows: [
+      { id: 'find',     n: 'Find',               w: ['mod+f'], m: ['mod+f'] },
+      { id: 'findnext', n: 'Next match',         w: ['mod+g'], m: ['mod+g'] },
+      { id: 'findprev', n: 'Previous match',     w: ['mod+shift+g'], m: ['mod+shift+g'] },
+      { id: 'findnav',  n: 'Step matches (F-key)', w: ['f3', 'shift+f3'], m: ['f3', 'shift+f3'] },
+      { fixed: 1, n: 'Close find bar / panels',  w: ['escape'], m: ['escape'] },
+    ]},
+    { sec: 'Tools & panels', rows: [
+      { id: 'pal',      n: 'Command palette / tab search', w: ['mod+k', 'mod+shift+a'], m: ['mod+k', 'mod+shift+a'] },
+      { id: 'menu',     n: '⋮ menu',             w: ['alt+f'], m: ['alt+f'] },
+      { id: 'downloads', n: 'Downloads',         w: ['mod+j'], m: ['mod+j'] },
+      { id: 'shiftj',   n: 'Downloads',          sw: 'Developer tools', sm: 'Tools & panels',
+                        nw: 'DevTools — console', w: ['mod+shift+j'], m: ['mod+shift+j'] },
+      { id: 'passwords', n: 'Passwords',         w: ['mod+shift+o'], m: ['mod+shift+o'] },
+      { id: 'bookmark', n: 'Bookmark page',      w: ['mod+d'], m: ['mod+d'] },
+      { id: 'pip',      n: 'Picture-in-picture', w: ['mod+shift+p'], m: ['mod+shift+p'] },
+      { id: 'shot',     n: 'Screenshot (full page)', w: ['mod+shift+s'], m: ['mod+shift+s'] },
+      { id: 'rewind',   n: 'Rewind — page time travel', w: ['mod+shift+y'], m: ['mod+shift+y'] },
+      { id: 'zoomin',   n: 'Zoom in',            w: ['mod+=', 'mod+plus'], m: ['mod+=', 'mod+plus'] },
+      { id: 'zoomout',  n: 'Zoom out',           w: ['mod+-'], m: ['mod+-'] },
+      { id: 'zoomreset', n: 'Zoom reset',        w: ['mod+0'], m: ['mod+0'] },
+      { id: 'print',    n: 'Print',              w: ['mod+p'], m: ['mod+p'] },
+    ]},
+    { sec: 'AI agent', rows: [
+      { id: 'agentpause', n: 'Pause / resume the agent', w: ['mod+shift+.'], m: ['mod+shift+.'] },
+      { id: 'recflow',  n: 'Record a flow',      w: ['mod+alt+r'], m: ['mod+alt+r'] },
+      { id: 'flows',    n: 'Flows & activity',   w: ['mod+shift+f'], m: ['mod+shift+f'] },
+    ]},
+    { sec: 'Developer tools', rows: [
+      { id: 'devtools', n: 'Open DevTools',      w: ['f12', 'mod+shift+i'], m: ['f12', 'mod+shift+i'] },
+      { id: 'dtconj',   n: 'DevTools — console', w: [], m: ['mod+alt+j'] },
+      { fixed: 1, n: 'Cancel picker / close panel', w: ['escape'], m: ['escape'] },
+    ]},
+    { sec: 'Window', rows: [
+      { id: 'fullscreen', n: 'Fullscreen',       w: ['f11'], m: ['f11'] },
+      { id: 'topmost',  n: 'Always on top',      w: ['mod+alt+t'], m: ['mod+alt+t'] },
+      { id: 'help',     n: 'How to use',         w: ['f1'], m: ['f1'] },
+      { id: 'shortcutspage', n: 'This page',     w: ['mod+/'], m: ['mod+/'] },
+    ]},
+  ];
+
+  var MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+  var plat = MAC ? 'mac' : 'win', total = 0;
+  var groupsEl = document.getElementById('groups');
+  var keysState = {};            // live overrides from b:9 (state.keys)
+  try { keysState = (window.__brainState && window.__brainState.keys) || {}; } catch (e) { }
+  document.addEventListener('brain-state', function (e) {
+    var k = e.detail && e.detail.keys;
+    if (k && JSON.stringify(k) !== JSON.stringify(keysState)) { keysState = k; render(); }
+  });
+
+  // effective gestures for one action on the current platform
+  function effGestures(row) {
+    if (row.fixed) return row[plat === 'mac' ? 'm' : 'w'];
+    var k = plat === 'mac' ? 'm' : 'w';
+    if (Object.prototype.hasOwnProperty.call(keysState, row.id)) {
+      var g = keysState[row.id];
+      return g ? [g] : [];
+    }
+    return row[k];
+  }
+  function rowName(row) {
+    var n = plat === 'mac' ? (row.nm || row.n) : (row.nw || row.n);
+    return n;
+  }
+  function rowSec(row, defSec) {
+    return plat === 'mac' ? (row.sm || row.sec || defSec) : (row.sw || row.sec || defSec);
+  }
+
+  // gesture ("mod+alt+shift+x") → platform chip text
+  var KEY_GLYPH = {
+    arrowleft: '←', arrowright: '→', arrowup: '↑', arrowdown: '↓',
+    tab: '⇥', enter: '↩', space: 'Space', escape: 'Esc', pageup: 'PgUp',
+    pagedown: 'PgDn', home: 'Home', end: 'End', backspace: '⌫', delete: 'Del',
+    plus: '+', minus: '−', '.': '.', ',': ',', '/': '/', '\\': '\\', '[': '[', ']': ']',
+    '=': '=', '-': '−', ';': ';', "'": "'", '`': '`', '<': '<', '>': '>',
+  };
+  function fmtG(g, mac) {
+    var parts = g.split('+'), k = parts.pop(), out = '';
+    var order = mac ? ['alt', 'shift', 'mod'] : ['mod', 'alt', 'shift'];
+    order.forEach(function (m) {
+      if (parts.indexOf(m) < 0) return;
+      out += m === 'mod' ? (mac ? '⌘' : 'Ctrl+') : m === 'alt' ? (mac ? '⌥' : 'Alt+') : (mac ? '⇧' : 'Shift+');
+    });
+    var kg = KEY_GLYPH[k];
+    out += kg !== undefined ? kg : (/^f\d+$/.test(k) ? k.toUpperCase() : k.toUpperCase());
+    return out;
+  }
+
+  // gesture → owning action map for the current platform (conflict check)
+  function gestureOwners() {
+    var map = {};
+    ROWS.forEach(function (g) {
+      g.rows.forEach(function (r) {
+        if (r.fixed || !r.id) return;
+        effGestures(r).forEach(function (gg) {
+          if (!map[gg]) map[gg] = [];
+          map[gg].push(r.id);
+        });
+      });
+    });
+    return map;
+  }
+  function rowById(id) {
+    for (var i = 0; i < ROWS.length; i++)
+      for (var j = 0; j < ROWS[i].rows.length; j++)
+        if (ROWS[i].rows[j].id === id) return ROWS[i].rows[j];
+    return null;
+  }
+
+  var capRow = null, capEl = null, capPending = null;
+  function cancelCap() {
+    var had = !!capRow;
+    if (capEl) capEl.classList.remove('cap');
+    capRow = null; capEl = null; capPending = null;
+    try { window.__brainKeyCapture = false; } catch (e) { }
+    if (had) render(); // rebuild the row that was showing the capture chip
+  }
+  function startCapture(rowEl, row) {
+    cancelCap(); // may re-render — rowEl can be stale afterwards
+    if (!rowEl || !rowEl.isConnected)
+      rowEl = groupsEl.querySelector('.row[data-id="' + row.id + '"]');
+    if (!rowEl) return;
+    capRow = row; capEl = rowEl; capPending = null;
+    try { window.__brainKeyCapture = true; } catch (e) { } // chrome.js stands down
+    rowEl.classList.add('cap');
+    rowEl.querySelector('.sc').innerHTML = '<span class="capmsg">Press keys… (Esc cancels · ⌫ unbinds)</span>';
+  }
+  function capMsg(txt, cls) {
+    var m = capEl && capEl.querySelector('.capmsg');
+    if (m) { m.textContent = txt; m.className = 'capmsg ' + (cls || ''); }
+  }
+  function gestureOf(e) {
+    var k = e.key;
+    if (!k || /^(mod|alt|shift|control|meta)$/i.test(k)) return null;
+    if (k === ' ') k = 'space'; else if (k === '+') k = 'plus'; else k = k.toLowerCase();
+    return (e.ctrlKey || e.metaKey ? 'mod+' : '') + (e.altKey ? 'alt+' : '') + (e.shiftKey ? 'shift+' : '') + k;
+  }
+  document.addEventListener('keydown', function (e) {
+    if (!capRow) return;
+    e.preventDefault(); e.stopPropagation();
+    var g = gestureOf(e);
+    if (!g) return; // lone modifier — keep waiting
+    if (g === 'escape') { cancelCap(); render(); return; }
+    if (g === 'backspace' || g === 'delete') {
+      keysState[capRow.id] = ''; send('keyset:' + capRow.id + ':');
+      cancelCap(); render(); return;
+    }
+    var hasMod = g.indexOf('mod+') >= 0 || g.indexOf('alt+') >= 0, fkey = /^f\d+$/.test(g.split('+').pop());
+    if (!hasMod && !fkey) {
+      capMsg('needs ⌘/Ctrl/Alt or an F-key — try again', 'bad'); return;
+    }
+    // conflict: owned by another action?
+    var owners = (gestureOwners()[g] || []).filter(function (id) { return id !== capRow.id; });
+    if (owners.length && capPending !== g) {
+      capPending = g;
+      capMsg(fmtG(g, MAC) + ' is ' + rowName(rowById(owners[0])) + ' — press again to take it', 'warn');
+      return;
+    }
+    if (owners.length) owners.forEach(function (id) { keysState[id] = ''; send('keyset:' + id + ':'); });
+    keysState[capRow.id] = g; send('keyset:' + capRow.id + ':' + g);
+    cancelCap(); render();
+  }, true);
+
+  function render() {
+    var key = plat === 'mac' ? 'm' : 'w';
+    groupsEl.textContent = '';
+    total = 0;
+    // bucket rows into sections (divergent rows may live in other sections)
+    var buckets = {};
+    SEC_ORDER.forEach(function (s) { buckets[s] = []; });
+    ROWS.forEach(function (g) {
+      g.rows.forEach(function (r) {
+        var sec = rowSec(r, g.sec);
+        (buckets[sec] = buckets[sec] || []).push(r);
+      });
+    });
+    SEC_ORDER.forEach(function (sec) {
+      var rows = buckets[sec];
+      if (!rows || !rows.length) return;
+      var h = document.createElement('h3'); h.textContent = sec;
+      var d = document.createElement('div'); d.className = 'keys';
+      rows.forEach(function (r) {
+        var div = document.createElement('div');
+        div.className = 'row' + (r.fixed ? ' fixed' : '') + (r.id && Object.prototype.hasOwnProperty.call(keysState, r.id) ? ' edited' : '');
+        if (r.id) div.dataset.id = r.id;
+        var name = document.createElement('span'); name.className = 'nm';
+        name.textContent = rowName(r);
+        if (r.fixed) { var i = document.createElement('i'); i.textContent = 'not remappable'; name.appendChild(i); }
+        var sc = document.createElement('span'); sc.className = 'sc';
+        var gs = effGestures(r);
+        if (!gs || !gs.length) {
+          var u = document.createElement('span'); u.className = 'unb'; u.textContent = '—'; sc.appendChild(u);
+        } else gs.forEach(function (c) {
+          var k = document.createElement('kbd'); k.textContent = fmtG(c, plat === 'mac'); sc.appendChild(k);
+        });
+        if (r.id) {
+          var rst = document.createElement('button'); rst.className = 'rst'; rst.textContent = '⟲';
+          rst.title = 'Reset to default';
+          rst.addEventListener('click', function (e) {
+            e.stopPropagation();
+            delete keysState[r.id]; send('keyreset:' + r.id); render();
+          });
+          sc.appendChild(rst);
+        }
+        if (!r.fixed) div.addEventListener('click', function () { startCapture(div, r); });
+        div.appendChild(name); div.appendChild(sc); d.appendChild(div);
+        total++;
+      });
+      groupsEl.appendChild(h); groupsEl.appendChild(d);
+    });
+    filter();
+  }
+
+  document.getElementById('plat').addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('button'); if (!b) return;
+    plat = b.getAttribute('data-p');
+    Array.prototype.forEach.call(this.querySelectorAll('button'), function (x) {
+      x.classList.toggle('on', x === b);
+    });
+    render();
+  });
+  document.querySelector('#plat button[data-p="' + plat + '"]').classList.add('on');
+
+  document.getElementById('rstall').addEventListener('click', function () {
+    keysState = {}; send('keyreset'); render();
+  });
+
+  var q = document.getElementById('q'), cnt = document.getElementById('cnt'),
+      none = document.getElementById('none');
+  function filter() {
+    var s = q.value.trim().toLowerCase(), shown = 0;
+    var rows = groupsEl.querySelectorAll('.row'), groups = groupsEl.querySelectorAll('.keys'),
+        heads = groupsEl.querySelectorAll('h3');
+    Array.prototype.forEach.call(rows, function (r) {
+      var hit = !s || r.textContent.toLowerCase().indexOf(s) >= 0;
+      r.style.display = hit ? '' : 'none';
+      if (hit) shown++;
+    });
+    Array.prototype.forEach.call(groups, function (g, i) {
+      var any = false;
+      Array.prototype.forEach.call(g.querySelectorAll('.row'), function (r) {
+        if (r.style.display !== 'none') any = true;
+      });
+      g.style.display = any ? '' : 'none';
+      if (heads[i]) heads[i].style.display = any ? '' : 'none';
+    });
+    none.classList.toggle('on', shown === 0);
+    cnt.textContent = s ? shown + ' of ' + total : '';
+  }
+  q.addEventListener('input', filter);
+  try { q.focus(); } catch (e) { }
+  q.addEventListener('keydown', function (e) {
+    e.stopPropagation();
+    if (e.key === 'Escape') { if (q.value) { q.value = ''; filter(); } else q.blur(); }
+  });
+
+  render();
+  // stagger the section entrance
+  Array.prototype.forEach.call(document.querySelectorAll('.wrap > *'), function (el, i) {
+    el.style.animationDelay = Math.min(i * 30, 400) + 'ms';
+  });
+</script>
+</body>
+</html>

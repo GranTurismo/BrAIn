@@ -17,6 +17,10 @@ public sealed class WebKitDriver : DriverBase
     private bool _loading, _sawLoad;
     private DateTime _loadStartAt;
     private int _evalCounter;
+    // Per-tab mode: this driver owns exactly one tab's own WKWebView (Tab.NativeView).
+    private bool _prebound;
+    private bool _everLoaded;
+    private Timer? _tabTimer;
 
     public WebKitDriver(BrowserTab tab, BrowserController controller) : base(tab, controller) { }
 
@@ -28,7 +32,24 @@ public sealed class WebKitDriver : DriverBase
     public override bool SupportsNetworkLog => true; // via PerformanceResourceTiming polling
     public override bool SupportsCookies => true;    // document.cookie only (no HttpOnly)
 
-    public override async Task InitializeAsync(BrowserController controller, CancellationToken ct)
+    public override Task InitializeAsync(BrowserController controller, CancellationToken ct)
+        => Tab.NativeView != IntPtr.Zero ? InitializePerTab() : InitializeSharedAsync(controller, ct);
+
+    /// <summary>Per-tab mode: the view already exists (WkTabs.Create) and carries
+    /// its own scripts, so there is nothing to discover or inject.</summary>
+    private Task InitializePerTab()
+    {
+        _prebound = true;
+        _webview = Tab.NativeView;
+        _windowNumber = Tab.MacWindowNumber;
+        _watchedUrl = "";
+        try { Controller.InvokeOnUi(() => MacWindow.EnablePictureInPicture(_webview)); } catch { }
+        try { Controller.InvokeOnUi(() => WkDownloads.Install(_webview, Controller)); } catch { }
+        StartTabWatcher();
+        return Task.CompletedTask;
+    }
+
+    private async Task InitializeSharedAsync(BrowserController controller, CancellationToken ct)
     {
         // Resolve this tab's WKWebView: scan NSApplication windows.
         // Main tab: first window containing a WKWebView.
@@ -129,7 +150,7 @@ public sealed class WebKitDriver : DriverBase
     /// (webview pointer stays valid while the window lives, but be safe).</summary>
     private IntPtr ResolveWebView()
     {
-        if (_webview != IntPtr.Zero) return _webview;
+        if (_webview != IntPtr.Zero || _prebound) return _webview;
         if (_windowNumber != 0)
         {
             _webview = Controller.InvokeOnUi(() =>
@@ -186,6 +207,7 @@ public sealed class WebKitDriver : DriverBase
             var s = script;
             Controller.InvokeOnUi(() =>
             {
+                if (_prebound && !WkTabs.Has(webview)) return; // the tab was closed meanwhile
                 var ns = ObjC.NsString(s);
                 ObjC.Send(webview, ObjC.Sel("evaluateJavaScript:completionHandler:"), ns, IntPtr.Zero);
             });
@@ -337,7 +359,7 @@ public sealed class WebKitDriver : DriverBase
 
     protected override bool PageLoading
     {
-        get { var wv = _webview; return wv != IntPtr.Zero && Controller.InvokeOnUi(() => MacWindow.IsWebViewLoading(wv)); }
+        get { var wv = _webview; return wv != IntPtr.Zero && Controller.InvokeOnUi(() => Alive(wv) && MacWindow.IsWebViewLoading(wv)); }
     }
 
     protected override void RaiseLoadCompleted()
@@ -401,8 +423,11 @@ public sealed class WebKitDriver : DriverBase
         return Task.FromResult(Controller.InvokeOnUi(() => WkCookieStore.SetCookies(wv, cookies)));
     }
 
+    private bool Alive(IntPtr wv) => !_prebound || WkTabs.Has(wv);
+
     public override async Task<NavigateResult> NavigateAsync(string url, CancellationToken ct)
     {
+        if (_prebound) return await NavigateNativeAsync(url, ct);
         // Mark the outgoing document so WaitForNewDocAsync can tell when the
         // new one commits — readyState still describes the OLD page until then.
         var navTok = "__navW" + Interlocked.Increment(ref _evalCounter);
@@ -412,6 +437,61 @@ public sealed class WebKitDriver : DriverBase
         _watchedUrl = url;
         await WaitForNewDocAsync(navTok, ct);
         return NavigateResult.Success(await GetUrlSafeAsync(ct), await GetTitleSafeAsync(ct));
+    }
+
+    /// <summary>Per-tab navigation: loads into this tab's own view and waits on
+    /// WebKit's own loading flag (no JS needed, so it also works on a view that has
+    /// never held a document, or one showing an error / PDF page).</summary>
+    private async Task<NavigateResult> NavigateNativeAsync(string url, CancellationToken ct)
+    {
+        RaiseLoadStarted();
+        Controller.InvokeOnUi(() => { if (Alive(_webview)) WkTabs.Load(_webview, url); });
+        _watchedUrl = url;
+        await WaitNativeLoadAsync(ct);
+        _everLoaded = true;
+        return NavigateResult.Success(await GetUrlSafeAsync(ct), await GetTitleSafeAsync(ct));
+    }
+
+    /// <summary>Internal pages (start page, history…): raw HTML into this tab's view.</summary>
+    public async Task LoadHtmlAsync(string html, CancellationToken ct)
+    {
+        RaiseLoadStarted();
+        Controller.InvokeOnUi(() => { if (Alive(_webview)) WkTabs.LoadHtml(_webview, html); });
+        _watchedUrl = "about:blank";
+        await WaitNativeLoadAsync(ct, 8000);
+        _everLoaded = true;
+    }
+
+    /// <summary>Waits until WebKit reports the view finished loading. Returns
+    /// early when no load ever started (blocked/cancelled navigation).</summary>
+    private async Task WaitNativeLoadAsync(CancellationToken ct, int timeoutMs = 20000)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        var saw = false; var idle = 0;
+        await Task.Delay(40, ct);
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (PageLoading) { saw = true; idle = 0; }
+            else
+            {
+                idle++;
+                if (saw && idle >= 2) break;   // finished
+                if (!saw && idle >= 8) break;  // never started
+            }
+            await Task.Delay(60, ct);
+        }
+        if (saw) await Task.Delay(150, ct); // let SPA hydration run before helpers inject
+        RaiseLoadCompleted();
+    }
+
+    public override Task<(bool CanBack, bool CanFwd)> GetNavStateAsync(CancellationToken ct)
+    {
+        if (!_prebound) return base.GetNavStateAsync(ct);
+        var wv = _webview;
+        if (wv == IntPtr.Zero) return Task.FromResult((false, false));
+        return Task.FromResult(Controller.InvokeOnUi(() =>
+            Alive(wv) ? (WkTabs.CanGoBack(wv), WkTabs.CanGoForward(wv)) : (false, false)));
     }
 
     /// <summary>Polls until the pre-navigation marker is gone (new document
@@ -446,6 +526,34 @@ public sealed class WebKitDriver : DriverBase
 
     public override async Task<byte[]> ScreenshotAsync(RectD? clip, bool fullPage, CancellationToken ct)
     {
+        if (fullPage && clip is null)
+        {
+            var tall = await FullPageShotAsync(ct);
+            if (tall is not null) return tall;
+            // fall through: at least give the visible part
+        }
+        var snapView = ResolveWebView();
+        if (snapView != IntPtr.Zero)
+        {
+            var snap = await SnapViewAsync(snapView, ct);
+            if (snap != IntPtr.Zero)
+            {
+                if (clip is { } c0)
+                {
+                    double vwCss = 0;
+                    try { vwCss = (await EvaluateAsync("innerWidth", false, ct))?.GetDouble() ?? 0; } catch { }
+                    var k = vwCss > 0 ? MacWindow.ImageWidth(snap) / vwCss : 1;
+                    snap = MacWindow.CropImage(snap, c0.X * k, c0.Y * k, c0.Width * k, c0.Height * k);
+                }
+                if (snap != IntPtr.Zero)
+                {
+                    var shot = Controller.InvokeOnUi(() => MacWindow.ImageToPng(snap));
+                    MacWindow.ReleaseImage(snap);
+                    if (shot is { Length: > 0 }) return shot;
+                }
+            }
+        }
+
         var png = Controller.InvokeOnUi(() =>
         {
             var win = _windowNumber != 0 ? MacWindow.WindowByNumber(_windowNumber) : IntPtr.Zero;
@@ -473,13 +581,162 @@ public sealed class WebKitDriver : DriverBase
         return png;
     }
 
+    // ---- scrolling screenshot: scroll the page one viewport at a time, grab the
+    // view's pixels after each step, and paint the grabs into one tall bitmap.
+
+    private const string ShotPrepJs = @"(function(){
+ var S=window.__brainShot={}, de=document.documentElement, b=document.body;
+ var st=document.createElement('style'); st.textContent='html,body,*{scroll-behavior:auto !important}'; (document.head||de).appendChild(st); S.style=st;
+ function docH(){return Math.max(de.scrollHeight,b?b.scrollHeight:0);}
+ var sc=document.scrollingElement||de; S.sc=sc; S.inner=false;
+ if(docH()<=innerHeight+4&&b){
+  var best=null,bestA=0,all=b.querySelectorAll('*');
+  for(var i=0;i<all.length&&i<8000;i++){var e=all[i];
+   if(e.scrollHeight<=e.clientHeight+4||e.clientHeight<innerHeight*0.5||e.clientWidth<innerWidth*0.5)continue;
+   var o=getComputedStyle(e).overflowY; if(o!=='auto'&&o!=='scroll'&&o!=='overlay')continue;
+   var a=e.clientHeight*e.clientWidth; if(a>bestA){bestA=a;best=e;}}
+  if(best){S.sc=best;S.inner=true;}
+ }
+ S.hid=[]; S.hideOn=false;
+ S.hide=function(){ if(!S.hideOn)return;
+  var all=document.querySelectorAll('body *'),vw=innerWidth,vh=innerHeight;
+  for(var i=0;i<all.length&&i<30000;i++){var e=all[i]; if(e.__bsh)continue;
+   var p=getComputedStyle(e).position; if(p!=='fixed'&&p!=='sticky')continue;
+   if(e.contains(S.sc))continue;
+   var r=e.getBoundingClientRect(); if(r.width*r.height>vw*vh*0.7)continue;
+   var o=e.style; e.__bsh=1;
+   S.hid.push([e,o.getPropertyValue('opacity'),o.getPropertyPriority('opacity'),o.getPropertyValue('transition'),o.getPropertyPriority('transition')]);
+   o.setProperty('transition','none','important'); o.setProperty('opacity','0','important');}
+ };
+ S.x=scrollX; S.y=S.sc.scrollTop;
+ S.total=function(){return S.inner?S.sc.scrollHeight:docH();};
+ var r=S.inner?S.sc.getBoundingClientRect():{left:0,top:0,width:innerWidth,height:innerHeight};
+ S.sc.scrollTo(0,0);
+ return {total:S.total(),vw:innerWidth,rx:r.left,ry:r.top,rw:r.width,rh:r.height,y0:S.y};
+})()";
+
+    private const string ShotStepJs = @"(function(y){var S=window.__brainShot,sc=S.sc;
+ return new Promise(function(res){var done=false;
+  function fin(){if(done)return;done=true;res({y:sc.scrollTop,total:S.total()});}
+  sc.scrollTo(0,y);
+  // pages add their pinned bars from scroll handlers, so look for them again after the scroll settles
+  requestAnimationFrame(function(){requestAnimationFrame(function(){setTimeout(function(){
+   try{S.hide();}catch(e){}
+   requestAnimationFrame(function(){requestAnimationFrame(fin);});},150);});});
+  setTimeout(fin,900);
+ });})(__Y__)";
+
+    // fixed / sticky bars would repeat in every frame — hide them after the first one
+    private const string ShotHideFixedJs = @"(function(){var S=window.__brainShot; if(!S)return 0; S.hideOn=true; S.hide(); return S.hid.length;})()";
+
+    private const string ShotRestoreJs = @"(function(){var S=window.__brainShot; if(!S)return 0;
+ (S.hid||[]).forEach(function(a){var o=a[0].style;
+  if(a[1])o.setProperty('opacity',a[1],a[2]);else o.removeProperty('opacity');
+  if(a[3])o.setProperty('transition',a[3],a[4]);else o.removeProperty('transition');
+  try{delete a[0].__bsh;}catch(e){}});
+ if(S.style)S.style.remove();
+ try{S.sc.scrollTo(S.inner?0:S.x,S.y);}catch(e){}
+ delete window.__brainShot; return 1;})()";
+
+    private const int ShotMaxFrames = 120;
+
+    /// <summary>Whole-page PNG, or null when the page can't be captured this way
+    /// (no eval, view hidden, bitmap would be too big...).</summary>
+    private async Task<byte[]?> FullPageShotAsync(CancellationToken ct)
+    {
+        var wv = ResolveWebView();
+        if (wv == IntPtr.Zero) return null;
+        JsonElement? meta;
+        try { meta = await EvaluateAsync(ShotPrepJs, false, ct); }
+        catch { return null; }
+        if (meta is not { ValueKind: JsonValueKind.Object } m) return null;
+
+        double total = m.GetProperty("total").GetDouble();
+        double vw = m.GetProperty("vw").GetDouble();
+        double rx = m.GetProperty("rx").GetDouble(), ry = m.GetProperty("ry").GetDouble();
+        double rw = m.GetProperty("rw").GetDouble(), rh = m.GetProperty("rh").GetDouble();
+        MacWindow.ShotLog($"prep total={total} vw={vw} rect={rx},{ry} {rw}x{rh}");
+        if (total < 1 || vw < 1 || rw < 1 || rh < 1) { await ShotRestoreAsync(); return null; }
+
+        MacWindow.Canvas? canvas = null;
+        try
+        {
+            double scale = 0;
+            double y = 0;
+            for (var frame = 0; frame < ShotMaxFrames; frame++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var r = await EvaluateAsync(ShotStepJs.Replace("__Y__", ((long)Math.Round(y)).ToString()), true, ct);
+                if (r is not { ValueKind: JsonValueKind.Object } st) break;
+                var actual = st.GetProperty("y").GetDouble();
+                total = Math.Max(total, st.GetProperty("total").GetDouble());
+
+                var img = await SnapViewAsync(wv, ct);
+                if (img == IntPtr.Zero) { MacWindow.ShotLog("grab failed"); break; }
+
+                if (scale == 0)
+                {
+                    scale = MacWindow.ImageWidth(img) / vw; // device pixels per CSS pixel (retina and page zoom included)
+                    var cw = (int)Math.Round(rw * scale);
+                    var ch = (int)Math.Round(total * scale);
+                    var maxH = (int)(MacWindow.MaxCanvasBytes / 4 / Math.Max(1, cw));
+                    canvas = MacWindow.Canvas.Create(cw, Math.Min(ch, Math.Min(maxH, 60000)));
+                    MacWindow.ShotLog($"scale={scale} canvas={cw}x{ch}");
+                    if (canvas is null) { MacWindow.ReleaseImage(img); break; }
+                }
+
+                img = MacWindow.CropImage(img, rx * scale, ry * scale, rw * scale, rh * scale);
+                if (img == IntPtr.Zero) break;
+                MacWindow.ShotLog($"frame {frame}: requested y={y} actual={actual} total={total}");
+                MacWindow.ShotDump("frame" + frame, img);
+                canvas!.Draw(img, (int)Math.Round(actual * scale));
+                MacWindow.ReleaseImage(img);
+
+                var shown = actual + rh;
+                var clamped = actual < y - 1;                   // the page refused to scroll further
+                if (clamped || shown >= total - 1 || (actual + rh) * scale >= canvas.Height) break;
+                if (frame == 0) { try { await EvaluateAsync(ShotHideFixedJs, false, ct); } catch { } }
+                y = actual + rh;
+            }
+            var outPng = canvas is null ? null : Controller.InvokeOnUi(() => canvas.ToPng());
+            if (MacWindow.ShotDebug && outPng is not null) File.WriteAllBytes(Path.Combine(MacWindow.ShotDir, "brain-shot-final.png"), outPng);
+            return outPng;
+        }
+        finally
+        {
+            canvas?.Dispose();
+            await ShotRestoreAsync();
+        }
+    }
+
+    private static readonly SemaphoreSlim SnapGate = new(1, 1);
+
+    /// <summary>Visible area of a view as a retained CGImage (zero on failure).</summary>
+    private async Task<IntPtr> SnapViewAsync(IntPtr wv, CancellationToken ct)
+    {
+        await SnapGate.WaitAsync(ct);
+        try
+        {
+            var t = Controller.InvokeOnUi(() => Alive(wv) ? MacWindow.BeginSnapshot(wv) : null);
+            if (t is null) return IntPtr.Zero;
+            var done = await Task.WhenAny(t, Task.Delay(8000, ct));
+            return done == t ? t.Result : IntPtr.Zero;
+        }
+        finally { SnapGate.Release(); }
+    }
+
+    private async Task ShotRestoreAsync()
+    {
+        try { await EvaluateAsync(ShotRestoreJs, false, CancellationToken.None); } catch { }
+    }
+
     // ---------------- helpers ----------------
 
     public override void SetPageMuted(bool muted)
     {
         var wv = _webview;
         if (wv == IntPtr.Zero) return;
-        Controller.InvokeOnUi(() => MacWindow.SetWebViewMuted(wv, muted));
+        Controller.InvokeOnUi(() => { if (Alive(wv)) MacWindow.SetWebViewMuted(wv, muted); });
     }
 
     private Timer? _audioTimer;
@@ -502,6 +759,15 @@ public sealed class WebKitDriver : DriverBase
             }
             catch { /* webview gone or transitioning */ }
         }, null, TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(700));
+    }
+
+    /// <summary>URL the web view is showing right now (native, no JS).</summary>
+    internal string? NativeUrl()
+    {
+        var wv = _webview;
+        if (wv == IntPtr.Zero) return null;
+        try { return Controller.InvokeOnUi(() => Alive(wv) ? MacWindow.GetWebViewUrl(wv) : null); }
+        catch { return null; }
     }
 
     private int _watchTick;
@@ -531,6 +797,11 @@ public sealed class WebKitDriver : DriverBase
                     if (!string.IsNullOrEmpty(url) && url != _watchedUrl)
                     {
                         _watchedUrl = url;
+                        // Right after a tab switch the view still shows the PREVIOUS
+                        // tab's page; stamping it onto the new owner is what made two
+                        // tabs end up on the same site.
+                        if (Controller.IsStaleDocUrl(url)) return;
+                        Controller.ClearStaleDoc();
                         // the shared webview shows the doc owner's page, not necessarily the driver's own tab
                         BrowserController.SetTabUrl(Controller.DocOwner ?? Tab, url);
                         if (!loading) { RaiseLoadStarted(); RaiseLoadCompleted(); }
@@ -541,8 +812,48 @@ public sealed class WebKitDriver : DriverBase
         }, null, TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(500));
     }
 
+    /// <summary>Per-tab watcher: one native read per tick (loading flag, URL,
+    /// audio) for THIS tab's view only. Idle tabs are checked every ~1.5s, loading
+    /// tabs every tick — and because the view is the tab's own, nothing read here
+    /// can belong to another tab.</summary>
+    private void StartTabWatcher()
+    {
+        _tabTimer = new Timer(_ =>
+        {
+            try
+            {
+                if (!_loading && (Interlocked.Increment(ref _watchTick) % 3 != 0)) return;
+                var wv = _webview;
+                if (wv == IntPtr.Zero || Tab.IsClosed) return;
+                var (loading, url, audible) = Controller.InvokeOnUi(() => WkTabs.Has(wv)
+                    ? (MacWindow.IsWebViewLoading(wv), MacWindow.GetWebViewUrl(wv), MacWindow.IsWebViewPlayingAudio(wv))
+                    : (false, (string?)null, false));
+
+                if (audible != _audible) { _audible = audible; Controller.SetTabAudible(Tab, audible); }
+
+                if (loading) { RaiseLoadStarted(); _sawLoad = true; }
+                var age = DateTime.UtcNow - _loadStartAt;
+                if (_loading && (!loading && _sawLoad || !_sawLoad && age > TimeSpan.FromSeconds(4) || age > TimeSpan.FromSeconds(60)))
+                    RaiseLoadCompleted();
+
+                if (!string.IsNullOrEmpty(url) && url != _watchedUrl)
+                {
+                    _watchedUrl = url;
+                    // Raw-HTML pages (start page, history…) and empty views report
+                    // about:blank; their logical URL is tracked by the controller.
+                    if (url == "about:blank") return;
+                    BrowserController.SetTabUrl(Tab, url);
+                    if (!loading) { RaiseLoadStarted(); RaiseLoadCompleted(); }
+                }
+            }
+            catch { /* view transitioning or closed */ }
+        }, null, TimeSpan.FromMilliseconds(700), TimeSpan.FromMilliseconds(500));
+    }
+
     public override async ValueTask DisposeAsync()
     {
+        _webview = IntPtr.Zero;
+        try { if (_tabTimer is not null) await _tabTimer.DisposeAsync(); } catch { }
         try { if (_watcher is not null) await _watcher.DisposeAsync(); } catch { }
         try { if (_audioTimer is not null) await _audioTimer.DisposeAsync(); } catch { }
     }

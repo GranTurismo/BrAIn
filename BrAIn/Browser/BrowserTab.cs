@@ -23,6 +23,17 @@ public sealed class BrowserTab
     /// <summary>macOS: NSWindow windowNumber used to relocate the WKWebView.</summary>
     public long MacWindowNumber { get; set; }
 
+    /// <summary>macOS per-tab mode: this tab's own WKWebView (never shared).
+    /// Zero until the view is created; zero again once the tab is closed.</summary>
+    public IntPtr NativeView { get; set; }
+
+    /// <summary>Per-tab mode: a page load is in flight in this tab's view.</summary>
+    public volatile bool Loading;
+
+    /// <summary>Per-tab mode: this tab's view can go back / forward.</summary>
+    public bool CanBack { get; set; }
+    public bool CanFwd { get; set; }
+
     /// <summary>Set while a child window is being created; used to bind it to
     /// the automation channel (CDP target / WKWebView) once it appears.</summary>
     public TaskCompletionSource Bound { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

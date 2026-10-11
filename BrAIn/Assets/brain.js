@@ -3,7 +3,7 @@
  * Windows, or on-demand eval on macOS). Exposes window.__brain.
  * Element refs are data-brain-ref attributes assigned during snapshots. */
 (function () {
-    if (window.__brain && window.__brain.v === 2) return;
+    if (window.__brain && window.__brain.v === 3) return;
 
     var REF = 'data-brain-ref';
     var refCounter = 0;
@@ -571,7 +571,7 @@
                 return orig && orig.apply(console, arguments);
             };
         });
-        window.addEventListener('error', function (e) {
+        rawOn(window, 'error', function (e) {
             try {
                 window.external && window.external.sendMessage(JSON.stringify({
                     b: 2, level: 'error', text: String(e.message || e.error || 'page error').slice(0, 2000),
@@ -614,8 +614,1043 @@
 
     function blurAll() { if (document.activeElement) document.activeElement.blur(); }
 
+    // ---------------- stable locators (activity log / flows) ----------------
+    // Refs (e1, e2, ...) are reassigned on every snapshot, so a logged
+    // `click e7` cannot be replayed. locator() turns whatever the caller used
+    // into selectors that survive a reload, verified to resolve to the SAME
+    // element right now, best first.
+
+    function cssEsc(s) {
+        return (window.CSS && CSS.escape) ? CSS.escape(String(s)) : String(s).replace(/[^\w-]/g, '\\$&');
+    }
+    function uniqueCss(css, el) {
+        try { var n = document.querySelectorAll(css); return n.length === 1 && n[0] === el; } catch (e) { return false; }
+    }
+    // Generated ids (react-:r1:, ember123, long hex/digit runs) change per load.
+    function looksStable(v) {
+        if (!v || v.length > 60) return false;
+        if (/\d{4,}/.test(v)) return false;
+        if (/[0-9a-f]{8,}/i.test(v)) return false;
+        if (/^(:r|ember|react|radix|mui-|rc[-_]|headlessui)/i.test(v)) return false;
+        return true;
+    }
+    function cssPath(el) {
+        var parts = [];
+        var cur = el;
+        while (cur && cur.nodeType === 1 && cur !== document.documentElement) {
+            if (cur.id && looksStable(cur.id)) { parts.unshift('#' + cssEsc(cur.id)); break; }
+            var t = tag(cur), idx = 1, sib = cur;
+            while ((sib = sib.previousElementSibling)) if (tag(sib) === t) idx++;
+            parts.unshift(t + ':nth-of-type(' + idx + ')');
+            cur = cur.parentElement;
+            if (parts.length > 8) break;
+        }
+        return parts.join(' > ');
+    }
+    var SENSITIVE_RE = /pass(word|wd)?|pwd|secret|token|cvv|cvc|card|otp|ssn|pin\b|2fa|mfa/i;
+    function sensitiveEl(el) {
+        if (!el || !el.getAttribute) return false;
+        var t = (el.type || '').toLowerCase();
+        if (t === 'password') return true;
+        var ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+        if (/^cc-|one-time-code|current-password|new-password/.test(ac)) return true;
+        return SENSITIVE_RE.test((el.name || '') + ' ' + (el.id || ''));
+    }
+    function locator(sel) { return locatorFor(resolve(sel), String(sel)); }
+    // Same, for an element already in hand (the recorder): no caller-authored selector.
+    function locatorFor(el, sel) {
+        if (!el) return null;
+        var out = [];
+        var s = String(sel).trim();
+        var isRef = /^(?:@|ref[:=])?e\d+$/i.test(s) || /^ref[:=]/i.test(s);
+        if (s && !isRef && resolve(s) === el) out.push(s); // caller-authored selector wins
+        if (el.id && looksStable(el.id)) {
+            var c = '#' + cssEsc(el.id);
+            if (uniqueCss(c, el)) out.push('css:' + c);
+        }
+        ['data-testid', 'data-test', 'data-qa', 'data-cy', 'name', 'aria-label', 'placeholder'].forEach(function (a) {
+            var v = el.getAttribute(a);
+            if (v && looksStable(v)) {
+                var c2 = tag(el) + '[' + a + '="' + v.replace(/"/g, '\\"') + '"]';
+                if (uniqueCss(c2, el)) out.push('css:' + c2);
+            }
+        });
+        var role = roleOf(el), name = accName(el);
+        if (role && name && name.length <= 80 && findByRole(role, name) === el) out.push('role:' + role + ':' + name);
+        if (name && name.length <= 80 && findByText(name) === el) out.push('text:' + name);
+        var path = cssPath(el);
+        if (path && uniqueCss(path, el)) out.push('css:' + path);
+        var seen = {}, uniq = [];
+        out.forEach(function (x) { if (!seen[x]) { seen[x] = 1; uniq.push(x); } });
+        return {
+            sel: uniq[0] || s, alts: uniq.slice(1, 5), tag: tag(el), role: role,
+            name: name ? String(name).slice(0, 80) : null, sensitive: sensitiveEl(el),
+        };
+    }
+    // ---------------- recorder: "show it once" ----------------
+    // While the user records, their own clicks, typing and choices stream to the host as
+    // {b:31}. Secret fields send a mask only; the value never leaves the page.
+    var REC = null;
+    function recSend(ev) {
+        try { window.external && window.external.sendMessage(JSON.stringify({ b: 31, ev: ev })); } catch (e) { }
+    }
+    function recIgnore(el) { return !el || el.nodeType !== 1 || el.id === '__brain-chrome-host'; }
+    function recTextLike(el) {
+        if (!el || el.nodeType !== 1) return false;
+        var t = tag(el);
+        if (t === 'textarea') return true;
+        if (t === 'input') return !/^(checkbox|radio|submit|button|image|reset|file|range|color|hidden)$/i.test(el.type || 'text');
+        return !!el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable);
+    }
+    function recValueOf(el) {
+        if (el.isContentEditable) return String(el.innerText || '').slice(0, 4000);
+        return String(el.value == null ? '' : el.value).slice(0, 4000);
+    }
+    function recFlush(el) {
+        if (!REC || recIgnore(el) || !recTextLike(el)) return;
+        var v = recValueOf(el), prev = REC.vals.has(el) ? REC.vals.get(el) : '';
+        if (v === prev) return;
+        REC.vals.set(el, v);
+        var loc = locatorFor(el, '');
+        if (!loc) return;
+        var masked = sensitiveEl(el);
+        recSend({ k: 'type', loc: loc, value: masked ? '' : v, masked: masked, url: location.href });
+    }
+    function recStart() {
+        if (REC) return true;
+        var R = REC = { vals: new WeakMap(), off: [] };
+        function on(type, fn) { window.addEventListener(type, fn, true); R.off.push(function () { window.removeEventListener(type, fn, true); }); }
+        on('focusin', function (e) {
+            var el = e.target;
+            if (!recIgnore(el) && recTextLike(el) && !R.vals.has(el)) R.vals.set(el, recValueOf(el));
+        });
+        on('focusout', function (e) { recFlush(e.target); });
+        on('change', function (e) {
+            var el = e.target;
+            if (!e.isTrusted || recIgnore(el)) return;
+            var t = tag(el), ty = String(el.type || '').toLowerCase();
+            if (recTextLike(el)) { recFlush(el); return; }
+            var loc = locatorFor(el, '');
+            if (!loc) return;
+            if (t === 'select') {
+                var vals = Array.prototype.map.call(el.selectedOptions || [], function (o) { return o.value || o.text; });
+                recSend({ k: 'select', loc: loc, values: vals, url: location.href });
+            } else if (t === 'input' && (ty === 'checkbox' || ty === 'radio')) {
+                if (ty === 'radio' && !el.checked) return;
+                recSend({ k: 'check', loc: loc, checked: !!el.checked, url: location.href });
+            }
+        });
+        on('keydown', function (e) {
+            var el = e.target;
+            if (!e.isTrusted || recIgnore(el) || e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+            if (!recTextLike(el) || tag(el) === 'textarea') return;
+            recFlush(el);
+            var loc = locatorFor(el, '');
+            recSend({ k: 'key', key: 'Enter', loc: loc, url: location.href });
+        });
+        on('click', function (e) {
+            var el = e.target;
+            if (!e.isTrusted || e.button > 0 || recIgnore(el)) return;
+            var t = el.closest && el.closest('button,a[href],summary,input[type=submit],input[type=button],input[type=image],input[type=reset],[role=button],[role=link],[role=menuitem],[role=menuitemcheckbox],[role=tab],[role=option],[role=switch],[onclick]');
+            if (!t) { try { if (getComputedStyle(el).cursor === 'pointer') t = el; } catch (e2) { } }
+            if (!t) return;
+            var tg = tag(t), ty = String(t.type || '').toLowerCase();
+            if (tg === 'label' || tg === 'select' || recTextLike(t) || (tg === 'input' && (ty === 'checkbox' || ty === 'radio'))) return;
+            var loc = locatorFor(t, '');
+            if (!loc) return;
+            recFlush(document.activeElement);
+            recSend({ k: 'click', loc: loc, url: location.href });
+        });
+        return true;
+    }
+    function recStop() {
+        if (!REC) return false;
+        REC.off.forEach(function (f) { try { f(); } catch (e) { } });
+        REC = null;
+        return true;
+    }
+
+    // ---------------- seatbelt: what would this click do? ----------------
+    function riskFacts(el) {
+        if (!el || el.nodeType !== 1) return null;
+        var btn = (el.closest && el.closest('button,input,a,summary,[role=button],[role=link],[role=menuitem]')) || el;
+        var tg = tag(btn);
+        var type = String((btn.getAttribute && btn.getAttribute('type')) || '').toLowerCase();
+        var form = btn.form || (btn.closest && btn.closest('form')) || null;
+        var submit = !!form && ((tg === 'button' && (type === '' || type === 'submit')) ||
+            (tg === 'input' && (type === 'submit' || type === 'image')));
+        var card = false;
+        if (form && submit) {
+            var fs = form.elements || [];
+            for (var i = 0; i < fs.length && i < 60; i++) {
+                var f = fs[i], ac = String((f.getAttribute && f.getAttribute('autocomplete')) || '').toLowerCase();
+                if (/^cc-(number|csc|exp)/.test(ac) || /card.?num|cardnumber|cvv|cvc/i.test((f.name || '') + ' ' + (f.id || ''))) { card = true; break; }
+            }
+        }
+        var name = '';
+        try { name = accName(btn) || btn.value || (btn.textContent || '').trim(); } catch (e) { }
+        return {
+            tag: tg, role: roleOf(btn), type: type, name: String(name || '').replace(/\s+/g, ' ').slice(0, 80),
+            submit: submit, post: !!form && String(form.method || '').toLowerCase() === 'post', card: card, host: location.hostname,
+        };
+    }
+    function risk(sel) { var el = null; try { el = resolve(sel); } catch (e) { } return riskFacts(el); }
+    function riskAt(x, y) { return riskFacts(document.elementFromPoint(x, y)); }
+    function riskKey() {
+        var a = document.activeElement;
+        if (!a) return null;
+        if (/^(button|a|summary)$/i.test(a.tagName) || a.getAttribute('role') === 'button') return riskFacts(a);
+        if (!a.form) return null;
+        var b = a.form.querySelector('button[type=submit],input[type=submit],button:not([type])');
+        return b ? riskFacts(b) : null;
+    }
+
+    // First selector (in order) that currently resolves, or null.
+    function firstMatch(sels) {
+        if (!Array.isArray(sels)) return null;
+        for (var i = 0; i < sels.length; i++) {
+            try { if (resolve(sels[i])) return sels[i]; } catch (e) { }
+        }
+        return null;
+    }
+    function isSensitiveFocus() { return sensitiveEl(document.activeElement); }
+
+    // ---------------- event-listener registry ----------------
+    // Pages have no API for "what listeners are bound to this node?". So we
+    // wrap EventTarget.prototype.add/removeEventListener and the on* handler
+    // setters here — at document-start, before any page script runs — and
+    // remember who registered what. Registration stacks are kept as
+    // un-formatted Error objects and only parsed when someone asks, so the
+    // hot path stays cheap. BrAIn's own window/document listeners go through
+    // rawOn() (the original addEventListener) and never enter the registry.
+
+    var LR_HOST = '__brain-chrome-host';
+    var LR_LATE = !!(document.body || document.readyState !== 'loading');
+    var LR = (function () {
+        var ET = window.EventTarget && window.EventTarget.prototype;
+        if (!ET || typeof ET.addEventListener !== 'function' || typeof WeakMap !== 'function') return null;
+        var rawAdd = ET.addEventListener, rawRemove = ET.removeEventListener;
+        var fnToString = Function.prototype.toString;
+        var ErrorC = Error;
+        var HAS_WR = typeof WeakRef === 'function';
+        var HIST = 20;          // removed records kept per (target, type)
+        var ERR_CAP = 40000;    // stop capturing stacks after this many registrations
+        var store = new WeakMap();   // target -> Map(type -> [record])
+        var pstore = new WeakMap();  // target -> { type: {fn, err, t} | null }  (on* assignments)
+        var seen = new WeakSet();
+        var refs = [], sweepAt = 4000, seq = 0, nErr = 0;
+        var hnCache = new Map();
+
+        function nowT() { return Math.round(performance.now()); }
+
+        // Named so frames from the hook itself can be stripped from stacks.
+        function __brainMk() {
+            if (nErr++ > ERR_CAP) return null;
+            var had = typeof ErrorC.stackTraceLimit === 'number', lim = had ? ErrorC.stackTraceLimit : 0;
+            try { if (had) ErrorC.stackTraceLimit = 14; } catch (e) { had = false; }
+            var err = new ErrorC();
+            try { if (had) ErrorC.stackTraceLimit = lim; } catch (e) { }
+            return err;
+        }
+
+        function track(t) {
+            if (!HAS_WR || seen.has(t)) return;
+            seen.add(t);
+            refs.push(new WeakRef(t));
+            if (refs.length > sweepAt) {
+                refs = refs.filter(function (r) { return r.deref() !== undefined; });
+                sweepAt = Math.max(4000, refs.length * 2);
+            }
+        }
+        function bucket(t, type, create) {
+            var m = store.get(t);
+            if (!m) {
+                if (!create) return null;
+                m = new Map(); store.set(t, m); track(t);
+            }
+            var a = m.get(type);
+            if (!a && create) { a = []; m.set(type, a); }
+            return a || null;
+        }
+        function normOpts(o) {
+            if (o !== null && typeof o === 'object') {
+                // Each member is read exactly once (getters may have side effects);
+                // the browser then receives the normalised copy.
+                var n = { cap: !!o.capture, once: !!o.once, passive: o.passive, sig: o.signal };
+                n.o = { capture: n.cap, once: n.once, passive: n.passive, signal: n.sig };
+                return n;
+            }
+            return { cap: !!o, once: false, passive: undefined, sig: undefined, o: o };
+        }
+
+        function retire(rec, why, t, err) {
+            if (rec.removed) return;
+            rec.removed = why; rec.rt = nowT();
+            if (err) rec.rerr = err; // who removed it (captured by the caller so hook frames strip cleanly)
+            if (rec.mark && t) { try { rawRemove.call(t, rec.type, rec.mark, rec.cap); } catch (e) { } }
+            rec.mark = null;
+            var arr = rec.arr;
+            arr.nr = (arr.nr || 0) + 1;
+            if (arr.nr > HIST * 2) { // keep every live record + the newest HIST removed ones
+                var drop = arr.nr - HIST;
+                for (var i = 0; i < arr.length && drop > 0; ) {
+                    if (arr[i].removed) { arr.splice(i, 1); drop--; arr.nr--; } else i++;
+                }
+            }
+        }
+        function hookSignal(rec, sig) {
+            // Weak: a long-lived AbortSignal must not pin the target through our closure.
+            var wr = HAS_WR ? new WeakRef(rec) : null;
+            rawAdd.call(sig, 'abort', function () {
+                var r = wr ? wr.deref() : rec;
+                if (r) retire(r, 'signal');
+            }, { once: true });
+        }
+
+        function __brainAdd(type, fn, opts) {
+            if (arguments.length < 2) return rawAdd.apply(this, arguments);
+            var t = this, n = normOpts(opts), ty = `${type}`, arr = null, dup = false, comp = null, rec = null;
+            try {
+                if (fn != null && !(n.sig && n.sig.aborted)) {
+                    arr = bucket(t, ty, true);
+                    for (var i = 0; i < arr.length; i++) {
+                        var r = arr[i];
+                        if (!r.removed && r.fn === fn && r.cap === n.cap) { dup = true; break; }
+                    }
+                    if (!dup && n.once) {
+                        // once listeners vanish when they fire; a marker registered just before
+                        // theirs runs exactly when theirs does, so the record can be retired.
+                        comp = function () { if (rec) retire(rec, 'once'); };
+                        rawAdd.call(t, ty, comp, { capture: n.cap, once: true, passive: true, signal: n.sig });
+                    }
+                }
+            } catch (e) { arr = null; comp = null; }
+            var res;
+            try { res = rawAdd.call(t, ty, fn, n.o); }
+            catch (e) { if (comp) { try { rawRemove.call(t, ty, comp, n.cap); } catch (e2) { } } throw e; }
+            if (arr && !dup) {
+                try {
+                    rec = { id: ++seq, type: ty, fn: fn, cap: n.cap, once: n.once, passive: n.passive,
+                        err: __brainMk(), t: nowT(), removed: '', mark: comp, arr: arr };
+                    arr.push(rec);
+                    if (n.sig) hookSignal(rec, n.sig);
+                } catch (e) { }
+            }
+            return res;
+        }
+        function __brainRm(type, fn, opts) {
+            var res = rawRemove.apply(this, arguments);
+            try {
+                if (arguments.length >= 2 && fn != null) {
+                    var cap = opts !== null && typeof opts === 'object' ? !!opts.capture : !!opts;
+                    var arr = bucket(this, `${type}`, false);
+                    if (arr) for (var i = 0; i < arr.length; i++) {
+                        var r = arr[i];
+                        if (!r.removed && r.fn === fn && r.cap === cap) { retire(r, 'removed', this, __brainMk()); break; }
+                    }
+                }
+            } catch (e) { }
+            return res;
+        }
+        try { Object.defineProperty(__brainAdd, 'length', { value: 2, configurable: true }); } catch (e) { }
+        try { Object.defineProperty(__brainRm, 'length', { value: 2, configurable: true }); } catch (e) { }
+
+        // ---- on* handler properties (el.onclick = fn) ----
+        function __brainNote(t, type, fn) {
+            var m = pstore.get(t);
+            if (!m) { m = Object.create(null); pstore.set(t, m); track(t); }
+            m[type] = fn ? { fn: fn, err: __brainMk(), t: nowT() } : null;
+        }
+        function hookProps(obj) {
+            var names;
+            try { names = Object.getOwnPropertyNames(obj); } catch (e) { return; }
+            names.forEach(function (name) {
+                if (name.length < 3 || name.charCodeAt(0) !== 111 || name.charCodeAt(1) !== 110) return;
+                var d;
+                try { d = Object.getOwnPropertyDescriptor(obj, name); } catch (e) { return; }
+                if (!d || !d.set || !d.configurable) return;
+                var type = name.slice(2), origSet = d.set;
+                var setter = function __brainSet(v) {
+                    try { __brainNote(this, type, typeof v === 'function' ? v : null); } catch (e) { }
+                    return origSet.call(this, v);
+                };
+                try { Object.defineProperty(obj, name, { get: d.get, set: setter, enumerable: d.enumerable, configurable: true }); } catch (e) { }
+            });
+        }
+
+        // ---- reading ----
+        function isInternal(t) {
+            try {
+                if (t.id === LR_HOST) return true;
+                var r = t.getRootNode ? t.getRootNode() : null;
+                return !!(r && r.host && r.host.id === LR_HOST);
+            } catch (e) { return false; }
+        }
+        function label(t) {
+            try {
+                if (t === window) return 'window';
+                if (t === document) return 'document';
+                if (t.nodeType === 11) return '#shadow-root';
+                if (t.nodeType === 1) {
+                    var s = t.tagName.toLowerCase();
+                    if (t.id) s += '#' + t.id;
+                    var c = (typeof t.className === 'string' ? t.className : '').trim().split(/\s+/).filter(Boolean).slice(0, 3);
+                    if (c.length) s += '.' + c.join('.');
+                    return s.length > 80 ? s.slice(0, 77) + '…' : s;
+                }
+                var n = (t.constructor && t.constructor.name) || 'EventTarget';
+                if (typeof t.url === 'string') n += ' ' + t.url.slice(0, 60);
+                else if (typeof t.media === 'string') n += ' ' + t.media.slice(0, 60);
+                return n;
+            } catch (e) { return 'EventTarget'; }
+        }
+        function safeGet(t, k) { try { return t[k]; } catch (e) { return undefined; } }
+        function handlerNames(t) {
+            var out = [], dup = Object.create(null), p = t, guard = 0;
+            while (p && p !== Object.prototype && guard++ < 12) {
+                var ns = hnCache.get(p);
+                if (!ns) {
+                    ns = [];
+                    try {
+                        Object.getOwnPropertyNames(p).forEach(function (name) {
+                            if (!/^on[a-z]/.test(name)) return;
+                            var d = Object.getOwnPropertyDescriptor(p, name);
+                            if (d && d.set) ns.push(name);
+                        });
+                    } catch (e) { }
+                    // Instances (elements, sockets…) must not be pinned by the cache; only window and prototypes are.
+                    if (p === window || p !== t) hnCache.set(p, ns);
+                }
+                for (var i = 0; i < ns.length; i++) if (!dup[ns[i]]) { dup[ns[i]] = 1; out.push(ns[i]); }
+                p = Object.getPrototypeOf(p);
+            }
+            return out;
+        }
+        function fnInfo(f, withSrc) {
+            var o = {};
+            try {
+                var h = f;
+                if (f !== null && typeof f === 'object' && typeof f.handleEvent === 'function') { h = f.handleEvent; o.handleEvent = true; }
+                if (typeof h !== 'function') { o.name = ''; return o; }
+                o.name = h.name || ''; o.len = h.length;
+                var s = fnToString.call(h);
+                o.native = /\{\s*\[native code\]\s*\}\s*$/.test(s);
+                o.size = s.length;
+                if (withSrc) o.src = s.length > 1200 ? s.slice(0, 1200) + '…' : s;
+            } catch (e) { }
+            return o;
+        }
+        function frames(err, max) {
+            var out = [];
+            if (!err) return out;
+            var s;
+            try { s = err.stack; } catch (e) { return out; }
+            if (typeof s !== 'string') return out;
+            var lines = s.split('\n');
+            for (var i = 0; i < lines.length && out.length < max; i++) {
+                var L = lines[i].trim();
+                if (!L || /__brain(Mk|Add|Rm|Set|Note)/.test(L)) continue;
+                var m, f, u, ln, col;
+                if ((m = /^at (?:(.*?) \()?(.*?):(\d+):(\d+)\)?$/.exec(L))) { f = m[1] || ''; u = m[2]; ln = +m[3]; col = +m[4]; }
+                else if ((m = /^(.*?)@(.*?)(?::(\d+):(\d+))?$/.exec(L))) { f = m[1]; u = m[2]; ln = +m[3] || 0; col = +m[4] || 0; }
+                else continue;
+                if (!u || u === '[native code]' || u === '<anonymous>' || u.indexOf('user-script:') === 0) continue; // BrAIn's own injected lib (WKUserScript)
+                out.push({ fn: f, url: u, line: ln, col: col });
+            }
+            return out;
+        }
+        function siteStr(fr) {
+            var u = fr.url, o = location.origin;
+            if (o && o !== 'null' && u.indexOf(o) === 0) u = u.slice(o.length) || '/';
+            return u + (fr.line ? ':' + fr.line + (fr.col ? ':' + fr.col : '') : '');
+        }
+
+        // One descriptor per live (or, on request, removed) listener on t.
+        function collect(t, o) {
+            var out = [], types = o.types;
+            var m = store.get(t);
+            if (m) m.forEach(function (arr, type) {
+                if (types && !types[type]) return;
+                for (var i = 0; i < arr.length; i++) {
+                    var r = arr[i];
+                    if (r.removed && !o.removed) continue;
+                    out.push({ id: r.id, type: r.type, cap: r.cap, once: r.once, passive: r.passive, how: 'listener',
+                        at: r.t, removed: r.removed, rt: r.rt, fn: r.fn, err: r.err, rerr: r.rerr, rec: r, t: t });
+                }
+            });
+            out.sort(function (a, b) { return a.id - b.id; });
+            var pm = pstore.get(t), names = handlerNames(t);
+            for (var j = 0; j < names.length; j++) {
+                var name = names[j], type2 = name.slice(2);
+                if (types && !types[type2]) continue;
+                // The live handler is ground truth (setAttribute after onX=null re-arms it);
+                // recorded assignments / attributes only say where it came from.
+                var cur = safeGet(t, name);
+                if (typeof cur !== 'function') continue;
+                var pr = pm ? pm[type2] : null, d;
+                if (pr && pr.fn === cur) d = { fn: cur, err: pr.err, at: pr.t };
+                else if (t.nodeType === 1 && t.hasAttribute(name)) d = { fn: null, code: t.getAttribute(name), attr: true };
+                else d = { fn: cur };
+                d.id = 0; d.type = type2; d.cap = false; d.once = false; d.how = d.attr ? 'attribute' : 'property';
+                d.name = name; d.t = t;
+                out.push(d);
+            }
+            return out;
+        }
+        function shape(d, o) {
+            var fr = frames(d.err, 12);
+            var out = { id: d.id || undefined, type: d.type, phase: d.cap ? 'capture' : 'bubble', how: d.how };
+            if (d.once) out.once = true;
+            if (d.passive !== undefined) out.passive = !!d.passive;
+            if (d.at !== undefined) out.at = d.at;
+            if (d.removed) {
+                out.removed = d.removed;
+                var rf = frames(d.rerr, 4);
+                if (rf.length) out.removedAt = siteStr(rf[0]);
+            }
+            out.fn = d.fn != null ? fnInfo(d.fn, o.src !== false)
+                : { name: '', attr: true, src: String(d.code).slice(0, 1200) };
+            out.site = fr.length ? siteStr(fr[0]) : '';
+            if (o.stack !== false) out.stack = fr.map(function (x) { return { fn: x.fn, at: siteStr(x) }; });
+            // Live handle for in-page consumers (DevTools); not serialised.
+            out.remove = function () {
+                if (d.how === 'listener') {
+                    rawRemove.call(d.t, d.type, d.fn, d.cap);
+                    retire(d.rec, 'removed', d.t);
+                } else if (d.how === 'attribute') d.t.removeAttribute(d.name);
+                else d.t[d.name] = null;
+            };
+            return out;
+        }
+        function pathOf(node, ancestors) {
+            var chain = [node];
+            if (!ancestors) return chain;
+            var n = node, guard = 0;
+            while (n && guard++ < 300) {
+                var p = n.parentNode || n.host || null;
+                if (!p) break;
+                chain.push(p); n = p;
+            }
+            var top = chain[chain.length - 1];
+            if (node !== window && (top === document || top.nodeType === 9)) chain.push(window);
+            return chain;
+        }
+        function pickTarget(sel) {
+            if (sel && typeof sel === 'object' && typeof sel.addEventListener === 'function') return sel;
+            var s = String(sel == null ? '' : sel).trim().toLowerCase();
+            if (s === 'window') return window;
+            if (s === 'document') return document;
+            return resolve(sel);
+        }
+
+        function query(sel, o) {
+            o = o || {};
+            var t = pickTarget(sel);
+            if (!t) return { ok: false, error: 'element not found: ' + sel };
+            var types = null;
+            if (o.type) { types = Object.create(null); String(o.type).split(/[\s,]+/).forEach(function (x) { if (x) types[x.replace(/^on/, '')] = 1; }); }
+            var anc = o.ancestors !== false;
+            var chain = pathOf(t, anc), groups = [], total = 0, cap = o.max || 400, omitted = 0;
+            for (var i = 0; i < chain.length; i++) {
+                var node = chain[i];
+                if (isInternal(node)) continue;
+                var ds = collect(node, { types: types, removed: !!o.removed });
+                if (!ds.length && node !== t) continue;
+                var room = Math.max(0, cap - total);
+                if (ds.length && !room) { omitted += ds.length; continue; } // cap hit: don't show an empty-looking group
+                var g = { target: label(node), rel: node === t ? 'target' : 'ancestor', listeners: [] };
+                if (node.nodeType === 1 && ds.length && o.refs !== false) g.ref = assignRef(node);
+                Object.defineProperty(g, 'node', { value: node, enumerable: false });
+                for (var k = 0; k < ds.length && k < room; k++) { g.listeners.push(shape(ds[k], o)); total++; }
+                if (ds.length > g.listeners.length) { g.more = ds.length - g.listeners.length; omitted += g.more; }
+                groups.push(g);
+            }
+            var res = { ok: true, late: LR_LATE, target: label(t), total: total, groups: groups };
+            if (omitted) res.omitted = omitted;
+            return res;
+        }
+
+        function summary(o) {
+            o = o || {};
+            var byType = Object.create(null), rows = new Map(), total = 0, removedN = 0;
+            function row(t) {
+                var r = rows.get(t);
+                if (!r) { r = { t: t, n: 0, types: Object.create(null) }; rows.set(t, r); }
+                return r;
+            }
+            function bump(t, type, k) { var r = row(t); r.n += k; r.types[type] = (r.types[type] || 0) + k; byType[type] = (byType[type] || 0) + k; total += k; }
+            for (var i = 0; i < refs.length; i++) {
+                var t = refs[i].deref();
+                if (!t || isInternal(t)) continue;
+                var m = store.get(t);
+                if (m) m.forEach(function (arr, type) {
+                    for (var j = 0; j < arr.length; j++) { if (arr[j].removed) removedN++; else bump(t, type, 1); }
+                });
+                var pm = pstore.get(t);
+                if (pm) for (var ty in pm) if (pm[ty] && typeof safeGet(t, 'on' + ty) === 'function') bump(t, ty, 1);
+            }
+            if (o.attrs !== false && document.documentElement) {
+                var all = document.getElementsByTagName('*');
+                for (var a = 0; a < all.length; a++) {
+                    var el = all[a], at = el.attributes;
+                    if (!at || !at.length || el.id === LR_HOST) continue;
+                    for (var b = 0; b < at.length; b++) {
+                        var nm = at[b].name;
+                        if (nm.length > 2 && nm.charCodeAt(0) === 111 && nm.charCodeAt(1) === 110) {
+                            var pm2 = pstore.get(el), pr2 = pm2 && pm2[nm.slice(2)];
+                            if (pr2 && safeGet(el, nm) === pr2.fn) continue; // already counted as a property assignment
+                            bump(el, nm.slice(2), 1);
+                        }
+                    }
+                }
+            }
+            var list = [];
+            rows.forEach(function (r) { list.push(r); });
+            list.sort(function (x, y) { return y.n - x.n; });
+            var max = o.max || 40;
+            var targets = list.slice(0, max).map(function (r) {
+                var g = { target: label(r.t), count: r.n, types: r.types };
+                if (r.t.nodeType === 1 && o.refs !== false) g.ref = assignRef(r.t);
+                return g;
+            });
+            var types = Object.keys(byType).map(function (k) { return [k, byType[k]]; })
+                .sort(function (x, y) { return y[1] - x[1]; });
+            return { ok: true, late: LR_LATE, total: total, removedKept: removedN, targetCount: list.length,
+                types: types.slice(0, 60), targets: targets, truncated: list.length > max || undefined };
+        }
+
+        // ---- install ----
+        ET.addEventListener = __brainAdd;
+        ET.removeEventListener = __brainRm;
+        ['Element', 'HTMLElement', 'SVGElement', 'MathMLElement', 'HTMLBodyElement', 'HTMLFrameSetElement',
+            'Document', 'Window', 'XMLHttpRequest', 'XMLHttpRequestEventTarget', 'WebSocket', 'Worker',
+            'SharedWorker', 'MessagePort', 'BroadcastChannel', 'MediaQueryList', 'EventSource', 'FileReader',
+            'IDBRequest', 'IDBTransaction', 'IDBDatabase', 'Notification', 'ServiceWorkerContainer',
+            'ServiceWorker', 'ServiceWorkerRegistration', 'RTCPeerConnection', 'RTCDataChannel',
+            'BaseAudioContext', 'MediaStream', 'MediaStreamTrack', 'MediaRecorder', 'MediaSource',
+            'SourceBuffer', 'SourceBufferList', 'TextTrack', 'TextTrackList', 'Animation', 'AbortSignal',
+            'VisualViewport', 'ScreenOrientation', 'Performance', 'FontFaceSet', 'OffscreenCanvas'
+        ].forEach(function (nm) {
+            try { var C = window[nm]; if (typeof C === 'function' && C.prototype) hookProps(C.prototype); } catch (e) { }
+        });
+        hookProps(window);
+
+        return {
+            query: query, summary: summary,
+            rawOn: function (t, type, fn, o) { return rawAdd.call(t, type, fn, o); },
+        };
+    })();
+
+    // The original addEventListener — for BrAIn's own page-level listeners.
+    function rawOn(t, type, fn, o) { return LR ? LR.rawOn(t, type, fn, o) : t.addEventListener(type, fn, o); }
+
+    function lrOff() { return { ok: false, error: 'listener registry unavailable (no EventTarget)' }; }
+    function listeners(sel, o) { return LR ? LR.query(sel, o) : lrOff(); }
+    function listenerSummary(o) { return LR ? LR.summary(o) : lrOff(); }
+
+    // Compact text form for agents: target by target, one line per listener.
+    function listenersText(sel, o) {
+        o = o || {};
+        o.refs = o.refs !== false;
+        var r = (sel == null || sel === '') ? listenerSummary(o) : listeners(sel, o);
+        if (!r.ok) return r.error || 'failed';
+        var out = [];
+        if (r.late) out.push('! registry started after the page\'s scripts ran — listeners added earlier are missing (reload the page for a complete picture)');
+        if (r.groups) {
+            out.push(r.target + ': ' + r.total + ' listener' + (r.total === 1 ? '' : 's') + ' shown' +
+                (o.ancestors === false ? '' : ' (target + ancestors)') +
+                (r.omitted ? ', ' + r.omitted + ' more not shown (raise max or filter by type)' : ''));
+            r.groups.forEach(function (g) {
+                out.push('');
+                out.push('[' + g.rel + '] ' + g.target + (g.ref ? ' [ref=' + g.ref + ']' : '') + (g.listeners.length ? '' : '  (none)'));
+                g.listeners.forEach(function (l) {
+                    var flags = [l.phase, l.how];
+                    if (l.once) flags.push('once');
+                    if (l.passive !== undefined) flags.push(l.passive ? 'passive' : 'non-passive');
+                    if (l.removed) flags.push('REMOVED:' + l.removed);
+                    out.push('  ' + l.type + '  ' + flags.join(' ') + '  ' + (l.fn.name || (l.fn.attr ? 'inline attr' : 'anonymous')) +
+                        (l.site ? '  @ ' + l.site : ''));
+                    var src = (l.fn.src || '').replace(/\s+/g, ' ').trim();
+                    if (src) out.push('      ' + (src.length > 160 ? src.slice(0, 160) + '…' : src));
+                    if (l.removedAt) out.push('      removed @ ' + l.removedAt);
+                });
+                if (g.more) out.push('  … ' + g.more + ' more on this target');
+            });
+            return out.join('\n');
+        }
+        out.push('Page-wide: ' + r.total + ' live listeners on ' + r.targetCount + ' targets' +
+            (r.removedKept ? ' (' + r.removedKept + ' removed kept in history)' : ''));
+        out.push('By type: ' + r.types.map(function (x) { return x[0] + ' ' + x[1]; }).join(', '));
+        out.push('');
+        r.targets.forEach(function (g) {
+            var tk = Object.keys(g.types).sort(function (a, b) { return g.types[b] - g.types[a]; });
+            out.push(g.target + (g.ref ? ' [ref=' + g.ref + ']' : '') + '  ' + g.count + '  ' +
+                tk.slice(0, 10).map(function (k) { return k + (g.types[k] > 1 ? '×' + g.types[k] : ''); }).join(' ') +
+                (tk.length > 10 ? '  +' + (tk.length - 10) + ' more types' : ''));
+        });
+        if (r.truncated) out.push('… more targets (raise max)');
+        return out.join('\n');
+    }
+
+    // ---------------- page -> Markdown ----------------
+    // Turns the page (or the user's selection, or one element) into clean
+    // Markdown for pasting into an AI chat, notes or a bug report. Works on
+    // what is *visible*: scripts, styles, hidden nodes, form controls and
+    // (for whole pages) navigation / footers / cookie banners are dropped.
+    // markdownInfo() returns { md, title, url, source, chars }; markdown()
+    // is the string-only form used by the browser_markdown MCP tool.
+
+    var MD_SKIP = /^(script|style|noscript|template|svg|canvas|iframe|object|embed|head|link|meta|title|select|option|datalist|button|input|textarea|dialog|map|area|audio|video|source|track)$/;
+    var MD_BLOCK = /^(address|article|aside|blockquote|body|center|details|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hgroup|hr|li|main|nav|ol|p|pre|section|summary|table|ul|menu|caption|thead|tbody|tfoot|tr|td|th|legend)$/;
+    var MD_NOISE_ROLE = /^(navigation|banner|contentinfo|complementary|dialog|alertdialog|search)$/;
+    var MD_CONSENT = /cookie|consent|gdpr|onetrust|didomi|cmp-|privacy-banner/i;
+
+    function mdVisible(el) {
+        if (!el.isConnected) return true; // cloned selection fragments carry no layout
+        if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return false;
+        var s;
+        try { s = getComputedStyle(el); } catch (e) { return true; }
+        if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') return false;
+        if (s.opacity === '0' && el.children.length === 0) return false;
+        // screen-reader-only text ("Skip to content", "opens in new tab") and off-canvas items
+        if (el.children.length === 0 || s.overflow !== 'visible') {
+            var r = el.getBoundingClientRect();
+            if (r.width <= 1 && r.height <= 1 && s.overflow !== 'visible') return false;
+            if (r.width > 0 && r.right + (window.scrollX || 0) < -50) return false;
+            if (r.height > 0 && r.bottom + (window.scrollY || 0) < -50) return false;
+        }
+        return true;
+    }
+
+    function mdEscText(s) {
+        return s.replace(/\\/g, '\\\\').replace(/([*`])/g, '\\$1')
+            .replace(/(^|\s)_|_(\s|$)/g, function (m) { return m.replace('_', '\\_'); })
+            .replace(/\]\(/g, '\\](').replace(/<(?=[a-zA-Z\/!])/g, '\\<');
+    }
+
+    function mdUrl(u) { return u.replace(/ /g, '%20').replace(/\(/g, '%28').replace(/\)/g, '%29'); }
+
+    function mdAbs(u) {
+        try { return new URL(u, document.baseURI).href; } catch (e) { return u; }
+    }
+
+    function mdLang(pre) {
+        var cands = [pre, pre.querySelector('code'), pre.parentElement];
+        for (var i = 0; i < cands.length; i++) {
+            var c = cands[i]; if (!c || !c.className || typeof c.className !== 'string') continue;
+            var m = /(?:^|\s)(?:language|lang|highlight-source|highlight)-([a-z0-9#+_-]+)/i.exec(c.className);
+            if (m) return m[1].toLowerCase();
+        }
+        return '';
+    }
+
+    function mdIsNoise(el, tagName, ctx) {
+        if (ctx.full) return false;
+        var role = el.getAttribute && el.getAttribute('role');
+        if (role && MD_NOISE_ROLE.test(role)) return true;
+        if (el.getAttribute && el.getAttribute('aria-modal') === 'true') return true;
+        if (tagName === 'nav' || tagName === 'aside') return true;
+        if (tagName === 'footer' || tagName === 'header') {
+            // an article/section's own header or footer is content; the page's is chrome
+            return !el.closest('article, main, section, [role=main]');
+        }
+        var id = (el.id || '') + ' ' + (typeof el.className === 'string' ? el.className : '');
+        if (id.length > 3 && MD_CONSENT.test(id)) {
+            var len = (el.textContent || '').length;
+            if (len < 1800 && !el.querySelector('main, article')) return true;
+        }
+        return false;
+    }
+
+    function mdInlineWrap(mark, inner) {
+        var m = /^(\s*)([\s\S]*?)(\s*)$/.exec(inner);
+        if (!m[2]) return inner;
+        return m[1] + mark + m[2] + mark + m[3];
+    }
+
+    // Renders the children of `node` into an array of block strings.
+    function mdChildren(node, ctx, only) {
+        var parts = [], buf = '';
+        function flush() {
+            var t = buf.replace(/[ \t\r\f\v]+/g, ' ').replace(/ *\n */g, '\n').trim();
+            buf = '';
+            if (!t) return;
+            if (/^(#{1,6}\s|[>+-]\s|\d+[.)]\s|={3,}|-{3,}$)/.test(t)) t = '\\' + t;
+            parts.push(t);
+        }
+        var kids = only || mdKids(node);
+        for (var i = 0; i < kids.length; i++) {
+            var c = kids[i];
+            if (c.nodeType === 3) {
+                var v = c.nodeValue;
+                if (ctx.pre) buf += v; else buf += mdEscText(v.replace(/\s+/g, ' '));
+                continue;
+            }
+            if (c.nodeType !== 1) continue;
+            var tg = c.tagName.toLowerCase();
+            if (MD_SKIP.test(tg)) {
+                if ((tg === 'video' || tg === 'audio') && c.getAttribute('src') && !ctx.noImages) {
+                    flush(); parts.push('[' + tg + '](' + mdUrl(mdAbs(c.getAttribute('src'))) + ')');
+                }
+                continue;
+            }
+            if (!mdVisible(c)) continue;
+            if (mdIsNoise(c, tg, ctx)) continue;
+            if (tg === 'br') { buf += '\n'; continue; }
+            if (MD_BLOCK.test(tg)) {
+                flush();
+                var b = mdBlock(c, tg, ctx);
+                if (b) parts.push(b);
+                continue;
+            }
+            // flex/grid items and display:block spans/links/images stand on their own line
+            if (c.isConnected && !ctx.pre) {
+                var disp = '';
+                try { disp = getComputedStyle(c).display; } catch (e) { }
+                if (/^(block|flex|grid|list-item|table|flow-root)/.test(disp)) {
+                    flush();
+                    if (/^(a|img|code|kbd|samp|tt|strong|b|em|i|cite|del|s|strike|q)$/.test(tg)) {
+                        var ai = mdInline(c, tg, ctx);
+                        if (ai && ai.blocks) ai.blocks.forEach(function (x) { if (x) parts.push(x); });
+                        else if (ai) parts.push(ai);
+                    } else {
+                        var gb = mdBlock(c, tg, ctx);
+                        if (gb) parts.push(gb);
+                    }
+                    continue;
+                }
+            }
+            // inline-level
+            var inl = mdInline(c, tg, ctx);
+            if (inl && inl.blocks) { flush(); inl.blocks.forEach(function (x) { if (x) parts.push(x); }); }
+            else buf += inl || '';
+        }
+        flush();
+        return parts;
+    }
+
+    function mdKids(node) {
+        // open shadow roots are part of what the user sees; <slot> shows its assigned nodes
+        if (node.shadowRoot) return [].slice.call(node.shadowRoot.childNodes);
+        if (node.tagName && node.tagName.toLowerCase() === 'slot') {
+            var a = node.assignedNodes ? node.assignedNodes({ flatten: true }) : [];
+            return a.length ? a : [].slice.call(node.childNodes);
+        }
+        return [].slice.call(node.childNodes);
+    }
+
+    function mdHasBlock(el) {
+        return !!el.querySelector('p,div,ul,ol,li,table,pre,blockquote,h1,h2,h3,h4,h5,h6,section,article,figure,hr');
+    }
+
+    function mdInline(el, tg, ctx) {
+        if (tg === 'img') {
+            if (ctx.noImages) return '';
+            var alt = (el.getAttribute('alt') || '').replace(/\s+/g, ' ').trim();
+            var src = el.currentSrc || el.getAttribute('src') || '';
+            if (!src || /^data:/i.test(src) || /^blob:/i.test(src)) return alt && alt.length > 3 && !ctx.inLink ? mdEscText(alt) : '';
+            if (!alt && el.isConnected && ((el.naturalWidth && el.naturalWidth <= 40) || (el.width && el.width <= 40))) return ''; // icons / tracking pixels
+            if (el.isConnected && (el.width <= 2 || el.height <= 2)) return '';
+            return '![' + alt.replace(/[\[\]]/g, '') + '](' + mdUrl(mdAbs(src)) + ')';
+        }
+        if (tg === 'a') {
+            var href = el.getAttribute('href');
+            var hasB = mdHasBlock(el);
+            var inner;
+            var sub = Object.assign({}, ctx, { inLink: true });
+            if (hasB) {
+                var bl = mdChildren(el, sub);
+                var one = bl.join(' ').replace(/\s+/g, ' ').trim();
+                if (!href || /^(javascript:|#)/i.test(href) || ctx.inLink || !one) return { blocks: bl };
+                if (bl.length === 1 && bl[0].indexOf('\n') < 0) return { blocks: ['[' + bl[0] + '](' + mdUrl(mdAbs(href)) + ')'] };
+                return { blocks: bl.concat(['[link](' + mdUrl(mdAbs(href)) + ')']) };
+            }
+            inner = mdChildren(el, sub).join(' ').replace(/\s+/g, ' ').trim();
+            if (/^(#|¶|§|🔗|\u00b6)$/.test(inner) && ctx.heading) return ''; // heading anchor icons
+            if (!inner) inner = (el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+            if (!inner) return '';
+            if (!href || /^(javascript:|#)/i.test(href) || ctx.inLink) return inner;
+            return '[' + inner.replace(/\]/g, '\\]') + '](' + mdUrl(mdAbs(href)) + ')';
+        }
+        if (mdHasBlock(el)) return { blocks: mdChildren(el, ctx) }; // span/label wrapping blocks
+        var txt = mdChildren(el, ctx).join(' ');
+        if (tg === 'strong' || tg === 'b') return ctx.heading ? txt : mdInlineWrap('**', txt);
+        if (tg === 'em' || tg === 'i' || tg === 'cite') return mdInlineWrap('*', txt);
+        if (tg === 'del' || tg === 's' || tg === 'strike') return mdInlineWrap('~~', txt);
+        if (tg === 'code' || tg === 'kbd' || tg === 'samp' || tg === 'tt') {
+            var raw = (el.textContent || '').replace(/\s+/g, ' ');
+            if (!raw.trim()) return '';
+            var fence = /`/.test(raw) ? '``' : '`';
+            return fence + (/^`|`$/.test(raw) ? ' ' + raw + ' ' : raw) + fence;
+        }
+        if (tg === 'q') return '"' + txt + '"';
+        return txt;
+    }
+
+    function mdBlock(el, tg, ctx) {
+        var kids;
+        if (/^h[1-6]$/.test(tg)) {
+            var t = mdChildren(el, Object.assign({}, ctx, { heading: true })).join(' ').replace(/\s+/g, ' ').trim();
+            return t ? new Array(+tg.charAt(1) + 1).join('#') + ' ' + t : '';
+        }
+        if (tg === 'p' || tg === 'summary' || tg === 'caption' || tg === 'legend') {
+            var p = mdChildren(el, ctx).join('\n\n');
+            if (tg === 'summary' && p) return '**' + p.replace(/\n+/g, ' ') + '**';
+            if (tg === 'caption' && p) return '*' + p.replace(/\n+/g, ' ') + '*';
+            return p;
+        }
+        if (tg === 'pre') {
+            var code = (el.textContent || '').replace(/\r\n?/g, '\n').replace(/^\n+|\s+$/g, '');
+            if (!code) return '';
+            var fence = /```/.test(code) ? '~~~~' : '```';
+            return fence + mdLang(el) + '\n' + code + '\n' + fence;
+        }
+        if (tg === 'hr') return '---';
+        if (tg === 'blockquote') {
+            var q = mdChildren(el, ctx).join('\n\n');
+            return q ? q.split('\n').map(function (l) { return l ? '> ' + l : '>'; }).join('\n') : '';
+        }
+        if (tg === 'ul' || tg === 'ol' || tg === 'menu') return mdList(el, tg === 'ol', ctx);
+        if (tg === 'li') return mdChildren(el, ctx).join('\n\n'); // stray li outside a list
+        if (tg === 'table') return mdTable(el, ctx);
+        if (tg === 'figcaption') {
+            var fc = mdChildren(el, ctx).join(' ').replace(/\s+/g, ' ').trim();
+            return fc ? '*' + fc + '*' : '';
+        }
+        if (tg === 'dt') {
+            var d = mdChildren(el, ctx).join(' ').replace(/\s+/g, ' ').trim();
+            return d ? '**' + d + '**' : '';
+        }
+        if (tg === 'dl') {
+            var out = [];
+            [].forEach.call(el.children, function (c) {
+                if (!mdVisible(c)) return;
+                var ct = c.tagName.toLowerCase();
+                if (ct === 'dt') { var s = mdBlock(c, 'dt', ctx); if (s) out.push(s); }
+                else if (ct === 'dd') { var s2 = mdChildren(c, ctx).join(' ').trim(); if (s2) out.push(s2); }
+            });
+            return out.join('\n');
+        }
+        // generic container: div, section, article, main, details, figure, ...
+        kids = mdChildren(el, ctx);
+        // a one-line flex row (label + value, key + shortcut) reads better joined than stacked
+        if (kids.length >= 2 && kids.length <= 6 && el.isConnected) {
+            try {
+                var cs = getComputedStyle(el);
+                if (/^flex/.test(cs.display) && /^row/.test(cs.flexDirection) &&
+                    kids.every(function (k) { return k.indexOf('\n') < 0 && k.length < 120 && !/^(#|>|-\s|\d+\.\s|```|\|)/.test(k); }))
+                    return kids.join(kids.length === 2 ? ' — ' : ' · ');
+            } catch (e) { }
+        }
+        return kids.join('\n\n');
+    }
+
+    function mdList(el, ordered, ctx) {
+        var items = [], n = parseInt(el.getAttribute('start'), 10);
+        if (isNaN(n)) n = 1;
+        [].forEach.call(el.children, function (li) {
+            if (li.tagName.toLowerCase() !== 'li' || !mdVisible(li)) return;
+            var task = '';
+            var cb = li.querySelector(':scope > input[type=checkbox], :scope > label > input[type=checkbox], :scope > p > input[type=checkbox]');
+            if (cb) task = (cb.checked ? '[x] ' : '[ ] ');
+            var blocks = mdChildren(li, ctx);
+            if (!blocks.length && !task) return;
+            var text = '';
+            blocks.forEach(function (b, i) {
+                if (i === 0) { text = b; return; }
+                var isList = /^(\s*)([-*+]|\d+[.)])\s/.test(b);
+                text += (isList ? '\n' : '\n\n') + b;
+            });
+            var bullet = ordered ? (n++) + '. ' : '- ';
+            var pad = new Array(bullet.length + 1).join(' ');
+            var lines = (task + text).split('\n');
+            items.push(bullet + lines[0] + lines.slice(1).map(function (l) { return l ? '\n' + pad + l : '\n'; }).join(''));
+        });
+        return items.join('\n');
+    }
+
+    function mdTable(el, ctx) {
+        var rows = [];
+        [].forEach.call(el.querySelectorAll('tr'), function (tr) {
+            if (tr.closest('table') !== el || !mdVisible(tr)) return;
+            var cells = [], isHead = false;
+            [].forEach.call(tr.children, function (c) {
+                var ct = c.tagName.toLowerCase();
+                if ((ct !== 'td' && ct !== 'th') || !mdVisible(c)) return;
+                if (ct === 'th') isHead = true;
+                var t = mdChildren(c, ctx).join(' ').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
+                cells.push(t);
+                var span = parseInt(c.getAttribute('colspan'), 10);
+                for (var k = 1; k < (span > 1 && span < 12 ? span : 1); k++) cells.push('');
+            });
+            if (cells.length) rows.push({ cells: cells, head: isHead && tr.parentElement.tagName.toLowerCase() !== 'tbody' || (isHead && !tr.querySelector('td')) });
+        });
+        if (!rows.length) return '';
+        var cols = 0;
+        rows.forEach(function (r) { if (r.cells.length > cols) cols = r.cells.length; });
+        if (cols === 1) return rows.map(function (r) { return r.cells[0]; }).filter(Boolean).join('\n\n'); // layout table
+        var out = [];
+        rows.forEach(function (r) { while (r.cells.length < cols) r.cells.push(''); });
+        var head = rows[0].cells, body = rows.slice(1);
+        out.push('| ' + head.join(' | ') + ' |');
+        out.push('| ' + head.map(function () { return '---'; }).join(' | ') + ' |');
+        body.forEach(function (r) { out.push('| ' + r.cells.join(' | ') + ' |'); });
+        return out.join('\n');
+    }
+
+    function mdMainRoot() {
+        var body = document.body; if (!body) return null;
+        var total = (body.innerText || '').length || 1;
+        var sels = ['main', '[role=main]', 'article', '#mw-content-text', '.markdown-body', '#content', '#main', '.post-content', '.entry-content', '.article-body'];
+        for (var i = 0; i < sels.length; i++) {
+            var list = document.querySelectorAll(sels[i]);
+            if (list.length !== 1) continue;
+            var len = (list[0].innerText || '').length;
+            if (len > 300 && len >= total * 0.3) return list[0];
+        }
+        return body;
+    }
+
+    function markdownInfo(sel, o) {
+        o = o || {};
+        var ctx = { full: !!o.full, noImages: o.images === false };
+        var root = null, source = 'page', frag = null;
+        if (o.selection) {
+            var s = window.getSelection();
+            if (s && s.rangeCount && !s.isCollapsed && String(s).trim()) {
+                frag = document.createElement('div');
+                for (var i = 0; i < s.rangeCount; i++) frag.appendChild(s.getRangeAt(i).cloneContents());
+                root = frag; source = 'selection';
+            } else return { md: '', title: document.title || '', url: location.href, source: 'selection', chars: 0, empty: 'Nothing is selected.' };
+        } else if (sel) {
+            root = resolve(sel); source = 'element';
+            if (!root) return { md: '', title: document.title || '', url: location.href, source: 'element', chars: 0, empty: 'No element matches ' + sel };
+            ctx.full = true;
+        } else if (o.full) { root = document.body; }
+        else { root = mdMainRoot(); source = root === document.body ? 'page' : 'main'; }
+        if (!root) return { md: '', title: '', url: location.href, source: source, chars: 0, empty: 'This page has no content yet.' };
+        var parts = root === frag ? mdChildren(frag, ctx) : mdChildren(null, ctx, [root]);
+        var md = parts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+        var title = (document.title || '').trim(), url = location.href;
+        var head = '';
+        if (o.meta !== false) {
+            head = source === 'selection'
+                ? '> Selection from [' + (title || url).replace(/[\[\]]/g, '') + '](' + mdUrl(url) + ')\n\n'
+                : (title ? '# ' + title.replace(/\s+/g, ' ') + '\n\n' : '') + '> Source: ' + url + '\n\n';
+        }
+        var max = o.max > 0 ? o.max : 400000;
+        var out = head + md, cut = 0;
+        if (out.length > max) { cut = out.length - max; out = out.slice(0, max) + '\n\n…(truncated, ' + cut + ' more characters)'; }
+        return { md: out, title: title, url: url, source: source, chars: out.length, truncated: cut > 0, empty: md ? '' : 'No readable text found on this page.' };
+    }
+
+    function markdown(sel, o) {
+        var r = markdownInfo(sel, o);
+        return r.md || ('(' + (r.empty || 'nothing to convert') + ')');
+    }
+
     window.__brain = {
-        v: 2,
+        v: 3,
         snapshot: snapshot, resolve: resolve, queryAll: queryAll,
         click: click, clickAt: clickAt, dblclick: dblclick, hover: hover,
         fill: fill, insertText: insertText, pressKey: pressKey,
@@ -626,6 +1661,11 @@
         exists: exists, textIncludes: textIncludes, urlMatches: urlMatches,
         installConsoleHook: installConsoleHook, networkLog: networkLog,
         info: info, blurAll: blurAll,
+        locator: locator, firstMatch: firstMatch, isSensitiveFocus: isSensitiveFocus,
+        risk: risk, riskAt: riskAt, riskKey: riskKey,
+        recStart: recStart, recStop: recStop,
+        listeners: listeners, listenerSummary: listenerSummary, listenersText: listenersText, rawOn: rawOn,
+        markdown: markdown, markdownInfo: markdownInfo,
         // toolbar() is attached by toolbar.js
     };
 
@@ -634,7 +1674,7 @@
     // starting, so the host can show the progress bar before the next
     // document exists. The host-side watcher closes it out when the new
     // document is interactive, or auto-heals if the navigation aborted.
-    window.addEventListener('pagehide', function () {
+    rawOn(window, 'pagehide', function () {
         try {
             window.external && window.external.sendMessage(JSON.stringify({ b: 30 }));
         } catch (e) { }
@@ -655,7 +1695,7 @@
         t = (t || '').toLowerCase();
         return !t || t === '_self' || t === '_parent' || t === '_top';
     };
-    window.addEventListener('click', function (e) {
+    rawOn(window, 'click', function (e) {
         try {
             if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
             var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
@@ -667,7 +1707,7 @@
             setTimeout(function () { if (!e.defaultPrevented) navBeacon(); }, 0);
         } catch (err) { }
     }, true);
-    window.addEventListener('submit', function (e) {
+    rawOn(window, 'submit', function (e) {
         try {
             var f = e.target;
             if (!f || !qualifiesNavTarget(f.getAttribute && f.getAttribute('target'))) return;

@@ -261,6 +261,7 @@ internal static partial class MacWindow
     {
         var webview = FindWebView(nsWindow);
         if (webview == IntPtr.Zero) return;
+        if (WkBar.Exists) { WkBar.Layout(nsWindow); return; } // split mode owns the geometry
         var parent = ObjC.Send(webview, ObjC.Sel("superview"));
         if (parent == IntPtr.Zero) return;
         ObjC.SendRectArg(webview, ObjC.Sel("setFrame:"), ObjC.SendRect(parent, ObjC.Sel("bounds")));

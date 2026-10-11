@@ -31,9 +31,11 @@
     <EmbeddedResource Include="Assets\theme.css" LogicalName="BrAIn.Assets.theme.css" />
     <EmbeddedResource Include="Assets\newtab.html" LogicalName="BrAIn.Assets.newtab.html" />
     <EmbeddedResource Include="Assets\help.html" LogicalName="BrAIn.Assets.help.html" />
+    <EmbeddedResource Include="Assets\shortcuts.html" LogicalName="BrAIn.Assets.shortcuts.html" />
     <EmbeddedResource Include="Assets\history.html" LogicalName="BrAIn.Assets.history.html" />
     <EmbeddedResource Include="Assets\import.html" LogicalName="BrAIn.Assets.import.html" />
     <EmbeddedResource Include="Assets\passwords.html" LogicalName="BrAIn.Assets.passwords.html" />
+    <EmbeddedResource Include="Assets\flows.html" LogicalName="BrAIn.Assets.flows.html" />
     <EmbeddedResource Include="Assets\chrome.js" LogicalName="BrAIn.Assets.chrome.js" />
     <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

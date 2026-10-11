@@ -109,6 +109,7 @@
     <span class="qc" data-go="about:history">History</span>
     <span class="qc" data-go="about:import">Import data</span>
     <span class="qc" data-go="about:help" id="help">How to use</span>
+    <span class="qc" data-go="about:shortcuts" id="sc">Shortcuts <kbd id="kbsc"></kbd></span>
   </div>
   <div class="rc" id="recent"><h2>Recent</h2><div class="tl" id="tiles"></div></div>
   <div class="hn"><i></i><span>MCP server ready &middot; connect any client over <code>stdio</code></span></div>
@@ -124,6 +125,7 @@
   });
   var mac = /Mac/.test(navigator.platform);
   document.getElementById('kb').textContent = mac ? '\u2318K' : 'Ctrl K';
+  document.getElementById('kbsc').textContent = mac ? '\u2318/' : 'Ctrl+/';
   document.querySelector('.qa').addEventListener('click', function (e) {
     var c = e.target.closest && e.target.closest('.qc');
     if (!c) return;

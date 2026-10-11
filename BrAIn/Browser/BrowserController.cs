@@ -21,6 +21,20 @@ public sealed class BrowserController : IAsyncDisposable
     private readonly string? _initialUrl;
     private readonly int? _forcedCdpPort;
     private readonly bool _noToolbar;
+    private readonly bool _noFullscreen;
+    // macOS: the toolbar lives in its own native web view above the page view
+    // (Browser/Mac/WkBar.cs). On by default; --no-split / BRAIN_SPLIT=0 falls
+    // back to the in-page toolbar that reserves space by shifting the page.
+    private readonly bool _splitMode = Environment.GetEnvironmentVariable("BRAIN_SPLIT") != "0";
+    private bool SplitOn => _splitMode && IsMac && !_noToolbar;
+    // macOS split mode gives every tab its own WKWebView (Browser/Mac/WkTabs.cs):
+    // switching tabs shows another view instead of reloading one shared page.
+    // Everywhere else (Windows, --no-split, --no-toolbar) tabs still share one view.
+    private bool PerTab => SplitOn;
+    private long _nsWindowNumber;
+    private BrowserTab? _firstTab;
+    private readonly ConcurrentDictionary<Guid, Task<IBrowserDriver>> _viewTasks = new();
+    private readonly bool _grantPermissions;
     private readonly string _userDataDir;
 
     private PhotinoWindow? _mainWindow;
@@ -101,6 +115,15 @@ public sealed class BrowserController : IAsyncDisposable
     /// <summary>%LOCALAPPDATA%\BrAIn — parent of the per-process profile dirs,
     /// shared across runs so bookmarks/history persist.</summary>
     private readonly string _storeDir;
+    /// <summary>Folder holding bookmarks, history, the MCP call log and saved flows.</summary>
+    public string StoreDir => _storeDir;
+    /// <summary>History of MCP tool calls (calls.jsonl).</summary>
+    public BrAIn.Mcp.ActivityLog Activity { get; private set; } = null!;
+    /// <summary>User-approved reusable automations, exposed to agents as flow_* tools.</summary>
+    public BrAIn.Mcp.FlowService Flows { get; private set; } = null!;
+    public BrAIn.Mcp.Seatbelt Belt { get; private set; } = null!;
+    public BrAIn.Mcp.Handoff Handoff { get; private set; } = null!;
+    public BrAIn.Mcp.FlowRecorder Recorder { get; private set; } = null!;
 
     private Cdp.CdpClient? _cdpBrowser; // Windows: browser-level CDP connection
     /// <summary>The tab object that owns the shared window's driver. Kept
@@ -130,7 +153,53 @@ public sealed class BrowserController : IAsyncDisposable
             SyncPageMute();
         }
     }
-    private BrowserTab? DocTab => _docTabId is { } id ? Tabs.Find(id) : null;
+    private BrowserTab? DocTab => !PerTab && _docTabId is { } id ? Tabs.Find(id) : null;
+
+    // Ownership moves to a tab the moment it starts navigating, but the shared
+    // web view keeps showing the previous owner's page — or is still loading it —
+    // until the new document commits. While one of those sites is what's on
+    // screen (_staleSites) nothing may be attributed to the new owner: not the
+    // URL watcher, not the post-load refresh, not the navigation result.
+    // Compared by site (host minus "www.") so redirects still match.
+    private readonly HashSet<string> _staleSites = new(StringComparer.OrdinalIgnoreCase);
+    private string? _inflightNavSite;
+    private Guid _inflightNavTab;
+
+    private static string? SiteKey(string? url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || (u.Scheme != "http" && u.Scheme != "https")) return null;
+        var h = u.Host.ToLowerInvariant();
+        return h.StartsWith("www.", StringComparison.Ordinal) ? h[4..] : h;
+    }
+
+    internal bool IsStaleDocUrl(string? url)
+    {
+        var k = SiteKey(url);
+        if (k is null) return false;
+        lock (_staleSites) return _staleSites.Contains(k);
+    }
+
+    internal void ClearStaleDoc() { lock (_staleSites) _staleSites.Clear(); }
+
+    private void MarkStaleDoc(Guid newOwner, string? targetUrl)
+    {
+        lock (_staleSites)
+        {
+            _staleSites.Clear();
+            if (_docTabId != newOwner)
+            {
+                var cur = SiteKey((_driverTab?.Driver as Drivers.WebKitDriver)?.NativeUrl());
+                if (cur is not null) _staleSites.Add(cur);
+            }
+            // another tab's navigation may still be loading — it will commit later
+            if (_inflightNavSite is { } inflight && _inflightNavTab != newOwner) _staleSites.Add(inflight);
+            // ...but never treat the page we're about to load as stale
+            var tgt = SiteKey(targetUrl);
+            if (tgt is not null) _staleSites.Remove(tgt);
+        }
+        _inflightNavTab = newOwner;
+        _inflightNavSite = SiteKey(targetUrl);
+    }
 
     /// <summary>The tab that owns the shared webview's live document (drivers stamp URL changes onto it).</summary>
     internal BrowserTab? DocOwner => DocTab;
@@ -141,6 +210,12 @@ public sealed class BrowserController : IAsyncDisposable
     {
         try
         {
+            if (PerTab)
+            {
+                // every tab owns its view, so each one just applies its own flag
+                foreach (var t in Tabs.All) t.Driver?.SetPageMuted(t.IsMuted);
+                return;
+            }
             var owner = DocTab;
             foreach (var t in Tabs.All)
                 if (t != owner && t.IsAudible) t.IsAudible = false;
@@ -153,22 +228,31 @@ public sealed class BrowserController : IAsyncDisposable
     /// detection elsewhere). Attributed to the document owner.</summary>
     internal void SetPageAudible(bool on)
     {
-        var t = DocTab;
+        var t = PerTab ? Tabs.Active : DocTab;
         if (t is null || t.IsAudible == on) return;
         t.IsAudible = on;
+        PushChromeStateAll();
+    }
+
+    /// <summary>Per-tab mode: a tab's own view started/stopped playing sound.</summary>
+    internal void SetTabAudible(BrowserTab tab, bool on)
+    {
+        if (tab.IsClosed || tab.IsAudible == on) return;
+        tab.IsAudible = on;
         PushChromeStateAll();
     }
 
     private void ToggleTabMute(BrowserTab tab)
     {
         tab.IsMuted = !tab.IsMuted;
-        SyncPageMute();
+        if (PerTab) tab.Driver?.SetPageMuted(tab.IsMuted);
+        else SyncPageMute();
         PushChromeStateAll();
     }
 
     /// <summary>Active tab is a blank new tab painted as an overlay.</summary>
     private bool OverlayActive =>
-        Tabs.Active is { } a && a.Id != _docTabId && a.LastUrl == "about:newtab";
+        !PerTab && Tabs.Active is { } a && a.Id != _docTabId && a.LastUrl == "about:newtab";
 
     public BrowserTabRegistry Tabs { get; } = new();
     public int? CdpPort { get; private set; }
@@ -183,7 +267,8 @@ public sealed class BrowserController : IAsyncDisposable
 
     /// <summary>JS the document-start user script and post-load fallback
     /// inject — brain.js alone for chromeless windows, both libs otherwise.</summary>
-    internal string PageLibSource => _noToolbar ? Assets.BrainJs : Assets.CombinedLib;
+    internal string PageLibSource => _noToolbar ? Assets.BrainJs
+        : SplitOn ? "window.__BRAIN_SPLIT=true;\n" + Assets.CombinedLib : Assets.CombinedLib;
     private bool _winMax;
 
     public BrowserController(string[] args)
@@ -198,11 +283,21 @@ public sealed class BrowserController : IAsyncDisposable
                 case "--no-toolbar":
                     _noToolbar = true;
                     break;
+                case "--grant-permissions":
+                    _grantPermissions = true;
+                    break;
+                case "--no-fullscreen":
+                    _noFullscreen = true;
+                    break;
+                case "--no-split":
+                    _splitMode = false;
+                    break;
                 case { } a when !a.StartsWith('-'):
                     _initialUrl = NormalizeUrl(a);
                     break;
             }
         }
+        if (Environment.GetEnvironmentVariable("BRAIN_GRANT_PERMISSIONS") is "1" or "true") _grantPermissions = true;
         _userDataDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "BrAIn",
@@ -210,6 +305,17 @@ public sealed class BrowserController : IAsyncDisposable
         _storeDir = Path.GetDirectoryName(_userDataDir)!;
         Directory.CreateDirectory(_userDataDir);
         _pw = new PasswordStore(_storeDir);
+        Activity = new BrAIn.Mcp.ActivityLog(_storeDir);
+        Flows = new BrAIn.Mcp.FlowService(this, Activity);
+        Activity.Changed += ScheduleFlowsPush;
+        Flows.Changed += ScheduleFlowsPush;
+        Flows.PausedCheck = () => _agPaused;
+        Belt = new BrAIn.Mcp.Seatbelt(_storeDir);
+        Belt.Changed += PushBelt;
+        Handoff = new BrAIn.Mcp.Handoff();
+        Handoff.Changed += PushHandoff;
+        Recorder = new BrAIn.Mcp.FlowRecorder();
+        Recorder.Changed += () => PushRec();
         LoadStores();
         Downloads.Changed += PushDownloads;
         Task.Run(CleanupStaleProfiles);
@@ -247,6 +353,19 @@ public sealed class BrowserController : IAsyncDisposable
                 var root = JsonDocument.Parse(File.ReadAllText(pPath)).RootElement;
                 if (root.TryGetProperty("se", out var se))
                     _engine = SearchEngines.FirstOrDefault(x => x.Id == se.GetString()) ?? _engine;
+                // Rewind is opt-in: absent / malformed = off.
+                _rwOn = root.TryGetProperty("rw", out var rwp) && rwp.ValueKind == JsonValueKind.True;
+                _rwAgent = root.TryGetProperty("rwa", out var rwa) && rwa.ValueKind == JsonValueKind.True;
+                if (root.TryGetProperty("rwk", out var rwk) && rwk.ValueKind == JsonValueKind.Number) _rwKeepMin = rwk.GetInt32();
+                if (root.TryGetProperty("rwm", out var rwm) && rwm.ValueKind == JsonValueKind.Number) _rwMaxMb = rwm.GetInt32();
+                if (root.TryGetProperty("rws", out var rws) && rws.ValueKind == JsonValueKind.Array)
+                    foreach (var h in rws.EnumerateArray())
+                        if (h.GetString() is { Length: > 0 } hs) _rwSkip.Add(hs);
+                if (root.TryGetProperty("keys", out var keys) && keys.ValueKind == JsonValueKind.Object)
+                    foreach (var kv in keys.EnumerateObject())
+                        if (kv.Value.ValueKind == JsonValueKind.String)
+                            _keyBinds[kv.Name] = kv.Value.GetString() ?? "";
+                ApplyRwConfig();
             }
             var kPath = Path.Combine(_storeDir, "pwskip.json");
             if (File.Exists(kPath))
@@ -323,7 +442,7 @@ public sealed class BrowserController : IAsyncDisposable
     {
         var (window, tab) = CreatePhotinoWindow();
         tab.LastUrl = _initialUrl ?? "about:newtab";
-        _docTabId = tab.Id;
+        if (!PerTab) _docTabId = tab.Id;
 
         _mainWindow = window;
         Tabs.Add(tab);
@@ -366,7 +485,10 @@ public sealed class BrowserController : IAsyncDisposable
             .Center()
             .SetDevToolsEnabled(false) // no WebKit inspector — ours lives in the page (F12)
             .SetContextMenuEnabled(true)
-            .SetGrantBrowserPermissions(true)
+            // Sites must ask: camera, microphone, location, notifications and clipboard
+            // reads show the engine's own permission prompt (WebView2 bubble / WebKit alert).
+            // Unattended automation can opt back in with --grant-permissions.
+            .SetGrantBrowserPermissions(_grantPermissions)
             .SetJavascriptClipboardAccessEnabled(true)
             .SetUserAgent(DesktopUserAgent)
             .SetTemporaryFilesPath(Path.Combine(_userDataDir, "webview"));
@@ -389,6 +511,13 @@ public sealed class BrowserController : IAsyncDisposable
                 Native.Win32.ApplyBorderlessChrome(window.WindowHandle);
                 Native.Win32.RoundCorners(window.WindowHandle);
             }
+            // Open fullscreen by default (macOS does this after the inline
+            // titlebar is applied, in InitializeMainDriverAsync).
+            if (IsWindows && !_noFullscreen)
+            {
+                try { window.FullScreen = true; }
+                catch (Exception ex) { Log("auto fullscreen failed: " + ex.Message); }
+            }
             // Logical tabs share this single window/webview; only the main
             // driver needs wiring.
             _windowCreated.TrySetResult();
@@ -396,7 +525,7 @@ public sealed class BrowserController : IAsyncDisposable
             // current state the moment init settles (success or failure) so
             // a page mounted during init isn't left without tabs/history.
             _ = _driverReady.Task.ContinueWith(_ => PushChromeStateAll(), TaskScheduler.Default);
-            Task.Run(InitializeMainDriverAsync);
+            Task.Run(() => PerTab ? InitializePerTabAsync() : InitializeMainDriverAsync());
         });
         window.RegisterMaximizedHandler((_, _) =>
         {
@@ -429,6 +558,7 @@ public sealed class BrowserController : IAsyncDisposable
         {
             tab.IsClosed = true;
             Tabs.Remove(tab.Id);
+            _rw.RemoveTab(tab.Id); // a closed tab takes its Rewind history with it
             PushChromeStateAll();
             return false; // allow close
         });
@@ -445,6 +575,13 @@ public sealed class BrowserController : IAsyncDisposable
 
     private PhotinoWindow PrepareLoad(PhotinoWindow window)
     {
+        if (PerTab)
+        {
+            // Photino needs some content to open the window; the real pages live in
+            // the per-tab views created once the window exists.
+            window.LoadRawString("<!doctype html><html><head><meta charset=\"utf-8\"></head><body style=\"background:#0b0b13\"></body></html>");
+            return window;
+        }
         if (_initialUrl is not null && NormalizeUrl(_initialUrl) != "about:newtab")
             window.Load(new Uri(NormalizeUrl(_initialUrl)));
         else
@@ -472,6 +609,28 @@ public sealed class BrowserController : IAsyncDisposable
                 try { InvokeOnUi(() => Mac.MacWindow.ApplyInlineTitlebar(Mac.MacWindow.WindowByNumber(tab.MacWindowNumber))); }
                 catch (Exception ex) { Log("inline titlebar failed: " + ex.Message); }
             }
+            if (SplitOn && tab.MacWindowNumber != 0)
+            {
+                try { InvokeOnUi(() => StartSplitBar(tab)); }
+                catch (Exception ex) { Log("split bar failed: " + ex.Message); }
+            }
+            if (IsMac && !_noFullscreen && tab.MacWindowNumber != 0)
+            {
+                // Open in real Space-based fullscreen (same path as ⌃⌘F) — but only
+                // once the first page has finished loading. Entering the Space while
+                // WKWebView is still mid-load could leave the view blank until a
+                // manual reload (seen when launched unbundled via `dotnet run`).
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        for (var i = 0; i < 40 && (IsLoading || tab.LastUrl is null); i++) await Task.Delay(100);
+                        await Task.Delay(450);
+                        InvokeOnUi(() => SetWindowState(tab, "fullscreen"));
+                    }
+                    catch (Exception ex) { Log("auto fullscreen failed: " + ex.Message); }
+                });
+            }
             _driverTab = tab;
             tab.Bound.TrySetResult();
             _driverReady.TrySetResult();
@@ -489,6 +648,173 @@ public sealed class BrowserController : IAsyncDisposable
             foreach (var t in Tabs.All) t.Bound.TrySetException(ex);
         }
     }
+
+    // ------------------------------------------------------------------
+    // Per-tab views (macOS split mode)
+    // ------------------------------------------------------------------
+
+    /// <summary>Per-tab startup: find the window Photino made, dress it (inline
+    /// titlebar, toolbar view, dark background), hide Photino's own web view —
+    /// it only hosts the window — and give the first tab a view of its own.</summary>
+    private async Task InitializePerTabAsync()
+    {
+        try
+        {
+            var first = Tabs.All.First(t => t.IsMain);
+            _firstTab = first;
+
+            IntPtr nsWin = IntPtr.Zero, boot = IntPtr.Zero; long number = 0;
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (boot == IntPtr.Zero && DateTime.UtcNow < deadline)
+            {
+                (nsWin, boot, number) = InvokeOnUi(() =>
+                {
+                    foreach (var w in Mac.MacWindow.AllWindows())
+                    {
+                        var v = Mac.MacWindow.FindWebView(w);
+                        if (v != IntPtr.Zero) return (w, v, Mac.MacWindow.WindowNumber(w));
+                    }
+                    return (IntPtr.Zero, IntPtr.Zero, 0L);
+                });
+                if (boot == IntPtr.Zero) await Task.Delay(25);
+            }
+            if (boot == IntPtr.Zero) throw new InvalidOperationException("Could not locate the browser window");
+
+            _nsWindowNumber = number;
+            first.MacWindowNumber = number;
+            InvokeOnUi(() =>
+            {
+                Mac.WkTabs.SetBootstrap(boot);
+                try { Mac.MacWindow.ApplyInlineTitlebar(nsWin); }
+                catch (Exception ex) { Log("inline titlebar failed: " + ex.Message); }
+                try { Mac.WkTabs.SetWindowBackground(nsWin); } catch { }
+                try { StartSplitBar(first); }
+                catch (Exception ex) { Log("split bar failed: " + ex.Message); }
+                Mac.WkTabs.HideBootstrap();
+            });
+
+            await EnsureTabViewAsync(first);
+            ShowTabView(first); // views are created hidden; the first tab's must be shown explicitly
+            _driverTab = first;
+            first.Bound.TrySetResult();
+            _driverReady.TrySetResult();
+            Log("driver ready: per-tab views");
+
+            // Load the first tab's page (start page or the URL from the command line).
+            _ = Task.Run(async () =>
+            {
+                try { await NavigateAsync(first.LastUrl, first); }
+                catch (Exception ex) { Log("first load failed: " + ex.Message); }
+            });
+
+            if (!_noFullscreen)
+            {
+                // Real Space-based fullscreen, but only once the first page has settled:
+                // entering the Space mid-load could leave a view blank.
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        for (var i = 0; i < 40 && (IsLoading || first.LastUrl is null); i++) await Task.Delay(100);
+                        await Task.Delay(450);
+                        InvokeOnUi(() => SetWindowState(first, "fullscreen"));
+                    }
+                    catch (Exception ex) { Log("auto fullscreen failed: " + ex.Message); }
+                });
+            }
+            _ = Task.Delay(400).ContinueWith(_ =>
+            {
+                GC.Collect(2, GCCollectionMode.Aggressive, blocking: false, compacting: true);
+            }, TaskScheduler.Default);
+        }
+        catch (Exception ex)
+        {
+            Log("driver init failed: " + ex);
+            _driverReady.TrySetException(ex);
+            foreach (var t in Tabs.All) t.Bound.TrySetException(ex);
+        }
+    }
+
+    /// <summary>Gives a tab its own web view and driver (idempotent; concurrent
+    /// callers share one creation).</summary>
+    private Task<IBrowserDriver> EnsureTabViewAsync(BrowserTab tab)
+    {
+        if (tab.Driver is { } existing && tab.NativeView != IntPtr.Zero) return Task.FromResult(existing);
+        return _viewTasks.GetOrAdd(tab.Id, _ => CreateTabViewAsync(tab));
+    }
+
+    private async Task<IBrowserDriver> CreateTabViewAsync(BrowserTab tab)
+    {
+        await _windowCreated.Task;
+        if (_nsWindowNumber == 0 && !ReferenceEquals(tab, _firstTab))
+            await _driverReady.Task.WaitAsync(TimeSpan.FromSeconds(25));
+        if (tab.IsClosed) throw new InvalidOperationException("Tab is closed");
+        var view = InvokeOnUi(() =>
+        {
+            var nsWin = Mac.MacWindow.WindowByNumber(_nsWindowNumber);
+            return nsWin == IntPtr.Zero
+                ? IntPtr.Zero
+                : Mac.WkTabs.Create(nsWin, tab.Id, PageLibSource, tab.IsPrivate, _zoom);
+        });
+        if (view == IntPtr.Zero) throw new InvalidOperationException("Could not create a web view for the tab");
+        tab.MacWindowNumber = _nsWindowNumber;
+        tab.NativeView = view;
+        var driver = new Drivers.WebKitDriver(tab, this);
+        tab.Driver = driver;
+        WireDriverEvents(tab, driver);
+        await driver.InitializeAsync(this, CancellationToken.None);
+        tab.Bound.TrySetResult();
+        if (tab.IsMuted) driver.SetPageMuted(true);
+        return driver;
+    }
+
+    /// <summary>Makes the tab's view the visible one. Focus only moves if it was
+    /// sitting in the view being hidden (so a focused address bar stays focused).</summary>
+    private void ShowTabView(BrowserTab tab)
+    {
+        if (!PerTab || tab.NativeView == IntPtr.Zero) return;
+        var view = tab.NativeView;
+        InvokeOnUi(() =>
+        {
+            var nsWin = Mac.MacWindow.WindowByNumber(_nsWindowNumber);
+            Mac.WkTabs.Show(nsWin, view);
+        });
+        // the toolbar must repaint for the newly shown page (dedupe would skip it)
+        _lastPushedStateJson = null;
+    }
+
+    private async Task DestroyTabViewAsync(BrowserTab tab)
+    {
+        tab.IsClosed = true;
+        var drv = tab.Driver;
+        var view = tab.NativeView;
+        tab.Driver = null;
+        tab.NativeView = IntPtr.Zero;
+        _viewTasks.TryRemove(tab.Id, out _);
+        try { if (drv is not null) await drv.DisposeAsync(); } catch { }
+        if (view != IntPtr.Zero)
+            try { InvokeOnUi(() => Mac.WkTabs.Destroy(view)); } catch { }
+    }
+
+    /// <summary>A message from one tab's page view. Eval replies must always complete,
+    /// even for a tab that has just been closed; anything else from a dead tab is dropped.</summary>
+    private void OnPageViewMessage(Guid tabId, string message)
+    {
+        var t = Tabs.Find(tabId);
+        if (t is null || t.IsClosed)
+        {
+            if (message.StartsWith("{\"b\":1,", StringComparison.Ordinal) && _firstTab is { } f)
+                HandleWebMessage(f, message);
+            return;
+        }
+        HandleWebMessage(t, message);
+    }
+
+    /// <summary>The tab whose page view the toolbar-level pushes (state, downloads,
+    /// agent status) should reach.</summary>
+    private BrowserTab? UiTab() => PerTab
+        ? (Tabs.Active ?? Tabs.All.FirstOrDefault())
+        : (Tabs.Main ?? Tabs.All.FirstOrDefault());
 
     private async Task<IBrowserDriver> CreateDriverAsync(BrowserTab tab)
     {
@@ -515,6 +841,20 @@ public sealed class BrowserController : IAsyncDisposable
         };
         driver.LoadStarted += (_, _) =>
         {
+            if (PerTab)
+            {
+                // each tab tracks its own load; only the shown tab drives the spinner / bar
+                tab.Loading = true;
+                if (Tabs.Active?.Id == tab.Id)
+                {
+                    PushChromeStateAll();
+                    _ = Task.Delay(160).ContinueWith(_ =>
+                    {
+                        if (tab.Loading && Tabs.Active?.Id == tab.Id) SetLoadBar(tab, true);
+                    }, TaskScheduler.Default);
+                }
+                return;
+            }
             Interlocked.Increment(ref _loadDepth);
             PushChromeStateAll();
             _ = Task.Delay(160).ContinueWith(_ => { if (IsLoading) SetLoadBar(tab, true); }, TaskScheduler.Default);
@@ -525,6 +865,24 @@ public sealed class BrowserController : IAsyncDisposable
         };
         driver.LoadCompleted += async (_, _) =>
         {
+            if (PerTab)
+            {
+                tab.Loading = false;
+                if (Tabs.Active?.Id == tab.Id) SetLoadBar(tab, false);
+                if (tab.IsClosed) return;
+                try
+                {
+                    await RefreshTabInfoAsync(tab);
+                    await EnsurePageHelpersAsync(tab);
+                    _ = BlankWatchdogAsync(tab);
+                }
+                finally
+                {
+                    // the spinner must clear even when the info refresh was dropped mid-navigation
+                    if (Tabs.Active?.Id == tab.Id) PushChromeStateAll();
+                }
+                return;
+            }
             if (Interlocked.Decrement(ref _loadDepth) < 0)
                 Interlocked.Exchange(ref _loadDepth, 0);
             if (!IsLoading) SetLoadBar(tab, false);
@@ -534,6 +892,7 @@ public sealed class BrowserController : IAsyncDisposable
             var target = DocTab ?? Tabs.Active ?? tab;
             await RefreshTabInfoAsync(target);
             await EnsurePageHelpersAsync(target);
+            _ = BlankWatchdogAsync(target);
             // Logical tabs reload on switch — restore the scroll position the
             // page reported while it was visible (also restores after reload).
             if (target.ScrollX is { } sx)
@@ -594,45 +953,119 @@ public sealed class BrowserController : IAsyncDisposable
     public async Task<NavigateResult> NavigateAsync(string url, BrowserTab? tab = null, CancellationToken ct = default)
     {
         tab ??= ActiveTabOrThrow();
-        // Navigating a tab implies making it the shown/active one.
-        if (Tabs.Active?.Id != tab.Id) Tabs.Activate(tab.Id);
+        // Shared-view mode: navigating a tab implies making it the shown/active one
+        // (there is only one view). Per-tab mode navigates the tab's own view in place,
+        // so an agent can drive a background tab without stealing the screen.
+        if (!PerTab && Tabs.Active?.Id != tab.Id) Tabs.Activate(tab.Id);
         url = NormalizeUrl(url);
-        if (url is "about:newtab" or "about:help" or "about:history" or "about:import" or "about:passwords")
+        if (url is "about:newtab" or "about:help" or "about:shortcuts" or "about:history" or "about:import" or "about:passwords" or "about:flows")
             return await LoadInternalPageAsync(tab, url);
+        if (PerTab) return await NavigatePerTabAsync(tab, url, ct);
         // materialize:false — a virtual new tab navigating away must not
         // first load the start-page document it's about to replace.
         var driver = await DriverOrThrowAsync(tab, ct, materialize: false);
+        MarkStaleDoc(tab.Id, url);
         _docTabId = tab.Id;
+        // Record where this tab is going right away. If another tab takes over the
+        // web view before this page commits, nothing else would ever tell this tab
+        // its address — it would come back blank.
+        if (SiteKey(url) != SiteKey(tab.LastUrl)) tab.LastTitle = null;
+        SetTabUrl(tab, url);
         // Bake chrome state into the next document so the toolbar renders
         // final tab state on first paint (no empty-strip flash).
         try { await driver.SetBootStateAsync(BuildChromeStateJson(ConsumeFresh(), "inj"), ct); } catch { }
         var result = await driver.NavigateAsync(url, ct);
-        if (result.Ok) SetTabUrl(tab, result.Url);
+        // Only the tab that still owns the document may take the result: another
+        // tab may have started its own navigation meanwhile.
+        if (_docTabId == tab.Id)
+        {
+            ClearStaleDoc();
+            _inflightNavSite = null;
+            if (result.Ok) SetTabUrl(tab, result.Url);
+        }
+        return result;
+    }
+
+    /// <summary>Per-tab navigation: the tab's own view loads the URL; nothing else is touched.</summary>
+    private async Task<NavigateResult> NavigatePerTabAsync(BrowserTab tab, string url, CancellationToken ct)
+    {
+        var driver = await EnsureTabViewAsync(tab);
+        // Record where this tab is going right away so the strip shows it immediately.
+        if (SiteKey(url) != SiteKey(tab.LastUrl)) tab.LastTitle = null;
+        SetTabUrl(tab, url);
+        PushChromeStateAll();
+        var result = await driver.NavigateAsync(url, ct);
+        if (!tab.IsClosed && result.Ok && result.Url.Length > 0 && result.Url != "about:blank")
+            SetTabUrl(tab, result.Url);
         return result;
     }
 
     /// <summary>Loads an internal about: page as a real document.</summary>
     private async Task<NavigateResult> LoadInternalPageAsync(BrowserTab tab, string url)
     {
+        if (PerTab) return await LoadInternalPagePerTabAsync(tab, url);
+        MarkStaleDoc(tab.Id, null);
         _docTabId = tab.Id;
         SetTabUrl(tab, url);
         var (page, title) = url switch
         {
             "about:help" => (Assets.HelpHtml, "How to use"),
+            "about:shortcuts" => (Assets.ShortcutsHtml, "Keyboard shortcuts"),
             "about:history" => (BuildHistoryHtml(), "History"),
             "about:import" => (Assets.ImportHtml, "Import browser data"),
             "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
+            "about:flows" => (BuildFlowsHtml(), "Flows & activity"),
             _ => (Assets.NewTabHtml, "New Tab"),
         };
         tab.LastTitle = title;
         var html = InjectBootState(page);
         InvokeOnUi(() => tab.Window.LoadRawString(html));
         try { await EnsurePageHelpersAsync(tab); } catch { }
+        ClearStaleDoc(); // the raw-string document replaced the previous page
+        _inflightNavSite = null;
         // NavigateToString docs never emit frameStoppedLoading — settle
         // the loading depth here or the spinner sticks forever.
         Interlocked.Exchange(ref _loadDepth, 0);
         PushChromeStateAll();
         return NavigateResult.Success(url, tab.LastTitle);
+    }
+
+    private async Task<NavigateResult> LoadInternalPagePerTabAsync(BrowserTab tab, string url)
+    {
+        var driver = (Drivers.WebKitDriver)await EnsureTabViewAsync(tab);
+        var (page, title) = url switch
+        {
+            "about:help" => (Assets.HelpHtml, "How to use"),
+            "about:shortcuts" => (Assets.ShortcutsHtml, "Keyboard shortcuts"),
+            "about:history" => (BuildHistoryHtml(), "History"),
+            "about:import" => (Assets.ImportHtml, "Import browser data"),
+            "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
+            "about:flows" => (BuildFlowsHtml(), "Flows & activity"),
+            _ => (Assets.NewTabHtml, "New Tab"),
+        };
+        SetTabUrl(tab, url);
+        tab.LastTitle = title;
+        PushChromeStateAll();
+        await driver.LoadHtmlAsync(InjectBootState(page), default);
+        return NavigateResult.Success(url, tab.LastTitle);
+    }
+
+    /// <summary>Toolbar screenshot: capture the tab (whole scrolling page or just what is
+    /// visible), save it as a PNG in Downloads and list it on the downloads shelf.</summary>
+    private async Task SaveScreenshotAsync(BrowserTab? tab, bool fullPage)
+    {
+        tab ??= Tabs.Active;
+        if (tab is null) return;
+        try
+        {
+            var png = await ScreenshotAsync(null, fullPage, tab, CancellationToken.None);
+            var item = Downloads.Begin(tab.LastUrl);
+            var path = Downloads.DestinationFor(item, $"Screenshot {DateTime.Now:yyyy-MM-dd 'at' HH.mm.ss}.png");
+            await File.WriteAllBytesAsync(path, png);
+            Downloads.Finish(item, path);
+            Log($"screenshot saved: {path} ({png.Length / 1024} KB, {(fullPage ? "full page" : "visible")})");
+        }
+        catch (Exception ex) { Log($"screenshot failed: {ex.Message}"); }
     }
 
     /// <summary>Can a blank new tab be shown as an in-document overlay right
@@ -670,12 +1103,21 @@ public sealed class BrowserController : IAsyncDisposable
         => await (await DriverOrThrowAsync(tab ??= ActiveTabOrThrow(), ct)).GoForwardAsync(ct);
 
     public async Task<NavigateResult> ReloadAsync(bool ignoreCache = false, BrowserTab? tab = null, CancellationToken ct = default)
-        => await (await DriverOrThrowAsync(tab ??= ActiveTabOrThrow(), ct)).ReloadAsync(ignoreCache, ct);
+    {
+        tab ??= ActiveTabOrThrow();
+        // Internal about: pages render via LoadRawString, so their location is
+        // about:blank — a webview reload would just blank them. Re-render instead.
+        if (MessageTrust.IsInternalUrl(tab.LastUrl))
+            return await LoadInternalPageAsync(tab, tab.LastUrl!);
+        return await (await DriverOrThrowAsync(tab, ct)).ReloadAsync(ignoreCache, ct);
+    }
 
     public async Task<byte[]> ScreenshotAsync(RectD? clip, bool fullPage, BrowserTab? tab = null, CancellationToken ct = default)
     {
         var t = tab ??= ActiveTabOrThrow();
         var driver = await DriverOrThrowAsync(t, ct);
+        // A screenshot captures the window, so a background tab must be brought forward first.
+        if (PerTab && Tabs.Active?.Id != t.Id) await ActivateWindowAsync(t.Id.ToString("N")[..8], ct);
         // Keep the injected chrome bar out of captured pixels.
         try { await driver.EvaluateAsync("window.__brainChrome && window.__brainChrome.hide()", false, ct); }
         catch { }
@@ -721,6 +1163,7 @@ public sealed class BrowserController : IAsyncDisposable
         await _windowCreated.Task.WaitAsync(ct);
         var main = _mainWindow ?? throw new InvalidOperationException("Browser window not initialized");
         var tab = new BrowserTab { Id = Guid.NewGuid(), IsMain = false, Window = main, IsPrivate = priv };
+        if (PerTab) return await NewTabPerTabAsync(tab, url, ct);
         var overlay = url is null && await CanOverlayAsync();
         Tabs.Add(tab);
         Tabs.Activate(tab.Id);
@@ -742,6 +1185,37 @@ public sealed class BrowserController : IAsyncDisposable
         return tab;
     }
 
+    private async Task<BrowserTab> NewTabPerTabAsync(BrowserTab tab, string? url, CancellationToken ct)
+    {
+        Tabs.Add(tab);
+        Tabs.Activate(tab.Id);
+        SetTabUrl(tab, url is null ? "about:newtab" : "about:blank");
+        tab.LastTitle = url is null ? "New Tab" : null;
+        _pendingFresh = tab.Id.ToString("N")[..8]; // only this pill plays the slide-in
+        PushChromeStateAll();                       // the new pill appears at once
+        try
+        {
+            await EnsureTabViewAsync(tab);
+            if (Tabs.Active?.Id == tab.Id) ShowTabView(tab); // an empty view in the window colour while it loads
+            SetWindowTitleFor(tab);
+            await NavigateAsync(url ?? "newtab", tab, ct);
+            if (url is not null) ConsumeFresh(); // only internal pages carry it in their boot state
+        }
+        catch
+        {
+            // couldn't build the view: don't leave a dead pill behind
+            Tabs.Remove(tab.Id);
+            _rw.RemoveTab(tab.Id); // a closed tab takes its Rewind history with it
+            await DestroyTabViewAsync(tab);
+            if (Tabs.Active is { } a) await ActivateWindowAsync(a.Id.ToString("N")[..8], default);
+            PushChromeStateAll();
+            throw;
+        }
+        PushChromeStateAll();
+        SaveSessionSoon();
+        return tab;
+    }
+
     /// <summary>Activates a tab and navigates the window to its URL.
     /// Already-active tabs are a no-op — clicking the current tab must not
     /// reload the page.</summary>
@@ -749,6 +1223,20 @@ public sealed class BrowserController : IAsyncDisposable
     {
         var tab = Tabs.FindByPrefix(idOrPrefix) ?? throw new InvalidOperationException($"No such tab '{idOrPrefix}'");
         if (tab.IsClosed) throw new InvalidOperationException("Tab is closed");
+        if (PerTab)
+        {
+            if (Tabs.ActiveExact?.Id != tab.Id)
+            {
+                Tabs.Activate(tab.Id);
+                await EnsureTabViewAsync(tab);
+                ShowTabView(tab);
+                SetWindowTitleFor(tab);
+                _ = RefreshNavStateAsync(tab);
+                _ = RaiseWindowAsync(tab, ct);
+            }
+            PushChromeStateAll();
+            return true;
+        }
         if (Tabs.ActiveExact?.Id != tab.Id)
         {
             Tabs.Activate(tab.Id);
@@ -764,12 +1252,26 @@ public sealed class BrowserController : IAsyncDisposable
         return true;
     }
 
+    /// <summary>Re-reads a tab's back/forward availability natively (no JS) and repaints.</summary>
+    private async Task RefreshNavStateAsync(BrowserTab tab)
+    {
+        try
+        {
+            var d = tab.Driver;
+            if (d is null) return;
+            (tab.CanBack, tab.CanFwd) = await d.GetNavStateAsync(CancellationToken.None);
+            if (Tabs.Active?.Id == tab.Id) PushChromeStateAll();
+        }
+        catch { }
+    }
+
     public async Task<bool> CloseWindowAsync(string idOrPrefix, CancellationToken ct = default)
     {
         var tab = Tabs.FindByPrefix(idOrPrefix) ?? throw new InvalidOperationException($"No such tab '{idOrPrefix}'");
         if (tab.IsPinned) return false; // pinned tabs resist close — unpin first
         var wasActive = Tabs.Active?.Id == tab.Id;
         var idx = Tabs.IndexOf(tab.Id);
+        if (PerTab) return await ClosePerTabAsync(tab, wasActive, idx, ct);
         if (tab.IsPrivate)
         {
             // Never resurface private tabs via reopen — and wipe their site
@@ -780,6 +1282,7 @@ public sealed class BrowserController : IAsyncDisposable
         else if (tab.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
             _closedTabs.Push((tab.LastUrl, tab.LastIcon));
         Tabs.Remove(tab.Id);
+        _rw.RemoveTab(tab.Id); // a closed tab takes its Rewind history with it
         // The closed tab owned the live document — it must not linger hidden
         // under an overlay (audio, private data), so the next view reloads.
         var closedDoc = tab.Id == _docTabId;
@@ -807,6 +1310,34 @@ public sealed class BrowserController : IAsyncDisposable
             if (closedDoc && Tabs.Active is { } act && act.LastUrl == "about:newtab")
                 await LoadInternalPageAsync(act, "about:newtab"); // unload the hidden page
         }
+        return true;
+    }
+
+    private async Task<bool> ClosePerTabAsync(BrowserTab tab, bool wasActive, int idx, CancellationToken ct)
+    {
+        // Private tabs keep their data in an ephemeral store that dies with the tab.
+        if (!tab.IsPrivate && tab.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            _closedTabs.Push((tab.LastUrl, tab.LastIcon));
+        Tabs.Remove(tab.Id);
+        _rw.RemoveTab(tab.Id); // a closed tab takes its Rewind history with it
+        SaveSessionSoon();
+        var remaining = Tabs.All;
+        if (remaining.Count == 0)
+        {
+            // Closing the last tab closes the browser, like a normal browser.
+            await DestroyTabViewAsync(tab);
+            try { InvokeOnUi(() => _mainWindow?.Close()); } catch { }
+            return true;
+        }
+        if (wasActive)
+        {
+            // The neighbour that slid into the closed slot (or the new last tab) is shown
+            // BEFORE the old view is torn down, so the window never goes blank.
+            var next = remaining[Math.Clamp(idx, 0, remaining.Count - 1)];
+            await ActivateWindowAsync(next.Id.ToString("N")[..8], ct);
+        }
+        else PushChromeStateAll();
+        await DestroyTabViewAsync(tab);
         return true;
     }
 
@@ -907,7 +1438,16 @@ public sealed class BrowserController : IAsyncDisposable
             }
         });
 
-    public void SetZoom(BrowserTab tab, int percent) => tab.Window.Invoke(() => tab.Window.Zoom = percent);
+    public void SetZoom(BrowserTab tab, int percent)
+    {
+        if (PerTab)
+        {
+            var v = tab.NativeView;
+            if (v != IntPtr.Zero) tab.Window.Invoke(() => { if (Mac.WkTabs.Has(v)) Mac.WkTabs.SetZoom(v, percent); });
+            return;
+        }
+        tab.Window.Invoke(() => tab.Window.Zoom = percent);
+    }
 
     /// <summary>Step through the standard browser zoom ladder.</summary>
     private void ZoomBy(int dir)
@@ -924,7 +1464,15 @@ public sealed class BrowserController : IAsyncDisposable
     private void SetZoomLevel(int pct)
     {
         _zoom = pct;
-        try { InvokeOnUi(() => { if (_mainWindow is not null) _mainWindow.Zoom = pct; }); } catch { }
+        try
+        {
+            InvokeOnUi(() =>
+            {
+                if (PerTab) Mac.WkTabs.SetZoomAll(pct);
+                else if (_mainWindow is not null) _mainWindow.Zoom = pct;
+            });
+        }
+        catch { }
         PushChromeStateAll();
     }
 
@@ -986,7 +1534,71 @@ public sealed class BrowserController : IAsyncDisposable
         return tcs.Task;
     }
 
-    private void HandleWebMessage(BrowserTab tab, string message)
+    /// <summary>Host → UI push: the page view, and — in split mode — the bar view too.</summary>
+    private void SendUi(BrowserTab tab, string json)
+    {
+        if (SplitOn && (json.StartsWith("{\"b\":47,", StringComparison.Ordinal) || json.StartsWith("{\"b\":49,", StringComparison.Ordinal)))
+        {
+            // Approval ids go to the toolbar view only: no web page runs there. If it is not up yet, nothing is sent (the ask times out as a no).
+            if (Mac.WkBar.Exists)
+                try { Mac.WkBar.Eval("window.__brainBarPush&&window.__brainBarPush(" + json + ")"); } catch { }
+            return;
+        }
+        if (PerTab)
+        {
+            // the tab's own page view, plus the toolbar view when it cares about this push
+            var view = tab.NativeView;
+            if (view != IntPtr.Zero && Mac.WkTabs.Has(view)) Mac.WkTabs.Push(view, json);
+            if (Mac.WkBar.Exists && !PageOnlyPush(json))
+                try { Mac.WkBar.Eval("window.__brainBarPush&&window.__brainBarPush(" + json + ")"); } catch { }
+            return;
+        }
+        tab.Window.SendWebMessage(json);
+        if (SplitOn && Mac.WkBar.Exists && !PageOnlyPush(json))
+            try { Mac.WkBar.Eval("window.__brainBarPush&&window.__brainBarPush(" + json + ")"); } catch { }
+    }
+
+    /// <summary>Pushes only the page view consumes (DevTools data, field/password
+    /// helpers) — skipped for the bar view so big payloads aren't parsed twice.</summary>
+    private static bool PageOnlyPush(string json)
+    {
+        const string p = "{\"b\":";
+        if (!json.StartsWith(p, StringComparison.Ordinal)) return false;
+        var i = p.Length; var n = 0;
+        while (i < json.Length && char.IsDigit(json[i]) && n < 1000) n = n * 10 + (json[i++] - '0');
+        return n is >= 10 and <= 15 or >= 22 and <= 26 or >= 70 and <= 79;
+    }
+
+    /// <summary>Starts the split-toolbar bar view (main thread).</summary>
+    private void StartSplitBar(BrowserTab tab)
+    {
+        var nsWin = Mac.MacWindow.WindowByNumber(tab.MacWindowNumber);
+        if (nsWin == IntPtr.Zero) return;
+        const string shim =
+            "window.__BRAIN_ROLE='bar';" +
+            "window.external={sendMessage:function(m){try{window.webkit.messageHandlers.brain.postMessage(String(m));}catch(e){}}," +
+            "receiveMessage:function(cb){window.__brainBarCb=cb;var q=window.__brainBarQ||[];window.__brainBarQ=null;" +
+            "q.forEach(function(o){try{cb(o)}catch(e){}});}};" +
+            "window.__brainBarPush=function(o){var cb=window.__brainBarCb;if(cb){try{cb(o)}catch(e){}}" +
+            "else{(window.__brainBarQ=window.__brainBarQ||[]).push(o);}};\n";
+        const string html = "<!doctype html><html style=\"background:transparent\"><head><meta charset=\"utf-8\">" +
+            "<style>html,body{margin:0;background:transparent;overflow:hidden}</style></head><body></body></html>";
+        // Keep a direct reference: the first tab leaves the tab registry when the
+        // user closes it, but the window (and this view) live on.
+        var firstTab = tab;
+        // Toolbar commands act on whichever tab is shown; page views report their own tab.
+        Mac.WkBar.OnBarMessage = msg => HandleWebMessage(Tabs.Active ?? Tabs.All.FirstOrDefault() ?? firstTab, msg, fromBar: true);
+        Mac.WkTabs.OnMessage = OnPageViewMessage;
+        Mac.WkBar.Create(nsWin, shim + Assets.ChromeJs, html);
+    }
+
+    private IntPtr SplitWindow()
+    {
+        if (_nsWindowNumber != 0) return Mac.MacWindow.WindowByNumber(_nsWindowNumber);
+        return _driverTab is { } t && t.MacWindowNumber != 0 ? Mac.MacWindow.WindowByNumber(t.MacWindowNumber) : IntPtr.Zero;
+    }
+
+    private void HandleWebMessage(BrowserTab tab, string message, bool fromBar = false)
     {
         if (string.IsNullOrEmpty(message)) return;
 
@@ -1040,7 +1652,14 @@ public sealed class BrowserController : IAsyncDisposable
         // other drivers (CDP gets real navigation events already).
         if (message.StartsWith("{\"b\":30", StringComparison.Ordinal))
         {
-            (_driverTab?.Driver as Drivers.WebKitDriver)?.MarkLoadStarted();
+            ((PerTab ? tab.Driver : _driverTab?.Driver) as Drivers.WebKitDriver)?.MarkLoadStarted();
+            return;
+        }
+
+        // brain.js recorder events ("show it once"): only consumed while the user is recording
+        if (message.StartsWith("{\"b\":31,", StringComparison.Ordinal))
+        {
+            Recorder.Accept(message);
             return;
         }
 
@@ -1050,6 +1669,8 @@ public sealed class BrowserController : IAsyncDisposable
             var cmd = message[6..];
             var colon = cmd.IndexOf(':');
             var (verb, arg) = colon < 0 ? (cmd, "") : (cmd[..colon], cmd[(colon + 1)..]);
+            // A web page can call window.external.sendMessage too: sensitive commands need a trusted sender.
+            if (!MessageTrust.Allowed(verb, fromBar, SplitOn, (PerTab ? tab : (Tabs.Active ?? tab)).LastUrl)) return;
             Task.Run(async () =>
             {
                 try
@@ -1063,10 +1684,19 @@ public sealed class BrowserController : IAsyncDisposable
                         case "back": await GoBackAsync(active); break;
                         case "forward": await GoForwardAsync(active); break;
                         case "reload": if (!OverlayActive) await ReloadAsync(false, active); break;
+                        case "hardreload": if (!OverlayActive) await ReloadAsync(true, active); break;
+                        case "pastego":
+                            {
+                                string? clip = null;
+                                try { clip = IsMac ? InvokeOnUi(() => Mac.WkClipboard.Text()) : Native.Win32.ClipboardText(); } catch { }
+                                if (!string.IsNullOrWhiteSpace(clip)) await NavigateAsync(clip.Trim(), active);
+                                break;
+                            }
                         case "stop":
                             var d = await DriverOrThrowAsync(active, default);
                             await d.EvaluateAsync("window.stop()", false, default);
                             Interlocked.Exchange(ref _loadDepth, 0);
+                            if (PerTab) active.Loading = false;
                             PushChromeStateAll();
                             break;
                         case "home": await NavigateAsync("newtab", active); break;
@@ -1114,7 +1744,7 @@ public sealed class BrowserController : IAsyncDisposable
                                 await NewTabAsync(src.LastUrl, default);
                             break;
                         case "reloadtab":
-                            await ActivateWindowAsync(arg);
+                            if (!PerTab) await ActivateWindowAsync(arg);
                             await ReloadAsync(false, Tabs.FindByPrefix(arg));
                             break;
                         case "closeothers":
@@ -1142,11 +1772,21 @@ public sealed class BrowserController : IAsyncDisposable
                             // A freshly mounted toolbar is asking because it has no
                             // state — never dedupe against the previous document's push.
                             _lastPushedStateJson = null;
-                            PushChromeStateAll();
+                            if (PerTab && Tabs.Active is { } shown && shown.Id != tab.Id && !tab.IsClosed)
+                            {
+                                // a hidden tab's page just mounted: bring only that page up to date
+                                var sj = BuildChromeStateJson(null);
+                                try { InvokeOnUi(() => { var v = tab.NativeView; if (v != IntPtr.Zero && Mac.WkTabs.Has(v)) Mac.WkTabs.Push(v, sj); }); } catch { }
+                            }
+                            else PushChromeStateAll();
                             // A login submit navigated away before its prompt could
                             // land — offer it on the fresh document now.
                             FlushPwPending(tab);
+                            // a new document in the recorded tab: put the recorder back
+                            if (Recorder.Active && Tabs.Active is { } recTab) _ = RecInjectAsync(recTab);
                             break;
+                        case "shot": _ = SaveScreenshotAsync(active, true); break;
+                        case "shotview": _ = SaveScreenshotAsync(active, false); break;
                         case "zoomin": ZoomBy(+1); break;
                         case "zoomout": ZoomBy(-1); break;
                         case "zoomreset": SetZoomLevel(100); break;
@@ -1204,7 +1844,7 @@ public sealed class BrowserController : IAsyncDisposable
                             try { InvokeOnUi(() => Native.Win32.BeginNcDrag(_mainWindow?.WindowHandle ?? IntPtr.Zero, ht)); } catch { }
                             break;
                         case "bm": ToggleBookmark(active); break;
-                        case "scroll": RecordScroll(DocTab ?? active, arg); break;
+                        case "scroll": if (!PerTab) RecordScroll(DocTab ?? active, arg); break; // per-tab views keep their own scroll
                         // DevTools panel feed + REPL
                         // Downloads
                         case "dllist": PushDownloads(); break;
@@ -1214,6 +1854,19 @@ public sealed class BrowserController : IAsyncDisposable
                         case "dlclear": Downloads.ClearDone(); break;
                         case "se": SetEngine(arg); break;
                         case "clipread": PushClipboardText(tab); break;
+                        // Custom key bindings (about:shortcuts). keyset:<id>:<gesture>
+                        // stores an override ("" = unbind); keyreset[:<id>] restores.
+                        case "keyset": KeySet(arg); break;
+                        case "keyreset": KeyReset(arg); break;
+                        // Rewind (opt-in page time travel) — see the Rewind region below.
+                        case "rwtoggle": RwSetOn(arg == "1"); break;
+                        case "rwcfg": RwConfig(arg); break;
+                        case "rwskip": RwToggleSkip(tab); break;
+                        case "rwsnap": RwSnap(tab, arg); break;
+                        case "rwlist": PushRwList(tab); break;
+                        case "rwget": PushRwSnap(tab, arg); break;
+                        case "rwsearch": PushRwSearch(tab, arg); break;
+                        case "rwclear": RwClear(tab, arg); break;
                         // Password vault — page-side asks for this origin's
                         // creds (b:23), submits a detected login for the save
                         // prompt (b:24), and the manager page lists all (b:25).
@@ -1240,6 +1893,53 @@ public sealed class BrowserController : IAsyncDisposable
                             _dtOpen = arg.Length > 0;
                             if (arg.Length > 0) _dtTab = arg;
                             break;
+                        case "agtoggle": SetAgentPaused(!_agPaused); break;
+                        case "askok": Belt.Answer(arg); break;
+                        case "beltmode": Belt.SetMode(arg); break;
+                        case "beltget": PushBelt(); PushHandoff(); break;
+                        case "handoff": Handoff.Answer(arg); break;
+                        case "recstart": await RecStartAsync(active); break;
+                        case "recstop": await RecStopAsync(active, arg); break;
+                        case "recdiscard":
+                            try { await EvaluateAsync("window.__brain && window.__brain.recStop && window.__brain.recStop()", false, active, default); } catch { }
+                            Recorder.Discard();
+                            break;
+                        case "recget": PushRec(); break;
+                        case "barready": PushChromeStateAll(); break;
+                        case "barh":
+                            if (SplitOn)
+                                try { InvokeOnUi(() => Mac.WkBar.Layout(SplitWindow(), arg)); } catch { }
+                            break;
+                        case "barui":
+                            if (SplitOn && System.Text.RegularExpressions.Regex.IsMatch(arg, "^[a-z]{1,12}$"))
+                                try { InvokeOnUi(() =>
+                                {
+                                    Mac.WkBar.FocusBar(SplitWindow());
+                                    Mac.WkBar.Eval("window.__brainBarCmd&&window.__brainBarCmd('" + arg + "')");
+                                }); } catch { }
+                            break;
+                        case "pageui":
+                            if (SplitOn && System.Text.RegularExpressions.Regex.IsMatch(arg, "^[a-z]{1,12}$"))
+                                try { InvokeOnUi(() =>
+                                {
+                                    Mac.WkBar.FocusPage(SplitWindow());
+                                    var pv = Tabs.Active?.NativeView ?? IntPtr.Zero;
+                                    if (pv != IntPtr.Zero && Mac.WkTabs.Has(pv))
+                                        Mac.WkTabs.Push(pv, "{\"b\":60,\"c\":\"" + arg + "\"}");
+                                }); } catch { }
+                            break;
+                        case "focuspage":
+                            if (SplitOn) try { InvokeOnUi(() => Mac.WkBar.FocusPage(SplitWindow())); } catch { }
+                            break;
+                        case "flowget": PushFlowsState(tab); break;
+                        case "flowsave": FlowUiSave(tab, arg); break;
+                        case "flowdel": Flows.Delete(arg); PushFlowsState(tab); break;
+                        case "flowapprove": FlowUiApprove(tab, arg); break;
+                        case "flowreject": Flows.Reject(arg); PushFlowsState(tab); break;
+                        case "flowrun": await FlowUiRunAsync(tab, arg); break;
+                        case "flowdraft": FlowUiDraft(tab, arg); break;
+                        case "actget": FlowUiActivityDetail(tab, arg); break;
+                        case "actclear": Activity.Clear(); PushFlowsState(tab); break;
                         case "histget": PushHistory(tab); break;
                         case "histdel": if (arg.Length > 0) { DeleteHistory(arg); PushHistory(tab); } break;
                         case "histclear": ClearHistory(); PushHistory(tab); break;
@@ -1282,17 +1982,17 @@ public sealed class BrowserController : IAsyncDisposable
         var tabs = Tabs.All.Where(t => !t.IsClosed).Select(t => new
         {
             id = t.Id.ToString("N")[..8],
-            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl),
+            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:shortcuts" ? "Shortcuts" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl == "about:flows" ? "Flows & activity" : t.LastUrl),
             url = t.LastUrl,
             icon = t.LastIcon,
             active = t.Id == activeId,
             priv = t.IsPrivate,
             pin = t.IsPinned,
             mute = t.IsMuted,
-            aud = t.IsAudible && t.Id == _docTabId,
+            aud = t.IsAudible && (PerTab || t.Id == _docTabId),
             // owns the live document — lets chrome.js predict whether a
             // switch is instant (doc/overlay) or a navigation
-            doc = t.Id == _docTabId,
+            doc = PerTab || t.Id == _docTabId, // per-tab views are all "live": switching never reloads
         }).ToList();
         object[] hist;
         lock (_history)
@@ -1311,8 +2011,8 @@ public sealed class BrowserController : IAsyncDisposable
             b = 9,
             tabs,
             loading = IsLoading && !ov,
-            canBack = _canBack && !ov,
-            canFwd = _canFwd && !ov,
+            canBack = (PerTab ? Tabs.Active?.CanBack == true : _canBack) && !ov,
+            canFwd = (PerTab ? Tabs.Active?.CanFwd == true : _canFwd) && !ov,
             ov,
             hist,
             bmarks,
@@ -1331,8 +2031,12 @@ public sealed class BrowserController : IAsyncDisposable
             dt = _dtOpen ? _dtTab : "",
             privActive = Tabs.Active?.IsPrivate == true,
             se = _engine.Id,
+            rw = _rwOn, rwa = _rwAgent, rwk = _rwKeepMin, rwm = _rwMaxMb, rws = RwSkipList(),
+            keys = _keyBinds,
             sel = SearchEngines.Select(e => new { i = e.Id, n = e.Name }).ToArray(),
             sess = _savedSession.Count,
+            ag = AgentObj(),
+            split = SplitOn,
             fresh,
             src,
         });
@@ -1350,7 +2054,7 @@ public sealed class BrowserController : IAsyncDisposable
         var json = BuildChromeStateJson(null);
         if (json == _lastPushedStateJson) return; // duplicate push elision
         _lastPushedStateJson = json;
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { /* window mid-close */ }
     }
 
@@ -1364,7 +2068,7 @@ public sealed class BrowserController : IAsyncDisposable
     {
         // '<' inside a <script> would break parsing — escape it in the JSON.
         var json = BuildChromeStateJson(ConsumeFresh(), "emb").Replace("<", "\\u003c");
-        var lib = _noToolbar ? Assets.BrainJs : Assets.CombinedLib;
+        var lib = PageLibSource;
         // The new-document injection normally already ran brain.js+chrome.js
         // in this doc — executing the inlined copy again cost ~40ms before
         // first paint. Ship it as inert text/plain (no compile) and eval only
@@ -1396,10 +2100,139 @@ public sealed class BrowserController : IAsyncDisposable
         try { InvokeOnUi(() => Mac.MacWindow.SetLoadingBar(nsWin, on)); } catch { }
     }
 
+    // ------------------------------------------------------------------
+    // Agent activity + pause. The MCP request filter calls AgentBegin/End
+    // around every tool call; while paused, action tools are refused (reads
+    // still work) and running flows stop between steps.
+    // ------------------------------------------------------------------
+    private int _agBusy, _agBlocked;
+    private string _agTool = "";
+    private volatile bool _agPaused;
+    private volatile bool _agSeen;
+
+    public bool AgentPaused => _agPaused;
+
+    private object AgentObj() => new { p = _agPaused, n = Volatile.Read(ref _agBusy), t = _agTool, s = _agSeen, k = Volatile.Read(ref _agBlocked) };
+
+    public void AgentBegin(string tool) { _agSeen = true; _agTool = tool; Interlocked.Increment(ref _agBusy); PushAgent(); }
+    public void AgentEnd() { if (Interlocked.Decrement(ref _agBusy) < 0) Interlocked.Exchange(ref _agBusy, 0); PushAgent(); }
+    public void AgentBlocked(string tool) { _agSeen = true; _agTool = tool; Interlocked.Increment(ref _agBlocked); PushAgent(); }
+
+    public void SetAgentPaused(bool paused)
+    {
+        if (_agPaused == paused) return;
+        _agPaused = paused;
+        Interlocked.Exchange(ref _agBlocked, 0);
+        PushAgent();
+    }
+
+    /// <summary>Small {b:40} push — the full chrome state also carries "ag" for page swaps.</summary>
+    private void PushAgent()
+    {
+        if (_noToolbar || !_driverReady.Task.IsCompleted) return;
+        var t = UiTab();
+        if (t is null || t.IsClosed) return;
+        var json = JsonSerializer.Serialize(new { b = 40, ag = AgentObj() });
+        try { InvokeOnUi(() => { if (!t.IsClosed) SendUi(t, json); }); }
+        catch { /* window mid-close */ }
+    }
+
+    /// <summary>{b:47}: the seatbelt mode and any actions waiting for the user's answer.
+    /// Not relayed to page scripts (the ids in it are what authorise an action).</summary>
+    private void PushBelt()
+    {
+        if (_noToolbar || !_driverReady.Task.IsCompleted) return;
+        var t = Tabs.Main ?? Tabs.All.FirstOrDefault();
+        if (t is null || t.IsClosed) return;
+        var json = JsonSerializer.Serialize(new { b = 47, belt = Belt.View() });
+        try { InvokeOnUi(() => { if (!t.IsClosed) SendUi(t, json); }); }
+        catch { /* window mid-close */ }
+    }
+
+    /// <summary>{b:49}: questions the agent asked the user to answer by hand (browser_ask_human).
+    /// Not relayed to page scripts (the ids in it are what authorise an answer).</summary>
+    private void PushHandoff()
+    {
+        if (_noToolbar || !_driverReady.Task.IsCompleted) return;
+        var t = Tabs.Main ?? Tabs.All.FirstOrDefault();
+        if (t is null || t.IsClosed) return;
+        var json = JsonSerializer.Serialize(new { b = 49, ho = Handoff.View() });
+        try { InvokeOnUi(() => { if (!t.IsClosed) SendUi(t, json); }); }
+        catch { /* window mid-close */ }
+    }
+
+    /// <summary>{b:48}: recording state for the pill and the save card, plus the result of a save.
+    /// Not relayed to page scripts.</summary>
+    private void PushRec(object? done = null)
+    {
+        if (_noToolbar || !_driverReady.Task.IsCompleted) return;
+        var t = Tabs.Main ?? Tabs.All.FirstOrDefault();
+        if (t is null || t.IsClosed) return;
+        var json = JsonSerializer.Serialize(new { b = 48, rec = Recorder.View(), done });
+        try { InvokeOnUi(() => { if (!t.IsClosed) SendUi(t, json); }); }
+        catch { /* window mid-close */ }
+    }
+
+    private async Task RecStartAsync(BrowserTab tab)
+    {
+        var url = tab.LastUrl ?? "";
+        if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        {
+            PushRec(new { ok = false, name = "", err = "Open a web page first, then start recording." });
+            return;
+        }
+        Recorder.Start(tab.Id, url, tab.LastTitle ?? "");
+        await RecInjectAsync(tab);
+    }
+
+    private async Task RecInjectAsync(BrowserTab tab)
+    {
+        try
+        {
+            await EnsurePageHelpersAsync(tab);
+            await EvaluateAsync("window.__brain && window.__brain.recStart && window.__brain.recStart()", false, tab, default);
+        }
+        catch { /* the page may be mid-navigation; the next mount tries again */ }
+    }
+
+    /// <summary>Stops recording and files the steps as a pending flow for the user to approve in Flows.</summary>
+    private async Task RecStopAsync(BrowserTab tab, string arg)
+    {
+        string name = "", desc = "";
+        var specs = new List<BrAIn.Mcp.FlowParamSpec>();
+        try
+        {
+            using var d = JsonDocument.Parse(arg);
+            var r = d.RootElement;
+            name = r.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+            desc = r.TryGetProperty("description", out var ds) ? ds.GetString() ?? "" : "";
+            if (r.TryGetProperty("params", out var ps) && ps.ValueKind == JsonValueKind.Array)
+                foreach (var p in ps.EnumerateArray())
+                    specs.Add(new BrAIn.Mcp.FlowParamSpec
+                    {
+                        Name = p.TryGetProperty("name", out var pn) ? pn.GetString() ?? "" : "",
+                        Description = p.TryGetProperty("description", out var pd) ? pd.GetString() : null,
+                        Example = p.TryGetProperty("example", out var pe) ? pe.GetString() : null,
+                    });
+        }
+        catch { /* fall through with defaults; validation below reports a missing name */ }
+        try { await EvaluateAsync("window.__brain && window.__brain.recStop && window.__brain.recStop()", false, tab, default); } catch { }
+        var entries = Recorder.TakeEntries();
+        if (!entries.Any(e => e.Tool != "browser_navigate"))
+        {
+            PushRec(new { ok = false, name, err = "Nothing was recorded." });
+            return;
+        }
+        var def = Flows.BuildFromActivity(entries, name, desc, specs);
+        def.Source = "activity";
+        var (err, _) = Flows.Propose(def);
+        PushRec(err is null ? new { ok = true, name = def.Name, err = "" } : new { ok = false, name = def.Name, err });
+    }
+
     public void PushChromeStateAll()
     {
         // All logical tabs share the single window — one push updates chrome.
-        var t = Tabs.Main ?? Tabs.All.FirstOrDefault();
+        var t = UiTab();
         if (t is not null) PushChromeState(t);
     }
 
@@ -1413,9 +2246,38 @@ public sealed class BrowserController : IAsyncDisposable
         var e = SearchEngines.FirstOrDefault(x => x.Id == id);
         if (e is null || e == _engine) return;
         _engine = e;
-        SaveStore("prefs.json", new { se = e.Id });
+        SavePrefs();
         PushChromeStateAll();
     }
+
+    /// <summary>keyset:<id>:<gesture> — store a custom binding for one action.
+    /// An empty gesture marks the action explicitly unbound (survives restarts).
+    /// Validation is deliberately light — the page produces normalized gestures;
+    /// this just keeps control chars / absurd payloads out of prefs.json.</summary>
+    private void KeySet(string arg)
+    {
+        var p = arg.Split(':', 2);
+        if (p.Length != 2 || p[0].Length is < 2 or > 24 || !p[0].All(char.IsLetterOrDigit)) return;
+        if (p[1].Length > 48 || p[1].Any(c => !char.IsLetterOrDigit(c) && "+-=[]/.,';\\` ".IndexOf(c) < 0)) return;
+        if (p[1].Length == 0) _keyBinds[p[0]] = ""; else _keyBinds[p[0]] = p[1];
+        SavePrefs();
+        PushChromeStateAll();
+    }
+
+    /// <summary>keyreset[:<id>] — drop overrides (one or all) so defaults return.</summary>
+    private void KeyReset(string arg)
+    {
+        if (arg.Length == 0) _keyBinds.Clear(); else _keyBinds.Remove(arg);
+        SavePrefs();
+        PushChromeStateAll();
+    }
+
+    private void SavePrefs() => SaveStore("prefs.json", new
+    {
+        se = _engine.Id,
+        rw = _rwOn, rwa = _rwAgent, rwk = _rwKeepMin, rwm = _rwMaxMb, rws = RwSkipList(),
+        keys = _keyBinds,
+    });
 
     /// <summary>Page-menu Paste — the webviews expose no in-page clipboard
     /// read (navigator.clipboard is absent in this context), so the text is
@@ -1433,17 +2295,269 @@ public sealed class BrowserController : IAsyncDisposable
         catch { }
         if (string.IsNullOrEmpty(text)) return;
         var json = JsonSerializer.Serialize(new { b = 22, t = text });
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { /* window mid-close */ }
+    }
+
+    // ------------------------------------------------------------------
+    // Rewind — opt-in time travel for pages. OFF by default because it costs
+    // CPU and memory. When on, the visible tab's page view (chrome.js)
+    // periodically snapshots its DOM, gzips it and posts it here. Snapshots
+    // live in RAM only (never on disk), never for private tabs, never for
+    // excluded sites, inside a byte + age budget. The page view's Rewind bar
+    // scrubs through them. MCP can read them only if the user separately
+    // allows it ("Let the AI agent read this history").
+    // ------------------------------------------------------------------
+    private readonly Rewind.RewindStore _rw = new();
+    private bool _rwOn;
+    private bool _rwAgent;
+    private int _rwKeepMin = 30, _rwMaxMb = 128;
+    private readonly HashSet<string> _rwSkip = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>User key-binding overrides (about:shortcuts). action-id →
+    /// normalized gesture ("mod+shift+t"); "" = explicitly unbound. Kept in
+    /// prefs.json and pushed in the chrome state so every document's
+    /// keymap rebuilds live.</summary>
+    private readonly Dictionary<string, string> _keyBinds = new(StringComparer.Ordinal);
+
+    private string[] RwSkipList() { lock (_rwSkip) return [.. _rwSkip]; }
+
+    private bool RwSkipped(string url)
+    {
+        var h = Rewind.RewindStore.HostOf(url);
+        if (h is null) return true; // only http(s) pages are ever recorded
+        lock (_rwSkip) return _rwSkip.Any(r => Rewind.RewindStore.HostMatches(h, r));
+    }
+
+    private void ApplyRwConfig()
+    {
+        _rwKeepMin = Math.Clamp(_rwKeepMin, 5, 24 * 60);
+        _rwMaxMb = Math.Clamp(_rwMaxMb, 16, 1024);
+        _rw.MaxAge = TimeSpan.FromMinutes(_rwKeepMin);
+        _rw.MaxBytes = (long)_rwMaxMb << 20;
+        _rw.MaxSnapBytes = (int)Math.Min(3 << 20, _rw.MaxBytes / 4); // one snapshot never eats more than a quarter of the budget
+        _rw.Trim();
+    }
+
+    /// <summary>The logical tab a page message belongs to. Per-tab views report
+    /// themselves; the single shared Windows view reports whoever owns the live document.</summary>
+    private BrowserTab RwOwner(BrowserTab sender) => PerTab ? sender : (DocTab ?? sender);
+
+    private void RwSetOn(bool on)
+    {
+        if (_rwOn == on) return;
+        _rwOn = on;
+        if (!on) _rw.Clear(); // switching off frees every snapshot immediately
+        SavePrefs();
+        PushChromeStateAll();
+    }
+
+    private void RwConfig(string arg)
+    {
+        var p = arg.Split(':', 2);
+        if (p.Length != 2) return;
+        switch (p[0])
+        {
+            case "keep" when int.TryParse(p[1], out var m): _rwKeepMin = m; break;
+            case "mb" when int.TryParse(p[1], out var mb): _rwMaxMb = mb; break;
+            case "agent": _rwAgent = p[1] == "1"; break;
+            default: return;
+        }
+        ApplyRwConfig();
+        SavePrefs();
+        PushChromeStateAll();
+    }
+
+    /// <summary>Exclude / re-include the current tab's site; excluding also forgets what was recorded from it.</summary>
+    private void RwToggleSkip(BrowserTab sender)
+    {
+        var host = Rewind.RewindStore.HostOf(RwOwner(sender).LastUrl);
+        if (host is null) return;
+        bool added;
+        lock (_rwSkip) { added = !_rwSkip.Remove(host); if (added) _rwSkip.Add(host); }
+        if (added) _rw.RemoveHost(host);
+        SavePrefs();
+        PushChromeStateAll();
+    }
+
+    /// <summary>A snapshot from a page view. Everything here is page-controlled
+    /// input: size-checked, host-checked, never trusted to be real gzip.</summary>
+    private void RwSnap(BrowserTab sender, string json)
+    {
+        if (!_rwOn || json.Length > 14_000_000) return;
+        var tab = RwOwner(sender);
+        if (tab.IsPrivate || tab.IsClosed) return;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var r = doc.RootElement;
+            var url = r.GetProperty("u").GetString() ?? "";
+            if (RwSkipped(url)) return;
+            var d = r.GetProperty("d").GetString() ?? "";
+            var x = r.TryGetProperty("x", out var xp) && xp.ValueKind == JsonValueKind.String ? xp.GetString() ?? "" : "";
+            byte[] html, text;
+            if (r.TryGetProperty("z", out var zp) && zp.ValueKind == JsonValueKind.Number && zp.GetInt32() == 1)
+            {
+                html = Convert.FromBase64String(d);
+                text = x.Length > 0 ? Convert.FromBase64String(x) : [];
+                if (!Rewind.RewindStore.LooksGzip(html)) return;
+                if (text.Length > 0 && !Rewind.RewindStore.LooksGzip(text)) text = [];
+            }
+            else
+            {   // page-side compression unavailable (or a last-gasp flush at unload): compress here
+                html = Rewind.RewindStore.Gzip(d);
+                text = Rewind.RewindStore.Gzip(x);
+            }
+            int I(string k) => r.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 0;
+            var title = r.TryGetProperty("ti", out var tp) && tp.ValueKind == JsonValueKind.String ? RwClip(tp.GetString()!, 200) : "";
+            var tag = r.TryGetProperty("tag", out var tg) && tg.ValueKind == JsonValueKind.String ? RwClip(tg.GetString()!, 80) : null;
+            var hash = r.TryGetProperty("hs", out var hp) && hp.ValueKind == JsonValueKind.Number ? hp.GetUInt32() : 0u;
+            _rw.Add(tab.Id, url, title, html, text, I("sx"), I("sy"), I("vw"), I("vh"), hash, tag);
+        }
+        catch { /* malformed snapshot — drop it */ }
+    }
+
+    private static string RwClip(string s, int n) => s.Length <= n ? s : s[..n] + "…";
+
+    private void PushRwList(BrowserTab sender)
+    {
+        var tab = RwOwner(sender);
+        var live = _rwOn && !tab.IsPrivate;
+        var items = live ? _rw.List(tab.Id) : [];
+        var (n, tabBytes) = _rw.TabStats(tab.Id);
+        PushJson(sender, JsonSerializer.Serialize(new
+        {
+            b = 71, on = _rwOn, priv = tab.IsPrivate,
+            items = items.Select(s => new { i = s.Id, t = s.T, u = s.Url, ti = s.Title, sz = s.Bytes, sy = s.Sy, tag = s.Tag }).ToArray(),
+            n = live ? n : 0, tabBytes = live ? tabBytes : 0, bytes = _rw.Bytes, max = _rw.MaxBytes,
+        }));
+    }
+
+    private void PushRwSnap(BrowserTab sender, string arg)
+    {
+        if (!long.TryParse(arg, out var id)) return;
+        var tab = RwOwner(sender);
+        var s = _rwOn && !tab.IsPrivate ? _rw.Get(tab.Id, id) : null;
+        PushJson(sender, JsonSerializer.Serialize(new
+        {
+            b = 72, i = id, ok = s is not null, t = s?.T, u = s?.Url, ti = s?.Title,
+            sx = s?.Sx, sy = s?.Sy, vw = s?.Vw, vh = s?.Vh, tag = s?.Tag,
+            d = s is null ? null : Convert.ToBase64String(s.Html),
+        }));
+    }
+
+    private void PushRwSearch(BrowserTab sender, string query)
+    {
+        var tab = RwOwner(sender);
+        var hits = _rwOn && !tab.IsPrivate ? _rw.Search(tab.Id, query.Trim()) : [];
+        PushJson(sender, JsonSerializer.Serialize(new
+        {
+            b = 73, q = query,
+            hits = hits.Select(h => new { i = h.Snap.Id, t = h.Snap.T, ti = h.Snap.Title, u = h.Snap.Url, sn = h.Snippet }).ToArray(),
+        }));
+    }
+
+    private void RwClear(BrowserTab sender, string scope)
+    {
+        if (scope == "all") _rw.Clear(); else _rw.RemoveTab(RwOwner(sender).Id);
+        PushRwList(sender);
+    }
+
+    /// <summary>An MCP tool just finished. If it could have changed the page, ask the
+    /// page for a tagged snapshot once it settles — so the timeline shows what the
+    /// agent did, step by step.</summary>
+    internal void RewindAfterTool(string tool, BrowserTab? tab)
+    {
+        if (!_rwOn || tab is null || tab.IsPrivate || Mcp.ActivityLog.ReadOnlyTools.Contains(tool)) return;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(700);
+            var t = PerTab ? tab : UiTab();
+            if (t is null || t.IsClosed) return;
+            PushJson(t, JsonSerializer.Serialize(new { b = 74, c = "snap", tag = "agent · " + tool.Replace("browser_", "") }));
+        });
+    }
+
+    // ---- MCP read access (the user opts in separately from enabling Rewind) ----
+
+    private string? RwGate(BrowserTab tab)
+    {
+        if (!_rwOn) return "Rewind is off. It is opt-in (it uses extra CPU and memory) — the user can turn it on from the ⋮ menu → Rewind.";
+        if (!_rwAgent) return "Rewind is on, but the user has not shared its history with the AI agent. They can allow it in the Rewind bar: ⚙ → “Let the AI agent read this history”.";
+        if (tab.IsPrivate) return "Rewind never records private tabs.";
+        return null;
+    }
+
+    private static string RwAgo(long ms)
+    {
+        var s = Math.Max(0, ms / 1000);
+        return s < 60 ? $"{s}s" : s < 3600 ? $"{s / 60}m {s % 60:00}s" : $"{s / 3600}h {s % 3600 / 60:00}m";
+    }
+
+    private static long? RwParseAgo(string? ago)
+    {
+        if (string.IsNullOrWhiteSpace(ago)) return null;
+        var m = System.Text.RegularExpressions.Regex.Match(ago.Trim().ToLowerInvariant(), @"^(\d+)\s*(s|sec|m|min|h|hr)?");
+        if (!m.Success || !long.TryParse(m.Groups[1].Value, out var n)) return null;
+        return m.Groups[2].Value switch { "h" or "hr" => n * 3_600_000, "m" or "min" or "" => n * 60_000, _ => n * 1000 };
+    }
+
+    private static string RwLine(Rewind.RewindStore.Snap s, long now) =>
+        $"#{s.Id}  {RwAgo(now - s.T)} ago  {DateTimeOffset.FromUnixTimeMilliseconds(s.T).ToLocalTime():HH:mm:ss}  " +
+        $"{RwClip(s.Title, 60)} <{RwClip(s.Url, 100)}>{(s.Tag is null ? "" : $"  [{s.Tag}]")}";
+
+    internal string RewindToolList(BrowserTab tab, int last)
+    {
+        if (RwGate(tab) is { } g) return g;
+        var list = _rw.List(tab.Id);
+        if (list.Count == 0) return "Rewind has no snapshots for this tab yet (it records a few seconds after a page settles).";
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var (n, bytes) = _rw.TabStats(tab.Id);
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Rewind: {n} snapshot{(n == 1 ? "" : "s")} for this tab ({bytes / 1048576.0:0.0} MB), oldest {RwAgo(now - list[0].T)} ago");
+        foreach (var s in list.TakeLast(Math.Clamp(last, 1, 200))) sb.AppendLine(RwLine(s, now));
+        return sb.ToString().TrimEnd();
+    }
+
+    internal string RewindToolRead(BrowserTab tab, string? id, string? ago, int maxChars)
+    {
+        if (RwGate(tab) is { } g) return g;
+        var list = _rw.List(tab.Id);
+        if (list.Count == 0) return "Rewind has no snapshots for this tab yet.";
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        Rewind.RewindStore.Snap? s;
+        if (!string.IsNullOrWhiteSpace(id))
+        {
+            s = long.TryParse(id.Trim().TrimStart('#'), out var sid) ? list.FirstOrDefault(x => x.Id == sid) : null;
+            if (s is null) return $"No snapshot {id} for this tab (use action=list).";
+        }
+        else if (RwParseAgo(ago) is { } ms) s = list.LastOrDefault(x => x.T <= now - ms) ?? list[0];
+        else s = list[^1];
+        string text;
+        try { text = Rewind.RewindStore.Gunzip(s.Text); } catch { text = "(text unavailable)"; }
+        var cut = Math.Clamp(maxChars, 500, 100_000);
+        return RwLine(s, now) + $"\nscroll {s.Sy}px · viewport {s.Vw}×{s.Vh}\n\n" +
+               (text.Length > cut ? text[..cut] + "\n… (truncated)" : text);
+    }
+
+    internal string RewindToolSearch(BrowserTab tab, string query, int max)
+    {
+        if (RwGate(tab) is { } g) return g;
+        if (string.IsNullOrWhiteSpace(query)) return "Give a 'query' to search for.";
+        var hits = _rw.Search(tab.Id, query.Trim(), Math.Clamp(max, 1, 50));
+        if (hits.Count == 0) return $"No snapshot of this tab contains “{query}”.";
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return $"{hits.Count} snapshot(s) contain “{query}” (newest first):\n" +
+               string.Join('\n', hits.Select(h => RwLine(h.Snap, now) + "\n    " + h.Snippet));
     }
 
     private void PushDownloads()
     {
         if (_noToolbar || !_driverReady.Task.IsCompleted) return;
-        var t = Tabs.Main ?? Tabs.All.FirstOrDefault();
+        var t = UiTab();
         if (t is null || t.IsClosed) return;
         var json = Downloads.SnapshotJson();
-        try { InvokeOnUi(() => { if (!t.IsClosed) t.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!t.IsClosed) SendUi(t, json); }); }
         catch { /* window mid-close */ }
     }
 
@@ -1466,7 +2580,7 @@ public sealed class BrowserController : IAsyncDisposable
 
     private void PushJson(BrowserTab tab, string json)
     {
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { /* window mid-close */ }
     }
 
@@ -1733,7 +2847,7 @@ public sealed class BrowserController : IAsyncDisposable
             st = n.Status, ty = n.ResourceType, sz = n.BytesReceived, er = n.Error,
         }).ToArray();
         var json = JsonSerializer.Serialize(new { b = 10, con, net });
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { /* window mid-close */ }
     }
 
@@ -1751,7 +2865,7 @@ public sealed class BrowserController : IAsyncDisposable
         {
             json = JsonSerializer.Serialize(new { b = 11, ok = false, e = ex.Message });
         }
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { }
     }
 
@@ -1768,7 +2882,7 @@ public sealed class BrowserController : IAsyncDisposable
             sz = n.BytesReceived, er = n.Error, t = n.Time.ToString("HH:mm:ss"),
             rq = n.RequestHeaders, rs = n.ResponseHeaders, pd = n.PostData,
         });
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { }
     }
 
@@ -1860,7 +2974,7 @@ public sealed class BrowserController : IAsyncDisposable
         {
             json = JsonSerializer.Serialize(new { b = 13, ok = false, e = ex.Message, ms = sw.ElapsedMilliseconds });
         }
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { }
     }
 
@@ -1894,7 +3008,7 @@ public sealed class BrowserController : IAsyncDisposable
         {
             json = JsonSerializer.Serialize(new { b = 14, err = ex.Message });
         }
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { }
     }
 
@@ -1958,7 +3072,7 @@ public sealed class BrowserController : IAsyncDisposable
         }).ToArray();
         var closed = _closedTabs.Select(c => new { u = c.Url, i = c.Icon }).ToArray();
         var json = JsonSerializer.Serialize(new { b = 15, open, closed, saved = _savedSession });
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { }
     }
 
@@ -1968,7 +3082,7 @@ public sealed class BrowserController : IAsyncDisposable
         // Logical tabs share one webview — always drive through the bound
         // driver, not tab.Driver (null on non-main logical tabs, which made
         // internal about: pages lose the chrome bar entirely).
-        var driver = tab.Driver ?? _driverTab?.Driver;
+        var driver = PerTab ? tab.Driver : tab.Driver ?? _driverTab?.Driver;
         if (driver is null || !driver.SupportsEval) return;
         // Evals submitted while WKWebView is mid-navigation get dropped with
         // no reply — cap the wait so driver init and post-load injection
@@ -1984,7 +3098,7 @@ public sealed class BrowserController : IAsyncDisposable
                     await driver.EvaluateAsync("window.__brainChrome && window.__brainChrome.mount()", false, hcts.Token);
                 return;
             }
-            var script = _noToolbar ? Assets.BrainJs : Assets.CombinedLib;
+            var script = PageLibSource;
             await driver.EvalScriptAsync(script, false, hcts.Token);
         }
         catch (Exception ex) { Log($"helper inject failed: {ex.Message}"); }
@@ -2022,7 +3136,8 @@ public sealed class BrowserController : IAsyncDisposable
                 JSON.stringify({
                   u: location.href, t: document.title,
                   n: !!window.__brainNewTab, h: !!window.__brainHelp, y: !!window.__brainHist,
-                  p: !!window.__brainImport, w: !!window.__brainPw,
+                  p: !!window.__brainImport, w: !!window.__brainPw, f: !!window.__brainFlows,
+                  s: !!window.__brainShortcuts,
                   i: (document.querySelector("link[rel~='icon']") || document.querySelector("link[rel='shortcut icon']") || {}).href ||
                      (/^https?:$/.test(location.protocol) ? location.origin + '/favicon.ico' : '')
                 })
@@ -2031,6 +3146,8 @@ public sealed class BrowserController : IAsyncDisposable
             {
                 using var doc = JsonDocument.Parse(info.Value.GetString()!);
                 var root = doc.RootElement;
+                // Still the previous owner's page (tab just switched) — not this tab's info.
+                if (ReferenceEquals(tab, DocTab) && IsStaleDocUrl(root.GetProperty("u").GetString())) return;
                 // Our start page is served via LoadRawString, so location.href
                 // reads about:blank — the doc flags itself so tab switching
                 // reloads the start page instead of a literal blank page.
@@ -2039,8 +3156,10 @@ public sealed class BrowserController : IAsyncDisposable
                 var isHist = root.TryGetProperty("y", out var y) && y.GetBoolean();
                 var isImp = root.TryGetProperty("p", out var pp) && pp.GetBoolean();
                 var isPw = root.TryGetProperty("w", out var ww) && ww.GetBoolean();
-                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : root.GetProperty("u").GetString() ?? tab.LastUrl);
-                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : root.GetProperty("t").GetString();
+                var isFlows = root.TryGetProperty("f", out var ff) && ff.GetBoolean();
+                var isSc = root.TryGetProperty("s", out var ss) && ss.GetBoolean();
+                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isSc ? "about:shortcuts" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : isFlows ? "about:flows" : root.GetProperty("u").GetString() ?? tab.LastUrl);
+                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isSc ? "Keyboard shortcuts" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : isFlows ? "Flows & activity" : root.GetProperty("t").GetString();
                 // u and i come from the same document — always reassign so a
                 // cross-site navigation can never keep the old site's icon.
                 var iRaw = root.GetProperty("i").GetString();
@@ -2050,7 +3169,8 @@ public sealed class BrowserController : IAsyncDisposable
                 tab.LastIcon = !string.IsNullOrEmpty(iRaw)
                     && !(iRaw.StartsWith("data:") && iRaw.IndexOf(',') == iRaw.Length - 1)
                     ? iRaw : null;
-                (_canBack, _canFwd) = await driver.GetNavStateAsync(rcts.Token);
+                if (PerTab) (tab.CanBack, tab.CanFwd) = await driver.GetNavStateAsync(rcts.Token);
+                else (_canBack, _canFwd) = await driver.GetNavStateAsync(rcts.Token);
                 if (!tab.IsPrivate) RecordHistory(tab.LastUrl, tab.LastTitle, tab.LastIcon);
                 SaveSessionSoon();
                 if (Tabs.Active?.Id == tab.Id) SetWindowTitleFor(tab);
@@ -2108,6 +3228,152 @@ public sealed class BrowserController : IAsyncDisposable
         PushChromeStateAll();
     }
 
+
+    // ---------------- flows & activity (about:flows) ----------------
+
+    private static readonly JsonSerializerOptions FlowUiJson = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+    private int _flowsPushPending;
+    private (bool Ok, string Text, long T)? _flowNotice;
+
+    /// <summary>Everything the page needs in one payload (b:30). The activity
+    /// rows are trimmed; full detail is fetched per row on expand (actget).</summary>
+    private string FlowsStateJson()
+    {
+        var rows = Activity.Recent(250).Select(e => new
+        {
+            id = e.Id, t = e.T, tool = e.Tool, ok = e.Ok, ms = e.Ms, url = e.Url, masked = e.Masked, flow = e.Flow,
+            a = BrAIn.Mcp.ActivityLog.ArgsSummary(e),
+            r = BrAIn.Mcp.ActivityLog.Clip(e.Res ?? "", 160),
+        }).ToArray();
+        return JsonSerializer.Serialize(new
+        {
+            b = 30,
+            flows = Flows.List(),
+            pending = Flows.Pending(),
+            tools = BrAIn.Mcp.FlowService.AllowedTools,
+            activity = rows,
+            notice = _flowNotice is { } n ? new { ok = n.Ok, text = n.Text, t = n.T } : null,
+        }, FlowUiJson);
+    }
+
+    private void PushFlowsState(BrowserTab tab)
+    {
+        if (tab.IsClosed) return;
+        PushJson(tab, FlowsStateJson());
+    }
+
+    /// <summary>Debounced: a burst of tool calls becomes one push to the open page.</summary>
+    private void ScheduleFlowsPush()
+    {
+        if (Interlocked.Exchange(ref _flowsPushPending, 1) == 1) return;
+        _ = Task.Delay(400).ContinueWith(_ =>
+        {
+            Interlocked.Exchange(ref _flowsPushPending, 0);
+            try
+            {
+                var t = Tabs.Active;
+                if (t is not null && !t.IsClosed && t.LastUrl == "about:flows") PushFlowsState(t);
+            }
+            catch { }
+        }, TaskScheduler.Default);
+    }
+
+    private string BuildFlowsHtml()
+    {
+        var json = FlowsStateJson();
+        return Assets.FlowsHtml.Replace("__BRAIN_FLOWS_JSON__", json.Replace("<", "\\u003c"));
+    }
+
+    private void FlowUiNotice(BrowserTab tab, bool ok, string text)
+    {
+        // Kept in state so it survives the page being rebuilt (tabs share one webview).
+        _flowNotice = (ok, text, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        PushJson(tab, JsonSerializer.Serialize(new { b = 31, ok, text, t = _flowNotice.Value.T }, FlowUiJson));
+    }
+
+    private sealed record FlowSaveReq(BrAIn.Mcp.FlowDef? Def, string? Old);
+    private sealed record FlowApproveReq(string? Id, BrAIn.Mcp.FlowDef? Def);
+    private sealed record FlowRunReq(string? Name, System.Text.Json.Nodes.JsonObject? Args);
+    private sealed record FlowDraftReq(string[]? Ids, string? Name, string? Description);
+
+    private void FlowUiSave(BrowserTab tab, string arg)
+    {
+        try
+        {
+            var req = JsonSerializer.Deserialize<FlowSaveReq>(arg, FlowUiJson);
+            if (req?.Def is null) { FlowUiNotice(tab, false, "Nothing to save."); return; }
+            req.Def.Source ??= "manual";
+            var err = Flows.Save(req.Def, req.Old);
+            FlowUiNotice(tab, err is null, err ?? $"Saved flow_{req.Def.Name}.");
+        }
+        catch (Exception ex) { FlowUiNotice(tab, false, "Could not save: " + ex.Message); }
+        PushFlowsState(tab);
+    }
+
+    private void FlowUiApprove(BrowserTab tab, string arg)
+    {
+        try
+        {
+            var req = JsonSerializer.Deserialize<FlowApproveReq>(arg, FlowUiJson);
+            if (req?.Id is null) { FlowUiNotice(tab, false, "Missing proposal id."); return; }
+            var err = Flows.Approve(req.Id, req.Def);
+            FlowUiNotice(tab, err is null, err ?? "Approved. The flow is now available to agents.");
+        }
+        catch (Exception ex) { FlowUiNotice(tab, false, "Could not approve: " + ex.Message); }
+        PushFlowsState(tab);
+    }
+
+    private async Task FlowUiRunAsync(BrowserTab tab, string arg)
+    {
+        try
+        {
+            var req = JsonSerializer.Deserialize<FlowRunReq>(arg, FlowUiJson);
+            var def = req?.Name is null ? null : Flows.Get(req.Name);
+            if (def is null) { FlowUiNotice(tab, false, "Flow not found."); return; }
+            FlowUiNotice(tab, true, $"Running flow_{def.Name}…");
+            // Open a fresh tab for the run so this page stays where it is.
+            var runTab = await NewTabAsync(null, default);
+            var res = await Flows.RunAsync(def, req!.Args, default, honorPause: false);
+            // Back to the Flows page, which shows the result from state.
+            try { await ActivateWindowAsync(tab.Id.ToString("N")[..8], default); } catch { }
+            FlowUiNotice(tab, res.Ok, res.Text);
+            if (res.Ok) Activity.Add(new BrAIn.Mcp.ActivityEntry
+            {
+                Id = Guid.NewGuid().ToString("N")[..8], T = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Tool = "flow_" + def.Name, Args = req.Args, Ok = true, Url = runTab.LastUrl, Flow = true,
+                Res = BrAIn.Mcp.ActivityLog.Clip("(run from Flows page) " + res.Text, 500),
+            });
+        }
+        catch (Exception ex) { FlowUiNotice(tab, false, "Run failed: " + ex.Message); }
+    }
+
+    private void FlowUiDraft(BrowserTab tab, string arg)
+    {
+        try
+        {
+            var req = JsonSerializer.Deserialize<FlowDraftReq>(arg, FlowUiJson);
+            var entries = Activity.Find(req?.Ids ?? Array.Empty<string>());
+            if (entries.Count == 0) { FlowUiNotice(tab, false, "Select at least one call."); return; }
+            var def = Flows.BuildFromActivity(entries, req?.Name ?? "new_flow", req?.Description ?? "", null);
+            def.Source = "manual";
+            if (def.Steps.Count == 0) { FlowUiNotice(tab, false, "Those calls are read-only or failed, so there is nothing to replay. Pick clicks, typing or navigation."); return; }
+            PushJson(tab, JsonSerializer.Serialize(new { b = 33, draft = def }, FlowUiJson));
+        }
+        catch (Exception ex) { FlowUiNotice(tab, false, "Could not build a flow: " + ex.Message); }
+    }
+
+    private void FlowUiActivityDetail(BrowserTab tab, string id)
+    {
+        var e = Activity.Find(new[] { id }).FirstOrDefault();
+        if (e is null) return;
+        PushJson(tab, JsonSerializer.Serialize(new { b = 34, entry = e }, FlowUiJson));
+    }
+
     /// <summary>Full history list for the about:history page (b:16).</summary>
     private void PushHistory(BrowserTab tab)
     {
@@ -2116,7 +3382,7 @@ public sealed class BrowserController : IAsyncDisposable
         lock (_history)
             items = _history.Select(h => (object)new { u = h.Url, t = h.Title, i = h.Icon, d = h.Time, v = h.Visits }).ToArray();
         var json = JsonSerializer.Serialize(new { b = 16, items });
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { /* window mid-close */ }
     }
 
@@ -2155,7 +3421,7 @@ public sealed class BrowserController : IAsyncDisposable
                 hist = s.Hist, bm = s.Bm, ck = s.Ck, pw = s.Pw, note = s.Note,
             }).ToArray(),
         });
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { /* window mid-close */ }
     }
 
@@ -2214,7 +3480,7 @@ public sealed class BrowserController : IAsyncDisposable
             results.Add(new { id = src.Id, name = src.Name, hist, bm, ck, pw, err });
         }
         var json = JsonSerializer.Serialize(new { b = 18, results });
-        try { InvokeOnUi(() => { if (!tab.IsClosed) tab.Window.SendWebMessage(json); }); }
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { }
         PushChromeStateAll();
         PushHistory(tab);
@@ -2278,8 +3544,54 @@ public sealed class BrowserController : IAsyncDisposable
     public BrowserTab ActiveTabOrThrow()
         => Tabs.Active ?? throw new InvalidOperationException("No browser tab available");
 
-    public bool IsLoading => _loadDepth > 0;
-    public (bool CanBack, bool CanFwd) NavState => (_canBack, _canFwd);
+    // ------------------------------------------------------------------
+    // Blank-page watchdog. A web page that finishes "loading" but renders
+    // nothing (no visible text, near-empty DOM) is reloaded once; every check
+    // is logged to stderr so a recurring blank page can be diagnosed.
+    // ------------------------------------------------------------------
+    private string? _blankRetryUrl;
+    private long _blankRetryAt;
+
+    private async Task BlankWatchdogAsync(BrowserTab target)
+    {
+        try
+        {
+            await Task.Delay(2500);
+            var d = target.Driver;
+            if (d is not { SupportsEval: true } || target.IsClosed) return;
+            var url = target.LastUrl ?? "";
+            if (!(url.StartsWith("http://") || url.StartsWith("https://"))) return;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+            var r = await d.EvaluateAsync(
+                "(function(){var b=document.body,h=document.documentElement?document.documentElement.outerHTML:'';" +
+                "var n=(performance.getEntriesByType&&performance.getEntriesByType('navigation')[0])||{};" +
+                "return JSON.stringify({u:location.href,rs:document.readyState,html:h.length," +
+                "text:b?(b.innerText||'').trim().length:-1,kids:b?b.children.length:-1,title:document.title," +
+                "nav:{type:n.type,status:n.responseStatus,xfer:n.transferSize,body:n.encodedBodySize,dur:Math.round(n.duration||0)}," +
+                "head:h.slice(0,260),tail:h.slice(-200)})})()",
+                false, cts.Token);
+            var info = r?.ValueKind == JsonValueKind.String ? r.Value.GetString() ?? "" : r?.ToString() ?? "";
+            using var doc = JsonDocument.Parse(info);
+            var root = doc.RootElement;
+            var text = root.GetProperty("text").GetInt32();
+            var kids = root.GetProperty("kids").GetInt32();
+            var ready = root.GetProperty("rs").GetString();
+            // Finished loading but nothing in <body>: the document was cut short.
+            var blank = ready == "complete" && text <= 0 && kids <= 0;
+            Log($"page check {(blank ? "BLANK" : "ok")} {(blank ? info : info[..Math.Min(info.Length, 200)])}");
+            if (!blank) return;
+            var now = Environment.TickCount64;
+            if (_blankRetryUrl == url && now - _blankRetryAt < 20000) return; // one retry per url
+            _blankRetryUrl = url; _blankRetryAt = now;
+            Log("blank page detected — reloading once");
+            await d.EvaluateAsync("location.reload()", false, cts.Token);
+        }
+        catch (Exception ex) { Log("page check failed: " + ex.Message); }
+    }
+
+    public bool IsLoading => PerTab ? Tabs.Active?.Loading == true : _loadDepth > 0;
+    public (bool CanBack, bool CanFwd) NavState =>
+        PerTab ? (Tabs.Active?.CanBack == true, Tabs.Active?.CanFwd == true) : (_canBack, _canFwd);
 
     /// <param name="materialize">A virtual (overlay) new tab gets its real
     /// start-page document loaded first, so automation sees the page the
@@ -2287,6 +3599,13 @@ public sealed class BrowserController : IAsyncDisposable
     public async Task<IBrowserDriver> DriverOrThrowAsync(BrowserTab tab, CancellationToken ct, bool materialize = true)
     {
         await _windowCreated.Task.WaitAsync(ct);
+        if (PerTab)
+        {
+            // Every tab has its own view; operating on a background tab does not switch to it.
+            if (tab.IsClosed) throw new InvalidOperationException("Tab is closed");
+            await _driverReady.Task.WaitAsync(TimeSpan.FromSeconds(25), ct);
+            return tab.Driver ?? await EnsureTabViewAsync(tab);
+        }
         if (tab.Driver is null)
         {
             if (!tab.IsMain)
@@ -2349,10 +3668,16 @@ public sealed class BrowserController : IAsyncDisposable
             return "about:newtab";
         if (url.Equals("help", StringComparison.OrdinalIgnoreCase))
             return "about:help";
+        if (url.Equals("shortcuts", StringComparison.OrdinalIgnoreCase) ||
+            url.Equals("keys", StringComparison.OrdinalIgnoreCase))
+            return "about:shortcuts";
         if (url.Equals("history", StringComparison.OrdinalIgnoreCase))
             return "about:history";
         if (url.Equals("import", StringComparison.OrdinalIgnoreCase))
             return "about:import";
+        if (url.Equals("flows", StringComparison.OrdinalIgnoreCase) ||
+            url.Equals("activity", StringComparison.OrdinalIgnoreCase))
+            return "about:flows";
         if (url.Equals("passwords", StringComparison.OrdinalIgnoreCase) ||
             url.Equals("password", StringComparison.OrdinalIgnoreCase))
             return "about:passwords";
@@ -2419,9 +3744,11 @@ internal static class Assets
     private static string Themed(string name) => Load(name).Replace("/*@THEME*/", _theme.Value);
     private static readonly Lazy<string> _newTab = new(() => Themed("BrAIn.Assets.newtab.html"));
     private static readonly Lazy<string> _help = new(() => Themed("BrAIn.Assets.help.html"));
+    private static readonly Lazy<string> _sc = new(() => Themed("BrAIn.Assets.shortcuts.html"));
     private static readonly Lazy<string> _hist = new(() => Themed("BrAIn.Assets.history.html"));
     private static readonly Lazy<string> _imp = new(() => Themed("BrAIn.Assets.import.html"));
     private static readonly Lazy<string> _pw = new(() => Themed("BrAIn.Assets.passwords.html"));
+    private static readonly Lazy<string> _flows = new(() => Themed("BrAIn.Assets.flows.html"));
     private static readonly Lazy<string> _combinedLib = new(() => BrainJs + "\n" + ChromeJs);
 
     public static string BrainJs => _brainJs.Value;
@@ -2430,8 +3757,10 @@ internal static class Assets
 
     public static string NewTabHtml => _newTab.Value;
     public static string HelpHtml => _help.Value;
+    public static string ShortcutsHtml => _sc.Value;
     public static string HistoryHtml => _hist.Value;
+    public static string FlowsHtml => _flows.Value;
     public static string ImportHtml => _imp.Value;
     public static string PasswordsHtml => _pw.Value;
-    public const int BrainJsVersion = 2;
+    public const int BrainJsVersion = 3;
 }

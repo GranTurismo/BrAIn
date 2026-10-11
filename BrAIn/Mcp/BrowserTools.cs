@@ -104,6 +104,27 @@ public sealed class BrowserTools(BrowserController browser)
         return Truncate(r ?? "(no text)", maxLength);
     }
 
+    [McpServerTool(Name = "browser_markdown"), Description(
+        "The page (or one element, or what the user has selected) as clean Markdown: headings, links, lists, tables, code blocks and images. " +
+        "Scripts, hidden content, navigation, footers and cookie banners are dropped, so it is far more compact than browser_html and keeps " +
+        "the links that browser_text loses. Best for reading an article, docs page or search results.")]
+    public async Task<string> Markdown(
+        [Description(SelHelp + " Omit for the page's main content.")] string? selector = null,
+        [Description("Convert only the text the user has selected on the page")] bool selection = false,
+        [Description("Keep navigation, header, footer and banners too")] bool full = false,
+        [Description("Include images as ![alt](url)")] bool images = true,
+        [Description("Max characters")] int maxLength = 40000,
+        [Description("Tab id/prefix")] string? tab = null,
+        CancellationToken ct = default)
+    {
+        var t = ResolveTab(tab);
+        await EnsureLibAsync(t, ct);
+        var opts = $"{{selection:{(selection ? "true" : "false")},full:{(full ? "true" : "false")},images:{(images ? "true" : "false")},meta:true,max:{Math.Clamp(maxLength, 1000, 400000)}}}";
+        var r = await browser.EvaluateTextAsync(
+            $"window.__brain.markdown ? window.__brain.markdown({Js(selector)},{opts}) : '(this page loaded an older BrAIn script - reload it and try again)'", t, ct);
+        return Truncate(r ?? "(no content)", maxLength);
+    }
+
     [McpServerTool(Name = "browser_html"), Description("Outer HTML of the page or a specific element.")]
     public async Task<string> Html(
         [Description(SelHelp)] string? selector = null,
@@ -140,6 +161,57 @@ public sealed class BrowserTools(BrowserController browser)
         await EnsureLibAsync(t, ct);
         var r = await browser.EvaluateTextAsync($"window.__brain.describe({Js(element)})", t, ct);
         return r ?? "element not found";
+    }
+
+    [McpServerTool(Name = "browser_listeners"), Description(
+        "Event listeners bound to an element — including delegated handlers on its ancestors, document and window — " +
+        "with each listener's event type, capture/once/passive flags, function source and the exact call site that registered it. " +
+        "Use it to answer \"why does clicking this do nothing?\" or \"what runs on keydown?\". " +
+        "Omit 'element' for a page-wide summary (counts by event type and the busiest targets). " +
+        "Registrations are recorded from document start, so everything the page bound is covered (main frame).")]
+    public async Task<string> Listeners(
+        [Description(SelHelp + " 'window' and 'document' are also accepted. Omit for a page-wide summary.")] string? element = null,
+        [Description("Include listeners on ancestors, document and window (delegated handlers). Default true.")] bool ancestors = true,
+        [Description("Only these event types, comma-separated, e.g. 'click,keydown'")] string? type = null,
+        [Description("Also include recently removed listeners (with who removed them)")] bool includeRemoved = false,
+        [Description("Max listeners (or targets in the summary)")] int max = 100,
+        [Description("Tab id/prefix")] string? tab = null,
+        CancellationToken ct = default)
+    {
+        var t = ResolveTab(tab);
+        await EnsureLibAsync(t, ct);
+        var opts = $"{{ancestors:{(ancestors ? "true" : "false")},removed:{(includeRemoved ? "true" : "false")}," +
+                   $"type:{Js(type)},max:{Math.Clamp(max, 1, 1000)}}}";
+        var r = await browser.EvaluateTextAsync($"window.__brain.listenersText({Js(element)},{opts})", t, ct);
+        return r ?? "(no data)";
+    }
+
+    [McpServerTool(Name = "browser_rewind"), Description(
+        "Look back at what this tab's page used to show. BrAIn's Rewind keeps compressed snapshots of pages " +
+        "(opt-in by the user; off by default; never private tabs). action=list shows the timeline (agent steps are tagged); " +
+        "action=read returns the page's text at a moment (id from list, or ago like '5m' / '90s'); " +
+        "action=search finds which snapshots contained some text (e.g. an old price). " +
+        "Read-only: you cannot turn Rewind on, and the user must separately allow agents to read the history — " +
+        "if not, the tool says so; do not try to work around it.")]
+    public async Task<string> Rewind(
+        [Description("list | read | search")] string action = "list",
+        [Description("Snapshot id from action=list (for read)")] string? id = null,
+        [Description("For read: the snapshot at/before this long ago, e.g. '5m', '90s', '1h'. Default: latest")] string? ago = null,
+        [Description("For search: text to look for")] string? query = null,
+        [Description("Max entries (list/search)")] int max = 30,
+        [Description("Max characters of page text (read)")] int maxChars = 20000,
+        [Description("Tab id/prefix")] string? tab = null,
+        CancellationToken ct = default)
+    {
+        var t = ResolveTab(tab);
+        await Task.CompletedTask;
+        return (action ?? "list").Trim().ToLowerInvariant() switch
+        {
+            "list" => browser.RewindToolList(t, max),
+            "read" => browser.RewindToolRead(t, id, ago, maxChars),
+            "search" => browser.RewindToolSearch(t, query ?? "", max),
+            _ => "Unknown action. Use list, read or search.",
+        };
     }
 
     // ========================================================== INTERACTION
@@ -340,7 +412,7 @@ public sealed class BrowserTools(BrowserController browser)
     [McpServerTool(Name = "browser_screenshot"), Description("Screenshot of the page (PNG). Optionally clip to an element or capture beyond the viewport.")]
     public async Task<CallToolResult> Screenshot(
         [Description(SelHelp)] string? element = null,
-        [Description("Full page (beyond viewport) — Windows only")] bool fullPage = false,
+        [Description("Capture the whole scrolling page, not just the viewport (scrolls and stitches)")] bool fullPage = false,
         [Description("Tab id/prefix")] string? tab = null,
         CancellationToken ct = default)
     {
@@ -484,6 +556,22 @@ public sealed class BrowserTools(BrowserController browser)
     {
         var tab = await browser.NewTabAsync(url, ct, priv);
         return $"new {(priv ? "private " : "")}tab {tab.Id.ToString()[..8]} opened → {tab.LastUrl}";
+    }
+
+    [McpServerTool(Name = "browser_ask_human"), Description("Ask the user to do a step only they can do (log in, solve a CAPTCHA, enter a 2FA code, approve a payment) and wait. BrAIn brings the tab to the front and shows the user a card; they do the step in the page and press Done. Returns DONE, CANT or NO ANSWER. After DONE take a fresh browser_snapshot and carry on. Never ask for passwords or codes in the message; the user types them into the page themselves.")]
+    public async Task<string> AskHuman(
+        [Description("What you need the user to do, in one or two plain sentences (shown to them as is)")] string message,
+        [Description("How many minutes to wait for them (1-15, default 5)")] int minutes = 5,
+        [Description("Tab id/prefix (default: active tab)")] string? tab = null,
+        CancellationToken ct = default)
+    {
+        var t = ResolveTab(tab);
+        try { await browser.ActivateWindowAsync(t.Id.ToString("N")[..8], ct); } catch { /* still ask */ }
+        // Bring the app forward too; never block the question on it.
+        _ = Task.Run(async () => { try { await browser.RaiseWindowAsync(t, CancellationToken.None); } catch { } });
+        string? host = null;
+        try { host = new Uri(t.LastUrl).Host; } catch { }
+        return await browser.Handoff.AskAsync(message, host, t.LastUrl, TimeSpan.FromMinutes(Math.Clamp(minutes, 1, 15)), ct);
     }
 
     [McpServerTool(Name = "browser_switch_tab"), Description("Switch the browser to a tab by id or id-prefix.")]

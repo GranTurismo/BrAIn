@@ -90,33 +90,46 @@
       <b>middle-click links</b> for new tabs, <b>right-click tabs</b> for their menu,
       <b>drag tabs</b> to reorder, and use the <b>⋮ menu</b> for find, zoom,
       bookmarks, print, view-source, fullscreen and always-on-top.
-      Bookmarks and history persist between launches.</p></div>
+      Bookmarks and history persist between launches.</p>
+      <p><b>Copy as Markdown:</b> <kbd>Ctrl+Shift+M</kbd> (or <b>⋮ → Copy page as Markdown</b>, or right-click selected text) puts the page — or just your selection — on the clipboard as clean Markdown: headings, links, lists, tables and code, without menus, banners or scripts. Paste it straight into an AI chat or your notes.</p>
+      <p><b>Ask before risky actions:</b> when an AI agent is about to click something that looks like paying, deleting, sending or agreeing (or submit a card form), BrAIn holds the action and asks you: <b>Deny</b>, <b>Allow once</b>, or <b>Allow this site for 10 minutes</b>. No answer in 90 seconds counts as no. Search, login and add-to-cart are never interrupted. Turn it on or off in <b>⋮ → Agent asks before risky actions</b>. Flows you approved run without asking at each step. It cannot see inside scripts the agent runs with <i>evaluate</i>, so keep the agent paused (<kbd>Ctrl+Shift+.</kbd>) if you need a hard stop.</p>
+      <p><b>Your turn:</b> when an AI agent reaches a step only you can do — logging in, a CAPTCHA, a 2FA code — it asks for you. BrAIn brings the tab forward and shows a card; do the step in the page yourself (the agent never sees what you type), then press <b>Done</b>, or <b>I can&rsquo;t do this</b> to tell it to stop. If you don&rsquo;t answer, the agent is told so after a few minutes.</p>
+      <p><b>Record a flow:</b> <b>⋮ → Record a flow…</b>, do the task once by hand, then press <b>Stop</b>. Name it, tick any typed value you want callers to be able to change, and save. It appears in <b>Flows</b> as a pending flow; approve it and every AI agent can run it as a single tool. Passwords and card numbers are never recorded: they become arguments you supply each run. It starts from the page you were on and records clicks, typing, choices, checkboxes and Enter in this tab.</p></div>
+
+    <h2>Rewind — time travel for pages</h2>
+    <div class="card"><p>
+      Turn it on from <b>⋮ → Rewind</b> (or <code>Ctrl+Shift+Y</code>) and a
+      scrubber appears under the toolbar: drag left and the page reverts to what
+      it showed minutes ago — text, layout and scroll position, frozen in a
+      read-only view. <b>Live</b> jumps back to the present, and the search box
+      finds which past snapshot contained some text (an old price, a deleted
+      paragraph).</p>
+      <p><b>Off by default</b> — recording a page costs extra CPU and memory, so
+      nothing runs until you enable it. Snapshots are gzip-compressed and kept
+      <b>in memory only</b>: nothing touches disk, and everything is forgotten
+      when the tab closes or the app quits. Rewind never records private tabs,
+      login pages (any page with a password field) or sites you exclude
+      (⚙ → <i>Don't record this site</i>). Budgets (⚙) cap how long snapshots
+      are kept and how much RAM they may use; the AI agent only sees the
+      history if you allow it separately.</p></div>
 
     <h2>Keyboard shortcuts</h2>
     <div class="card keys">
-      <div class="row"><span>Command palette</span><code>Ctrl+K</code></div>
-      <div class="row"><span>New tab</span><code>Ctrl+T</code></div>
-      <div class="row"><span>New private tab</span><code>Ctrl+Shift+N</code></div>
-      <div class="row"><span>Close tab</span><code>Ctrl+W</code></div>
+      <div class="row"><span>Command palette / tab search</span><code>Ctrl+K · Ctrl+Shift+A</code></div>
+      <div class="row"><span>New / close tab</span><code>Ctrl+T · Ctrl+W</code></div>
       <div class="row"><span>Reopen closed tab</span><code>Ctrl+Shift+T</code></div>
-      <div class="row"><span>History</span><code>Ctrl+H</code></div>
-      <div class="row"><span>Next / prev tab</span><code>Ctrl+Tab</code></div>
-      <div class="row"><span>Jump to tab 1–9</span><code>Ctrl+1…9</code></div>
-      <div class="row"><span>Address bar</span><code>Ctrl+L / F6</code></div>
-      <div class="row"><span>Back / Forward</span><code>Alt+← / →</code></div>
-      <div class="row"><span>Reload / Stop</span><code>F5 / Esc</code></div>
+      <div class="row"><span>Address bar</span><code>Ctrl+L · F6</code></div>
       <div class="row"><span>Find in page</span><code>Ctrl+F</code></div>
-      <div class="row"><span>Next / prev match</span><code>F3 / Shift+F3</code></div>
-      <div class="row"><span>Bookmark page</span><code>Ctrl+D</code></div>
-      <div class="row"><span>Copy link address</span><code>Ctrl+Shift+C</code></div>
-      <div class="row"><span>Picture-in-picture</span><code>Ctrl+Shift+P</code></div>
-      <div class="row"><span>Mute tab</span><code>click the tab's speaker</code></div>
-      <div class="row"><span>Zoom in / out / reset</span><code>Ctrl + − 0</code></div>
-      <div class="row"><span>Print</span><code>Ctrl+P</code></div>
-      <div class="row"><span>View source</span><code>Ctrl+U</code></div>
-      <div class="row"><span>Developer tools</span><code>F12 · Ctrl+Shift+I</code></div>
-      <div class="row"><span>Fullscreen</span><code>F11</code></div>
-      <div class="row"><span>This page</span><code>F1</code></div>
+      <div class="row"><span>Developer tools</span><code>F12</code></div>
+      <div class="row"><span>Rewind — page time travel</span><code>Ctrl+Shift+Y</code></div>
+      <div class="row"><span>Pause / resume the agent</span><code>Ctrl+Shift+.</code></div>
+      <p style="margin:14px 0 2px;font-size:13px;color:#8f8fae">
+        All 60+ bindings — tab cycling, pinning, muting, moving, hard reload,
+        paste-and-go, mac-specific combos — live on the searchable cheat sheet:
+        <a href="#" id="scopen"><b>Keyboard shortcuts</b></a>
+        (<kbd>Ctrl+/</kbd>). Every one of them is <b>remappable</b> — click a row,
+        press the new keys, and it sticks everywhere.
+      </p>
     </div>
 
     <h2>Connect an AI via MCP</h2>
@@ -180,6 +193,9 @@
         <span class="chip">run JavaScript</span>
         <span class="chip">console log</span>
         <span class="chip">network requests</span>
+        <span class="chip">event listeners</span>
+        <span class="chip">page as Markdown</span>
+        <span class="chip">rewind history (opt-in)</span>
         <span class="chip">cookies</span>
       </div>
       <p>Typical agent flow: <code>browser_navigate</code> → <code>browser_snapshot</code>
@@ -197,6 +213,9 @@
   }
   document.getElementById('back').addEventListener('click', function (e) {
     e.preventDefault(); send('navigate:about:newtab');
+  });
+  document.getElementById('scopen').addEventListener('click', function (e) {
+    e.preventDefault(); send('navigate:about:shortcuts');
   });
   // stagger the section entrance — capped so later cards don't wait forever
   Array.prototype.forEach.call(document.querySelectorAll('.wrap > *'), function (el, i) {

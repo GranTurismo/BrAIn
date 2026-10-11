@@ -27,6 +27,11 @@ public static class Program
                   url                 Initial URL to open (default: built-in new tab page)
                   --cdp-port <port>   Force a fixed CDP debugging port (Windows)
                   --no-toolbar        Do not inject the BrAIn toolbar into pages
+                  --grant-permissions Auto-allow camera/mic/location/etc. without asking
+                                      (default: sites show a permission prompt)
+                  --no-fullscreen     Do not open in full screen
+                  --no-split          (macOS) keep the toolbar inside the page instead of in
+                                      its own native view above it (also BRAIN_SPLIT=0)
                   --version           Print version
 
                 MCP: this process speaks MCP over stdio. Point your MCP client
@@ -54,12 +59,28 @@ public static class Program
         builder.Logging.SetMinimumLevel(args.Contains("--verbose") ? LogLevel.Information : LogLevel.Warning);
         builder.Services.AddSingleton(controller);
         builder.Services.AddSingleton(controller.Tabs);
+        builder.Services.AddSingleton(controller.Activity);
+        builder.Services.AddSingleton(controller.Flows);
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
-            .WithTools<BrowserTools>();
+            .WithTools<BrowserTools>()
+            .WithTools<FlowTools>()
+            // Record every tool call (primitives and flow_* alike) in calls.jsonl.
+            .WithRequestFilters(f => f.AddCallToolFilter(ActivityRecorder.Create(controller, controller.Activity)));
 
         var host = builder.Build();
+
+        // Saved flows become real MCP tools: hand the live tool list to the
+        // flow service, which adds/removes flow_* entries (the SDK announces
+        // each change to the client via tools/list_changed).
+        try
+        {
+            var mcpOptions = host.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<ModelContextProtocol.Server.McpServerOptions>>().Value;
+            mcpOptions.ToolCollection ??= new ModelContextProtocol.Server.McpServerPrimitiveCollection<ModelContextProtocol.Server.McpServerTool>();
+            controller.Flows.Attach(mcpOptions.ToolCollection);
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[BrAIn] flows unavailable: {ex.Message}"); }
 
         // stdio MCP servers exit when the client closes stdin — the transport
         // stops the host, and we close the windows so the process doesn't

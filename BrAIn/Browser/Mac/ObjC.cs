@@ -49,6 +49,18 @@ internal static partial class ObjC
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
     internal static partial IntPtr SendDoubleArg(IntPtr recv, IntPtr sel, double a);
 
+    /// +[NSColor colorWithSRGBRed:green:blue:alpha:]
+    [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
+    internal static partial IntPtr SendDouble4(IntPtr recv, IntPtr sel, double a, double b, double c, double d);
+
+    /// -[NSView addSubview:positioned:relativeTo:]
+    [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
+    internal static partial void SendViewPosView(IntPtr recv, IntPtr sel, IntPtr view, nint pos, IntPtr rel);
+
+    /// -[WKWebView initWithFrame:configuration:]
+    [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
+    internal static partial IntPtr SendRectObj(IntPtr recv, IntPtr sel, MacWindow.CGRect rect, IntPtr obj);
+
     /// CGRect-returning send (frame/bounds). arm64 returns large structs via
     /// the normal objc_msgSend path; x86_64 requires the stret variant.
     internal static MacWindow.CGRect SendRect(IntPtr recv, IntPtr sel)

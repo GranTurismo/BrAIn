@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Flows &amp; activity — BrAIn</title>
+<script>
+  // Served via LoadRawString — flags itself so the host maps the tab to
+  // about:flows instead of the literal about:blank that location.href reports.
+  window.__brainFlows = 1;
+  // Snapshot baked in by the host; live updates arrive as b:30 pushes that
+  // chrome.js forwards to us via the 'brain-msg' document event.
+  window.__brainFlowsData = __BRAIN_FLOWS_JSON__;
+</script>
+<style>
+/*@THEME*/
+  body { padding: 84px 24px 90px; }
+  .wrap { max-width: 980px; }
+  .head { display: flex; align-items: center; gap: 18px; margin-bottom: 8px; flex-wrap: wrap; }
+  .logo { font-size: 30px; flex: none; }
+  .lede { color: var(--mut); font-size: 13px; line-height: 1.6; margin: 0 0 22px; max-width: 760px; }
+
+  .tabs { display: flex; gap: 6px; margin: 0 0 22px; padding: 4px; width: max-content; max-width: 100%;
+    background: var(--glass); border: 1px solid var(--line); border-radius: 14px; }
+  .tab { border: 0; background: transparent; color: var(--mut); font: 600 13px var(--font); padding: 8px 16px;
+    border-radius: 10px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background .15s, color .15s; }
+  .tab:hover { color: #fff; }
+  .tab.on { background: hsl(var(--h) 100% 74% / .18); color: #fff; box-shadow: inset 0 0 0 1px hsl(var(--h) 100% 74% / .35); }
+  .badge { min-width: 18px; height: 18px; padding: 0 6px; border-radius: 9px; background: hsl(calc(var(--h) - 72) 70% 55%);
+    color: #fff; font-size: 11px; display: grid; place-items: center; }
+  .badge.zero { display: none; }
+
+  .btn2 { height: 36px; padding: 0 14px; border-radius: 11px; cursor: pointer; border: 1px solid rgba(255,255,255,.1);
+    background: var(--glass); color: #d9d9ee; font: 600 12.5px var(--font); transition: all .15s; white-space: nowrap; }
+  .btn2:hover { background: var(--glass-hi); border-color: hsl(var(--h) 100% 74% / .45); color: #fff; }
+  .btn2.pri { background: linear-gradient(120deg, hsl(var(--h) 80% 60%), hsl(calc(var(--h) - 40) 70% 52%)); border-color: transparent; color: #fff; }
+  .btn2.pri:hover { filter: brightness(1.12); }
+  .btn2.dng:hover, .btn2.dng.armed { background: rgba(232,17,35,.2); border-color: rgba(232,80,90,.55); color: #ffd7da; }
+  .btn2[disabled] { opacity: .4; pointer-events: none; }
+  .spacer { flex: 1; }
+
+  .notice { margin: 0 0 18px; padding: 12px 16px; border-radius: 13px; font-size: 13px; line-height: 1.55; white-space: pre-wrap;
+    background: rgba(80,200,150,.1); border: 1px solid rgba(80,200,150,.35); color: #bff0da; display: flex; gap: 12px; align-items: flex-start; }
+  .notice.bad { background: rgba(232,17,35,.1); border-color: rgba(232,80,90,.45); color: #ffc9cd; }
+  .notice .x { margin-left: auto; cursor: pointer; opacity: .7; flex: none; }
+
+  .grid { display: grid; gap: 14px; }
+  .fcard { padding: 16px 18px; border-radius: 16px; background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.03));
+    border: 1px solid var(--line); box-shadow: 0 10px 30px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.05); }
+  .fhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .fname { font: 700 15px var(--mono); color: #efeffd; }
+  .fname i { color: var(--ac); font-style: normal; opacity: .8; }
+  .tag { font-size: 10.5px; letter-spacing: .8px; text-transform: uppercase; color: var(--dim); padding: 2px 8px; border-radius: 7px;
+    border: 1px solid var(--line); }
+  .fdesc { color: #b9b9d2; font-size: 13px; line-height: 1.55; margin: 6px 0 10px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chip { font: 12px var(--mono); padding: 3px 9px; border-radius: 8px; background: hsl(var(--h) 100% 74% / .1);
+    border: 1px solid hsl(var(--h) 100% 74% / .25); color: #cfcfff; }
+  .chip.req::after { content: " *"; color: #ff9aa5; }
+  .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .meta { color: var(--dim); font-size: 12px; align-self: center; margin-left: 4px; }
+
+  .runbox { margin-top: 14px; padding: 14px; border-radius: 12px; background: rgba(0,0,0,.22); border: 1px solid var(--line); }
+  .runbox label, .ed label { display: block; font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase;
+    color: var(--dim); margin: 0 0 5px; }
+  .runbox .row { margin-bottom: 10px; }
+
+  input[type=text], input:not([type]), select, textarea {
+    width: 100%; min-width: 0; padding: 9px 12px; border-radius: 10px; outline: none; color: #f0f0fc;
+    background: var(--glass); border: 1px solid rgba(255,255,255,.1); font: 13px var(--font);
+    transition: border-color .15s, box-shadow .2s, background .15s; }
+  textarea { font-family: var(--mono); font-size: 12px; line-height: 1.5; resize: vertical; min-height: 38px; }
+  select { appearance: none; padding-right: 26px; background-image: linear-gradient(45deg, transparent 50%, #8a8aa6 50%), linear-gradient(135deg, #8a8aa6 50%, transparent 50%);
+    background-position: calc(100% - 15px) 16px, calc(100% - 10px) 16px; background-size: 5px 5px; background-repeat: no-repeat; }
+  select option { background: #15151f; color: #eee; }
+  input:focus, select:focus, textarea:focus { background: var(--glass-hi); border-color: hsl(var(--h) 100% 74% / .55); box-shadow: 0 0 0 4px hsl(var(--h) 100% 74% / .13); }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: hsl(var(--h) 100% 74%); cursor: pointer; flex: none; }
+
+  .empty { padding: 56px 12px; text-align: center; color: #50506a; font-size: 14px; line-height: 1.8; }
+  .empty b { color: #7d7d9c; font-weight: 600; }
+
+  /* activity */
+  .tools { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .tools input[type=text] { flex: 1; min-width: 180px; height: 38px; }
+  .chk { display: flex; align-items: center; gap: 7px; color: var(--mut); font-size: 12.5px; cursor: pointer; user-select: none; }
+  .arow { border-radius: 12px; transition: background .12s; }
+  .arow:hover { background: rgba(255,255,255,.04); }
+  .arow .line { display: flex; align-items: center; gap: 12px; padding: 8px 12px; cursor: pointer; min-height: 38px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #55d6a0; flex: none; box-shadow: 0 0 8px #55d6a099; }
+  .dot.bad { background: #ff6b78; box-shadow: 0 0 8px #ff6b7899; }
+  .atime { color: var(--dim); font-size: 11.5px; width: 62px; flex: none; font-variant-numeric: tabular-nums; }
+  .atool { font: 600 12.5px var(--mono); color: #e6e6f8; flex: none; width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .atool.fl { color: #9fe8cf; }
+  .aargs { color: #8585a8; font: 12px var(--mono); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ams { color: var(--dim); font-size: 11px; flex: none; width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
+  .adet { margin: 0 12px 12px 42px; padding: 12px 14px; border-radius: 11px; background: rgba(0,0,0,.25); border: 1px solid var(--line);
+    font: 12px/1.55 var(--mono); color: #b8b8d4; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+  .adet b { color: var(--dim); font: 700 10.5px var(--font); letter-spacing: 1.2px; text-transform: uppercase; display: block; margin: 8px 0 3px; }
+  .adet b:first-child { margin-top: 0; }
+  .masked { color: #ffcf7a; font-size: 10.5px; border: 1px solid rgba(255,207,122,.4); padding: 1px 6px; border-radius: 6px; flex: none; }
+
+  /* editor */
+  .ed { margin-bottom: 26px; padding: 20px; border-radius: 18px; background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.035));
+    border: 1px solid hsl(var(--h) 100% 74% / .3); box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+  .ed h3 { font-size: 16px; margin: 0 0 16px; color: #fff; display: flex; align-items: center; gap: 10px; }
+  .ed .f { margin-bottom: 14px; }
+  .ed .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .ed .pre { display: flex; align-items: center; gap: 0; }
+  .ed .pre span { padding: 9px 4px 9px 12px; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.1); border-right: 0;
+    border-radius: 10px 0 0 10px; font: 13px var(--mono); color: var(--ac); }
+  .ed .pre input { border-radius: 0 10px 10px 0; font-family: var(--mono); }
+  .sec { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: var(--dim); margin: 20px 0 10px;
+    display: flex; align-items: center; gap: 12px; }
+  .sec::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .prow { display: grid; grid-template-columns: 1.1fr .8fr .5fr 1fr 1.6fr 30px; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .prow.hd { color: var(--dim); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+  .step { padding: 12px; border-radius: 13px; background: rgba(0,0,0,.2); border: 1px solid var(--line); margin-bottom: 10px; }
+  .step .top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .step .n { width: 24px; height: 24px; border-radius: 8px; background: hsl(var(--h) 100% 74% / .16); color: #d4d4ff; font: 700 12px var(--font);
+    display: grid; place-items: center; flex: none; }
+  .step select { width: 230px; font-family: var(--mono); font-size: 12px; }
+  .step .note { flex: 1; min-width: 0; }
+  .step .sub { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+  .step .sub label { margin-bottom: 3px; }
+  .ib { width: 30px; height: 30px; border-radius: 9px; border: 1px solid transparent; background: transparent; color: var(--mut); cursor: pointer; font-size: 13px; flex: none; }
+  .ib:hover { background: var(--glass-hi); color: #fff; }
+  .ib.dng:hover { background: rgba(232,17,35,.2); color: #ffb4b9; }
+  .edfoot { display: flex; gap: 10px; align-items: center; margin-top: 20px; flex-wrap: wrap; }
+  .err { color: #ff9aa5; font-size: 13px; line-height: 1.5; white-space: pre-wrap; flex: 1 1 100%; }
+  .hint { color: var(--dim); font-size: 12px; line-height: 1.6; margin-top: 6px; }
+  .hint code { font-size: 11px; }
+  .foot { margin-top: 48px; text-align: center; color: #50506a; font-size: 12.5px; line-height: 1.8; }
+  @media (max-width: 760px) {
+    .prow { grid-template-columns: 1fr 1fr; } .prow.hd { display: none; }
+    .atool { width: 120px; } .step .sub, .ed .two { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <div class="logo">Flows</div>
+      <span class="spacer"></span>
+      <button class="btn2 pri" id="newFlow">+ New flow</button>
+    </div>
+    <p class="lede">A flow is a recorded sequence of browser steps that your AI agent can repeat with different arguments &mdash;
+      it appears to agents as a tool named <code>flow_&lt;name&gt;</code>. Agents <b>propose</b> flows; nothing becomes callable until you approve it.
+      You can edit every step by hand.</p>
+    <div id="notice"></div>
+    <div class="tabs" id="tabs">
+      <button class="tab" data-t="flows">Flows <span class="badge zero" id="bFlows">0</span></button>
+      <button class="tab" data-t="pending">Pending approval <span class="badge zero" id="bPend">0</span></button>
+      <button class="tab" data-t="activity">Activity</button>
+    </div>
+    <div id="editor"></div>
+    <div id="body"></div>
+    <div class="foot">Internal page &middot; <a href="#" id="back">&larr; Back to new tab</a></div>
+  </div>
+<script>
+(function () {
+  'use strict';
+  var S = window.__brainFlowsData || {};
+  S.flows = S.flows || []; S.pending = S.pending || []; S.activity = S.activity || []; S.tools = S.tools || [];
+  var ui = { tab: 'flows', q: '', onlyActions: true, sel: {}, open: {}, detail: {}, run: null, armed: {}, ed: null };
+  if (S.pending.length && !S.flows.length) ui.tab = 'pending';
+
+  function send(cmd) { try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { } }
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function hm(ms) { return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+  function ago(sec) {
+    if (!sec) return '';
+    var d = Math.round((Date.now() / 1000 - sec) / 60);
+    if (d < 1) return 'just now'; if (d < 60) return d + ' min ago';
+    if (d < 1440) return Math.round(d / 60) + ' h ago'; return Math.round(d / 1440) + ' d ago';
+  }
+  var READ_ONLY = /^browser_(state|snapshot|text|markdown|html|find|describe|screenshot|console_log|network_requests|tabs|cookies|activity|list_flows|save_flow|run_flow)$/;
+
+  // ------------------------------------------------------------ rendering
+  function render() {
+    $('bFlows').textContent = S.flows.length; $('bFlows').classList.toggle('zero', !S.flows.length);
+    $('bPend').textContent = S.pending.length; $('bPend').classList.toggle('zero', !S.pending.length);
+    [].forEach.call(document.querySelectorAll('.tab'), function (b) { b.classList.toggle('on', b.getAttribute('data-t') === ui.tab); });
+    renderNotice();
+    renderEditor();
+    var body = $('body');
+    if (ui.ed) { body.style.display = 'none'; return; }
+    body.style.display = '';
+    if (ui.tab === 'flows') body.innerHTML = flowsHtml(S.flows, false);
+    else if (ui.tab === 'pending') body.innerHTML = flowsHtml(S.pending, true);
+    else body.innerHTML = activityHtml();
+  }
+
+  function renderNotice() {
+    var n = S.notice, box = $('notice');
+    if (!n || !n.text || (Date.now() - (n.t || 0)) > 180000 || ui.noticeGone === n.t) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="notice' + (n.ok ? '' : ' bad') + '"><span>' + esc(n.text) + '</span><span class="x" data-a="dismiss">&#10005;</span></div>';
+  }
+
+  function paramChips(def) {
+    if (!def.parameters || !def.parameters.length) return '<span class="meta">no arguments</span>';
+    return def.parameters.map(function (p) {
+      return '<span class="chip' + (p.required !== false && p['default'] == null ? ' req' : '') + '" title="' + esc(p.description || '') + '">' +
+        esc(p.name) + ': ' + esc(p.type || 'string') + '</span>';
+    }).join('');
+  }
+
+  function flowsHtml(list, pending) {
+    if (!list.length) {
+      return pending
+        ? '<div class="empty"><b>No proposals waiting.</b><br>When an agent finishes a task and calls <code>browser_save_flow</code>,<br>its proposed flow shows up here for your review.</div>'
+        : '<div class="empty"><b>No flows yet.</b><br>Ask your agent to &ldquo;save what you just did as a flow&rdquo;, or select calls in the <b>Activity</b> tab<br>and turn them into one yourself.</div>';
+    }
+    var h = '<div class="grid">';
+    list.forEach(function (f) {
+      var key = pending ? f.id : f.name;
+      h += '<div class="fcard" data-k="' + esc(key) + '">' +
+        '<div class="fhead"><span class="fname"><i>flow_</i>' + esc(f.name) + '</span>' +
+        '<span class="tag">' + (f.steps ? f.steps.length : 0) + ' steps</span>' +
+        (f.source ? '<span class="tag">' + esc(f.source) + '</span>' : '') +
+        '<span class="meta">' + esc(ago(f.created)) + '</span></div>' +
+        '<div class="fdesc">' + esc(f.description || 'No description.') + '</div>' +
+        '<div class="chips">' + paramChips(f) + '</div><div class="acts">';
+      if (pending) {
+        h += '<button class="btn2 pri" data-a="approve">Approve</button>' +
+             '<button class="btn2" data-a="review">Review &amp; edit</button>' +
+             '<button class="btn2 dng' + (ui.armed['rj' + key] ? ' armed' : '') + '" data-a="reject">' + (ui.armed['rj' + key] ? 'Click again to reject' : 'Reject') + '</button>';
+      } else {
+        h += '<button class="btn2 pri" data-a="run">Run</button>' +
+             '<button class="btn2" data-a="edit">Edit</button>' +
+             '<button class="btn2" data-a="copy">Copy JSON</button>' +
+             '<button class="btn2 dng' + (ui.armed['dl' + key] ? ' armed' : '') + '" data-a="delete">' + (ui.armed['dl' + key] ? 'Click again to delete' : 'Delete') + '</button>';
+      }
+      h += '</div>';
+      if (!pending && ui.run === key) h += runBox(f);
+      h += '</div>';
+    });
+    return h + '</div>';
+  }
+
+  function runBox(f) {
+    var h = '<div class="runbox" data-run="' + esc(f.name) + '">';
+    if (f.parameters && f.parameters.length) {
+      f.parameters.forEach(function (p) {
+        var ph = p['default'] != null ? 'default: ' + p['default'] : (p.required === false ? 'optional' : 'required');
+        var secret = /^secret_/.test(p.name);
+        h += '<div class="row"><label>' + esc(p.name) + (p.description ? ' &mdash; ' + esc(p.description) : '') + '</label>' +
+          '<input type="' + (secret ? 'password' : 'text') + '" data-p="' + esc(p.name) + '" data-ty="' + esc(p.type || 'string') + '" placeholder="' + esc(ph) + '" autocomplete="off" spellcheck="false"></div>';
+      });
+    } else {
+      h += '<div class="hint" style="margin:0 0 10px">This flow takes no arguments.</div>';
+    }
+    h += '<div class="acts"><button class="btn2 pri" data-a="dorun">Run now</button><button class="btn2" data-a="cancelrun">Cancel</button>' +
+         '<span class="meta">Opens a new tab and replays the steps there.</span></div></div>';
+    return h;
+  }
+
+  function activityHtml() {
+    var q = ui.q.trim().toLowerCase();
+    var rows = S.activity.slice().reverse().filter(function (e) {
+      if (ui.onlyActions && READ_ONLY.test(e.tool)) return false;
+      if (!q) return true;
+      return (e.tool + ' ' + (e.a || '') + ' ' + (e.url || '')).toLowerCase().indexOf(q) >= 0;
+    });
+    var nsel = Object.keys(ui.sel).filter(function (k) { return ui.sel[k]; }).length;
+    var h = '<div class="tools"><input type="text" id="aq" placeholder="Filter calls" value="' + esc(ui.q) + '" autocomplete="off" spellcheck="false">' +
+      '<label class="chk"><input type="checkbox" id="aact"' + (ui.onlyActions ? ' checked' : '') + '> actions only</label>' +
+      '<button class="btn2 pri" data-a="mkflow"' + (nsel ? '' : ' disabled') + '>Make flow from selected' + (nsel ? ' (' + nsel + ')' : '') + '</button>' +
+      '<button class="btn2" data-a="selall">Select all shown</button>' +
+      '<button class="btn2 dng' + (ui.armed.clr ? ' armed' : '') + '" data-a="clear">' + (ui.armed.clr ? 'Click again to clear' : 'Clear log') + '</button></div>';
+    if (!rows.length) {
+      return h + '<div class="empty">' + (S.activity.length ? '<b>No matches.</b>' : '<b>No calls recorded yet.</b><br>Every tool call an agent makes in this browser is logged here.') + '</div>';
+    }
+    rows.forEach(function (e) {
+      var open = ui.open[e.id];
+      h += '<div class="arow" data-id="' + esc(e.id) + '"><div class="line">' +
+        '<input type="checkbox" data-a="pick"' + (ui.sel[e.id] ? ' checked' : '') + '>' +
+        '<span class="dot' + (e.ok ? '' : ' bad') + '"></span>' +
+        '<span class="atime">' + esc(hm(e.t)) + '</span>' +
+        '<span class="atool' + (e.flow ? ' fl' : '') + '" title="' + esc(e.tool) + '">' + esc(e.tool) + '</span>' +
+        '<span class="aargs" title="' + esc(e.a || '') + '">' + esc(e.a || '') + '</span>' +
+        (e.masked ? '<span class="masked">secret hidden</span>' : '') +
+        '<span class="ams">' + (e.ms || 0) + ' ms</span></div>';
+      if (open) {
+        var d = ui.detail[e.id];
+        h += '<div class="adet">' + (d ? detailHtml(d) : esc('Loading…')) + '</div>';
+      }
+      h += '</div>';
+    });
+    return h;
+  }
+
+  function detailHtml(d) {
+    var h = '<b>Arguments</b>' + esc(JSON.stringify(d.args || {}, null, 2));
+    if (d.loc) h += '<b>Stable locators (used when replayed)</b>' + esc([d.loc.sel].concat(d.loc.alts || []).filter(Boolean).join('\n')) +
+      (d.loc.role || d.loc.name ? '\n' + esc((d.loc.role || d.loc.tag || '') + (d.loc.name ? ': ' + d.loc.name : '')) : '');
+    h += '<b>Page</b>' + esc(d.url || '');
+    h += '<b>Result</b>' + esc(d.res || '');
+    return h;
+  }
+
+  // ------------------------------------------------------------ editor
+  function newStep() { return { tool: 'browser_click', argsText: '{\n  "element": ""\n}', altsText: '', note: '', optional: false }; }
+
+  function openEditor(mode, def, extra) {
+    var d = clone(def || { name: '', description: '', parameters: [], steps: [newStep()] });
+    d.parameters = (d.parameters || []).map(function (p) {
+      return { name: p.name || '', type: p.type || 'string', required: p.required !== false, def: p['default'] == null ? '' : String(p['default']), description: p.description || '' };
+    });
+    d.steps = (d.steps || []).map(function (s) {
+      if (s.argsText !== undefined) return s;
+      return { tool: s.tool, argsText: JSON.stringify(s.args || {}, null, 2), altsText: (s.alts || []).join('\n'), note: s.note || '', optional: !!s.optional };
+    });
+    ui.ed = { mode: mode, old: mode === 'edit' ? d.name : null, id: d.id || null, d: d, raw: false, rawText: '', err: '', busy: false, src: d.source || null, extra: extra || null };
+    window.scrollTo(0, 0);
+    render();
+  }
+
+  // Editor model -> plain flow definition. Throws Error with a readable message.
+  function collect() {
+    var ed = ui.ed, d = ed.d;
+    if (ed.raw) {
+      var parsed;
+      try { parsed = JSON.parse(ed.rawText); } catch (e) { throw new Error('The JSON is not valid: ' + e.message); }
+      return parsed;
+    }
+    var out = { name: d.name.trim(), description: d.description.trim(), parameters: [], steps: [] };
+    if (d.returns && d.returns.trim()) out.returns = d.returns.trim();
+    if (ed.src) out.source = ed.src;
+    d.parameters.forEach(function (p, i) {
+      if (!p.name.trim()) return;
+      var o = { name: p.name.trim(), type: p.type, required: !!p.required };
+      if (p.description.trim()) o.description = p.description.trim();
+      if (p.def !== '') {
+        if (p.type === 'number') { var n = Number(p.def); if (isNaN(n)) throw new Error('Parameter ' + p.name + ': default must be a number.'); o['default'] = n; }
+        else if (p.type === 'boolean') o['default'] = /^(true|1|yes)$/i.test(p.def);
+        else o['default'] = p.def;
+      }
+      out.parameters.push(o);
+    });
+    d.steps.forEach(function (s, i) {
+      var args;
+      try { args = s.argsText.trim() ? JSON.parse(s.argsText) : {}; } catch (e) { throw new Error('Step ' + (i + 1) + ': arguments are not valid JSON (' + e.message + ').'); }
+      if (args === null || typeof args !== 'object' || Array.isArray(args)) throw new Error('Step ' + (i + 1) + ': arguments must be a JSON object like {"element": "..."}.');
+      var o = { tool: s.tool, args: args };
+      var alts = s.altsText.split('\n').map(function (x) { return x.trim(); }).filter(Boolean);
+      if (alts.length) o.alts = alts;
+      if (s.note.trim()) o.note = s.note.trim();
+      if (s.optional) o.optional = true;
+      out.steps.push(o);
+    });
+    return out;
+  }
+
+  function renderEditor() {
+    var box = $('editor'), ed = ui.ed;
+    if (!ed) { box.innerHTML = ''; return; }
+    // Keep focus/caret when re-rendering during typing is avoided by only re-rendering on structural changes.
+    var d = ed.d, h = '<div class="ed"><h3>' + (ed.mode === 'edit' ? 'Edit flow' : ed.mode === 'pending' ? 'Review proposal' : ed.mode === 'draft' ? 'New flow from activity' : 'New flow') +
+      '<span class="spacer"></span><button class="btn2" data-a="togglejson">' + (ed.raw ? 'Back to form' : 'Edit as JSON') + '</button></h3>';
+    if (ed.mode === 'pending') h += '<div class="hint" style="margin:-6px 0 14px">Proposed by an agent. Check every step &mdash; once approved, agents can run it without asking.</div>';
+    if (ed.raw) {
+      h += '<textarea id="rawjson" rows="22" spellcheck="false" style="min-height:360px">' + esc(ed.rawText) + '</textarea>' +
+           '<div class="hint">Whole flow as JSON. Strings may contain <code>{{param}}</code> placeholders; each must match a declared parameter.</div>';
+    } else {
+      h += '<div class="two"><div class="f"><label>Name</label><div class="pre"><span>flow_</span><input data-f="name" value="' + esc(d.name) + '" placeholder="submit_expense" spellcheck="false" autocomplete="off"></div></div>' +
+           '<div class="f"><label>Returns (optional CSS selector)</label><input data-f="returns" value="' + esc(d.returns || '') + '" placeholder="e.g. .confirmation-message" spellcheck="false" autocomplete="off"></div></div>' +
+           '<div class="f"><label>Description &mdash; tells agents when to use it</label><textarea data-f="description" rows="2" style="font-family:var(--font);font-size:13px">' + esc(d.description) + '</textarea></div>';
+      h += '<div class="sec">Arguments</div><div class="prow hd"><span>Name</span><span>Type</span><span>Required</span><span>Default</span><span>Description</span><span></span></div>';
+      d.parameters.forEach(function (p, i) {
+        h += '<div class="prow" data-pi="' + i + '"><input data-pf="name" value="' + esc(p.name) + '" placeholder="amount" spellcheck="false" autocomplete="off">' +
+          '<select data-pf="type">' + ['string', 'number', 'boolean'].map(function (t) { return '<option' + (p.type === t ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>' +
+          '<label class="chk" style="margin:0"><input type="checkbox" data-pf="required"' + (p.required ? ' checked' : '') + '> yes</label>' +
+          '<input data-pf="def" value="' + esc(p.def) + '" placeholder="none" autocomplete="off">' +
+          '<input data-pf="description" value="' + esc(p.description) + '" placeholder="what it means" autocomplete="off">' +
+          '<button class="ib dng" data-a="delparam" title="Remove">&#10005;</button></div>';
+      });
+      h += '<button class="btn2" data-a="addparam">+ Add argument</button><div class="hint">Use an argument in any step as <code>{{name}}</code>, e.g. <code>"text": "{{query}}"</code>.</div>';
+      h += '<div class="sec">Steps</div>';
+      d.steps.forEach(function (s, i) {
+        h += '<div class="step" data-si="' + i + '"><div class="top"><span class="n">' + (i + 1) + '</span>' +
+          '<select data-sf="tool">' + toolOptions(s.tool) + '</select>' +
+          '<input class="note" data-sf="note" value="' + esc(s.note) + '" placeholder="note (optional)" autocomplete="off">' +
+          '<label class="chk" title="If this step fails, continue anyway"><input type="checkbox" data-sf="optional"' + (s.optional ? ' checked' : '') + '> optional</label>' +
+          '<button class="ib" data-a="up" title="Move up"' + (i === 0 ? ' disabled' : '') + '>&uarr;</button>' +
+          '<button class="ib" data-a="down" title="Move down"' + (i === d.steps.length - 1 ? ' disabled' : '') + '>&darr;</button>' +
+          '<button class="ib dng" data-a="delstep" title="Remove step">&#10005;</button></div>' +
+          '<textarea data-sf="argsText" rows="' + Math.min(8, Math.max(2, s.argsText.split('\n').length)) + '" spellcheck="false">' + esc(s.argsText) + '</textarea>' +
+          '<div class="sub"><div><label>Fallback locators (one per line)</label><textarea data-sf="altsText" rows="2" spellcheck="false" placeholder="role:button:Submit">' + esc(s.altsText) + '</textarea></div>' +
+          '<div class="hint" style="margin:18px 0 0">The step uses <code>args.element</code> first, then these in order &mdash; the first one found on the page wins. Locators look like <code>css:#id</code>, <code>role:button:Save</code>, <code>text:Next</code>.</div></div></div>';
+      });
+      h += '<button class="btn2" data-a="addstep">+ Add step</button>';
+    }
+    h += '<div class="edfoot">' + (ed.err ? '<div class="err">' + esc(ed.err) + '</div>' : '') +
+      (ed.mode === 'pending'
+        ? '<button class="btn2 pri" data-a="edapprove"' + (ed.busy ? ' disabled' : '') + '>Approve &amp; activate</button>'
+        : '<button class="btn2 pri" data-a="edsave"' + (ed.busy ? ' disabled' : '') + '>Save flow</button>') +
+      '<button class="btn2" data-a="edcancel">Cancel</button></div></div>';
+    box.innerHTML = h;
+  }
+
+  function toolOptions(cur) {
+    var list = S.tools.slice();
+    if (cur && list.indexOf(cur) < 0) list.unshift(cur);
+    return list.map(function (t) { return '<option' + (t === cur ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('');
+  }
+
+  // ------------------------------------------------------------ events
+  function findFlow(key, pending) {
+    var list = pending ? S.pending : S.flows;
+    for (var i = 0; i < list.length; i++) if ((pending ? list[i].id : list[i].name) === key) return list[i];
+    return null;
+  }
+
+  function disarmLater(k) { setTimeout(function () { if (ui.armed[k]) { delete ui.armed[k]; render(); } }, 3500); }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (t.id === 'back') { e.preventDefault(); send('navigate:about:newtab'); return; }
+    var tabBtn = t.closest && t.closest('.tab');
+    if (tabBtn) { ui.tab = tabBtn.getAttribute('data-t'); ui.ed = null; render(); return; }
+    if (t.id === 'newFlow') { ui.tab = 'flows'; openEditor('new', null); return; }
+    var el = t.closest ? t.closest('[data-a]') : null;
+    if (!el) {
+      var line = t.closest && t.closest('.arow .line');
+      if (line) { toggleRow(line.parentNode.getAttribute('data-id')); }
+      return;
+    }
+    var a = el.getAttribute('data-a');
+    var card = el.closest('.fcard'), key = card ? card.getAttribute('data-k') : null;
+    switch (a) {
+      case 'dismiss': ui.noticeGone = S.notice && S.notice.t; render(); break;
+      case 'run': ui.run = ui.run === key ? null : key; render(); break;
+      case 'cancelrun': ui.run = null; render(); break;
+      case 'dorun': doRun(card); break;
+      case 'edit': openEditor('edit', findFlow(key, false)); break;
+      case 'review': openEditor('pending', findFlow(key, true)); break;
+      case 'copy': copyJson(findFlow(key, false), el); break;
+      case 'delete':
+        if (ui.armed['dl' + key]) { delete ui.armed['dl' + key]; send('flowdel:' + key); S.flows = S.flows.filter(function (f) { return f.name !== key; }); }
+        else { ui.armed['dl' + key] = 1; disarmLater('dl' + key); }
+        render(); break;
+      case 'approve': send('flowapprove:' + JSON.stringify({ id: key })); break;
+      case 'reject':
+        if (ui.armed['rj' + key]) { delete ui.armed['rj' + key]; send('flowreject:' + key); S.pending = S.pending.filter(function (f) { return f.id !== key; }); }
+        else { ui.armed['rj' + key] = 1; disarmLater('rj' + key); }
+        render(); break;
+      case 'pick': {
+        var id = el.closest('.arow').getAttribute('data-id'); ui.sel[id] = el.checked; e.stopPropagation(); render(); break; }
+      case 'selall':
+        [].forEach.call(document.querySelectorAll('.arow'), function (r) { ui.sel[r.getAttribute('data-id')] = true; }); render(); break;
+      case 'mkflow': {
+        var ids = Object.keys(ui.sel).filter(function (k) { return ui.sel[k]; });
+        // keep chronological order
+        var order = {}; S.activity.forEach(function (x, i) { order[x.id] = i; });
+        ids.sort(function (x, y) { return (order[x] || 0) - (order[y] || 0); });
+        send('flowdraft:' + JSON.stringify({ ids: ids, name: 'new_flow', description: '' })); break; }
+      case 'clear':
+        if (ui.armed.clr) { delete ui.armed.clr; send('actclear'); S.activity = []; ui.sel = {}; ui.open = {}; }
+        else { ui.armed.clr = 1; disarmLater('clr'); }
+        render(); break;
+      // editor
+      case 'togglejson': toggleRaw(); break;
+      case 'addparam': syncEditor(); ui.ed.d.parameters.push({ name: '', type: 'string', required: true, def: '', description: '' }); render(); break;
+      case 'delparam': syncEditor(); ui.ed.d.parameters.splice(+el.closest('[data-pi]').getAttribute('data-pi'), 1); render(); break;
+      case 'addstep': syncEditor(); ui.ed.d.steps.push(newStep()); render(); break;
+      case 'delstep': syncEditor(); ui.ed.d.steps.splice(+el.closest('[data-si]').getAttribute('data-si'), 1); render(); break;
+      case 'up': case 'down': {
+        syncEditor();
+        var i = +el.closest('[data-si]').getAttribute('data-si'), j = a === 'up' ? i - 1 : i + 1, st = ui.ed.d.steps;
+        if (j >= 0 && j < st.length) { var tmp = st[i]; st[i] = st[j]; st[j] = tmp; }
+        render(); break; }
+      case 'edcancel': ui.ed = null; render(); break;
+      case 'edsave': submit(false); break;
+      case 'edapprove': submit(true); break;
+    }
+  });
+
+  function toggleRow(id) {
+    ui.open[id] = !ui.open[id];
+    if (ui.open[id] && !ui.detail[id]) send('actget:' + id);
+    render();
+  }
+
+  function doRun(card) {
+    var name = card.querySelector('.runbox').getAttribute('data-run'), args = {}, bad = '';
+    [].forEach.call(card.querySelectorAll('input[data-p]'), function (inp) {
+      var v = inp.value, ty = inp.getAttribute('data-ty'), n = inp.getAttribute('data-p');
+      if (v === '') return;
+      if (ty === 'number') { if (isNaN(Number(v))) bad = n + ' must be a number'; args[n] = Number(v); }
+      else if (ty === 'boolean') args[n] = /^(true|1|yes)$/i.test(v);
+      else args[n] = v;
+    });
+    if (bad) { S.notice = { ok: false, text: bad, t: Date.now() }; render(); return; }
+    ui.run = null;
+    send('flowrun:' + JSON.stringify({ name: name, args: args }));
+    S.notice = { ok: true, text: 'Running flow_' + name + ' … a new tab opens and the steps replay there.', t: Date.now() };
+    render();
+  }
+
+  function copyJson(f, btn) {
+    var txt = JSON.stringify(f, null, 2);
+    try { navigator.clipboard.writeText(txt); } catch (e) { }
+    btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy JSON'; }, 1500);
+  }
+
+  // Pull current field values into the editor model (before any structural change).
+  function syncEditor() {
+    var ed = ui.ed; if (!ed || ed.raw) return;
+    var d = ed.d;
+    [].forEach.call(document.querySelectorAll('#editor [data-f]'), function (i) { d[i.getAttribute('data-f')] = i.value; });
+    [].forEach.call(document.querySelectorAll('#editor [data-pi]'), function (row) {
+      var p = d.parameters[+row.getAttribute('data-pi')]; if (!p) return;
+      [].forEach.call(row.querySelectorAll('[data-pf]'), function (i) {
+        var k = i.getAttribute('data-pf'); p[k] = i.type === 'checkbox' ? i.checked : i.value;
+      });
+    });
+    [].forEach.call(document.querySelectorAll('#editor [data-si]'), function (row) {
+      var s = d.steps[+row.getAttribute('data-si')]; if (!s) return;
+      [].forEach.call(row.querySelectorAll('[data-sf]'), function (i) {
+        var k = i.getAttribute('data-sf'); s[k] = i.type === 'checkbox' ? i.checked : i.value;
+      });
+    });
+  }
+
+  function toggleRaw() {
+    var ed = ui.ed;
+    if (!ed.raw) {
+      syncEditor();
+      try { ed.rawText = JSON.stringify(collect(), null, 2); ed.err = ''; }
+      catch (e) { ed.err = e.message; return render(); }
+      ed.raw = true;
+    } else {
+      var ta = $('rawjson'); if (ta) ed.rawText = ta.value;
+      var parsed;
+      try { parsed = JSON.parse(ed.rawText); } catch (e) { ed.err = 'The JSON is not valid: ' + e.message; return render(); }
+      var keepId = ed.id, keepSrc = ed.src;
+      ui.ed = null; openEditor(ed.mode, parsed);
+      ui.ed.old = ed.old; ui.ed.id = keepId; ui.ed.src = keepSrc;
+      return;
+    }
+    render();
+  }
+
+  function submit(approve) {
+    var ed = ui.ed; if (ed.busy) return;
+    if (ed.raw) { var ta = $('rawjson'); if (ta) ed.rawText = ta.value; } else syncEditor();
+    var def;
+    try { def = collect(); } catch (e) { ed.err = e.message; return render(); }
+    if (!def.name) { ed.err = 'Give the flow a name.'; return render(); }
+    ed.err = ''; ed.busy = true; render();
+    if (approve) send('flowapprove:' + JSON.stringify({ id: ed.id, def: def }));
+    else send('flowsave:' + JSON.stringify({ def: def, old: ed.old }));
+  }
+
+  document.addEventListener('input', function (e) {
+    var t = e.target;
+    if (t.id === 'aq') { ui.q = t.value; var pos = t.selectionStart; render(); var n = $('aq'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (x) { } } }
+    else if (t.id === 'rawjson' && ui.ed) ui.ed.rawText = t.value;
+  });
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (t.id === 'aact') { ui.onlyActions = t.checked; render(); }
+    else if (t.closest && t.closest('#editor') && ui.ed && !ui.ed.raw) {
+      syncEditor();
+      if (t.getAttribute('data-sf') === 'tool') render();
+    }
+  });
+  // The browser chrome listens for shortcuts on the document — typing in fields must not trigger them.
+  document.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) e.stopPropagation();
+  }, true);
+
+  // ------------------------------------------------------------ host pushes
+  document.addEventListener('brain-msg', function (e) {
+    var j = e.detail; if (!j) return;
+    if (j.b === 30) {
+      var keepNotice = S.notice;
+      S = j; S.flows = j.flows || []; S.pending = j.pending || []; S.activity = j.activity || []; S.tools = j.tools || [];
+      if (!S.notice && keepNotice && (Date.now() - keepNotice.t) < 5000) S.notice = keepNotice;
+      // Re-rendering while the user types in the editor would eat keystrokes: only refresh lists.
+      if (ui.ed) { renderNotice(); $('bFlows').textContent = S.flows.length; $('bPend').textContent = S.pending.length; return; }
+      var aq = document.activeElement && document.activeElement.id === 'aq';
+      if (!aq) render();
+    } else if (j.b === 31) {
+      S.notice = { ok: !!j.ok, text: j.text, t: j.t || Date.now() };
+      if (ui.ed) {
+        ui.ed.busy = false;
+        if (j.ok) { ui.ed = null; if (ui.tab === 'pending' && !S.pending.length) ui.tab = 'flows'; }
+        else ui.ed.err = j.text;
+      }
+      render();
+    } else if (j.b === 33 && j.draft) {
+      ui.tab = 'flows'; openEditor('draft', j.draft);
+    } else if (j.b === 34 && j.entry) {
+      ui.detail[j.entry.id] = j.entry; if (ui.tab === 'activity' && !ui.ed) render();
+    }
+  });
+
+  send('flowget');
+  render();
+})();
+</script>
+</body>
+</html>
