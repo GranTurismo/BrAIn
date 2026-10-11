@@ -245,6 +245,42 @@ uses less than Chrome does *sitting idle*. Page-load speed is competitive
 (11 wins, 13 losses, mostly within TTFB variance; notable BrAIn wins on
 GitHub −67%, NYT −64%, Cloudflare −43%, Forbes −28%).
 
+<details>
+<summary><b>Per-site load times</b> (ms, loadEventEnd — click to expand)</summary>
+
+| Site | Chrome | BrAIn | Winner |
+|---|---:|---:|---|
+| example.com | **369** | 399 | Chrome +8% |
+| news.ycombinator.com | 1,459 | **1,017** | BrAIn −30% |
+| en.wikipedia.org | **1,120** | 1,346 | Chrome +20% |
+| stackoverflow.com | 928 | **135** | BrAIn −85% |
+| developer.mozilla.org | 937 | **921** | ≈ tie |
+| github.com | 4,469 | **1,452** | BrAIn −67% |
+| bing.com | **1,572** | 1,951 | Chrome +24% |
+| arstechnica.com | **4,804** | —* | Chrome |
+| apple.com | **2,072** | 2,948 | Chrome +42% |
+| cloudflare.com | 3,857 | **2,206** | BrAIn −43% |
+| reddit.com | **3,000** | 3,382 | Chrome +13% |
+| amazon.com | **1,830** | 5,070 | Chrome 2.8× |
+| youtube.com | 1,902 | **1,726** | BrAIn −9% |
+| bbc.com | —* | **5,146** | BrAIn |
+| cnn.com | —* | —* | n/a |
+| nytimes.com | 7,120 | **2,580** | BrAIn −64% |
+| twitch.tv | **2,721** | 2,925 | Chrome +8% |
+| medium.com | **1,836** | 2,969 | Chrome +62% |
+| forbes.com | 11,767 | **8,505** | BrAIn −28% |
+| weather.com | —* | **6,941** | BrAIn |
+| ebay.com | **2,751** | 3,430 | Chrome +25% |
+| imdb.com | **2,046** | 2,667 | Chrome +30% |
+| wordpress.com | 3,583 | **3,268** | BrAIn −9% |
+| office.com | **1,603** | 2,467 | Chrome +54% |
+| x.com | **2,236** | 2,614 | Chrome +17% |
+
+*`*` = load event never fired inside the 30 s budget in that run.*
+*Single samples; sub-~200 ms deltas are within noise. Full context in BENCHMARK.md.*
+
+</details>
+
 ## Known limitations
 
 - macOS build is compile-verified only; the WKWebView bridge needs on-device
