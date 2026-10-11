@@ -17,6 +17,15 @@ public static class Program
 
     private static async Task<int> MainAsync(string[] args)
     {
+        // A GUI-subsystem exe gets no console on Windows; when the user asks
+        // for CLI output, reattach to the console they launched us from so
+        // the text actually reaches their terminal. No-op elsewhere — MCP
+        // clients give us pipes, not consoles.
+        if (OperatingSystem.IsWindows() &&
+            (args.Contains("--help") || args.Contains("-h") ||
+             args.Contains("--version") || args.Contains("--verbose")))
+            AttachConsole(-1); // ATTACH_PARENT_PROCESS
+
         if (args.Contains("--help") || args.Contains("-h"))
         {
             Console.Error.WriteLine("""
@@ -144,6 +153,9 @@ public static class Program
 
     [System.Runtime.InteropServices.DllImport("kernel32")]
     private static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [System.Runtime.InteropServices.DllImport("kernel32")]
+    private static extern bool AttachConsole(int dwProcessId);
 
     [System.Runtime.InteropServices.DllImport("kernel32")]
     private static extern uint GetFileType(IntPtr hFile);
