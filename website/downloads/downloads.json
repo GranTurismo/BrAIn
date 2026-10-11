@@ -1,0 +1,22 @@
+{
+  "version": "1.0.1",
+  "released": "2026-10-11",
+  "downloads": [
+    {
+      "os": "mac",
+      "arch": "arm64",
+      "label": "macOS \u00b7 Apple Silicon",
+      "file": "BrAIn-1.0.1-macOS-arm64.dmg",
+      "bytes": 34637222,
+      "sha256": "654376db24fa342fb06a0823828afac60ff528d7d1da57f6f9f23a17373d2ff6"
+    },
+    {
+      "os": "win",
+      "arch": "x64",
+      "label": "Windows 10/11 \u00b7 x64",
+      "file": "BrAIn-Setup-1.0.1-x64.exe",
+      "bytes": 27207172,
+      "sha256": "75fc1bd10c2c465743212ccf5287bc8ed23e23759627b4e84a7bfcf532098117"
+    }
+  ]
+}

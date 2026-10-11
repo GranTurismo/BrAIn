@@ -29,8 +29,14 @@ public sealed class BrowserController : IAsyncDisposable
     private bool SplitOn => _splitMode && IsMac && !_noToolbar;
     // macOS split mode gives every tab its own WKWebView (Browser/Mac/WkTabs.cs):
     // switching tabs shows another view instead of reloading one shared page.
-    // Everywhere else (Windows, --no-split, --no-toolbar) tabs still share one view.
-    private bool PerTab => SplitOn;
+    // Windows does the same with WebView2 (Browser/Win/WinTabs.cs): one view per tab, parented to
+    // the main window. BRAIN_PERTAB=0 or a failure creating the views falls back to the old
+    // behaviour where all tabs share one view (also what --no-split / --no-toolbar get).
+    private bool _winTabsWanted;
+    private bool _winTabsFailed;
+    private bool WinPerTab => _winTabsWanted && !_winTabsFailed;
+    private bool PerTab => SplitOn || WinPerTab;
+    private Win.WinTabs? _winTabs;
     private long _nsWindowNumber;
     private BrowserTab? _firstTab;
     private readonly ConcurrentDictionary<Guid, Task<IBrowserDriver>> _viewTasks = new();
@@ -213,7 +219,7 @@ public sealed class BrowserController : IAsyncDisposable
             if (PerTab)
             {
                 // every tab owns its view, so each one just applies its own flag
-                foreach (var t in Tabs.All) t.Driver?.SetPageMuted(t.IsMuted);
+                foreach (var t in Tabs.All) ApplyTabMute(t);
                 return;
             }
             var owner = DocTab;
@@ -242,10 +248,17 @@ public sealed class BrowserController : IAsyncDisposable
         PushChromeStateAll();
     }
 
+    /// <summary>Per-tab mute: macOS drivers mute their WKWebView; on Windows the tab's WebView2 view does.</summary>
+    private void ApplyTabMute(BrowserTab t)
+    {
+        if (t.WinView is Win.WinTabs.View wv) _winTabs?.SetMuted(wv, t.IsMuted);
+        else t.Driver?.SetPageMuted(t.IsMuted);
+    }
+
     private void ToggleTabMute(BrowserTab tab)
     {
         tab.IsMuted = !tab.IsMuted;
-        if (PerTab) tab.Driver?.SetPageMuted(tab.IsMuted);
+        if (PerTab) ApplyTabMute(tab);
         else SyncPageMute();
         PushChromeStateAll();
     }
@@ -298,6 +311,9 @@ public sealed class BrowserController : IAsyncDisposable
             }
         }
         if (Environment.GetEnvironmentVariable("BRAIN_GRANT_PERMISSIONS") is "1" or "true") _grantPermissions = true;
+        _winTabsWanted = IsWindows && !_noToolbar
+            && Environment.GetEnvironmentVariable("BRAIN_PERTAB") != "0"
+            && Environment.GetEnvironmentVariable("BRAIN_NO_CDP") is null;
         _userDataDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "BrAIn",
@@ -525,18 +541,32 @@ public sealed class BrowserController : IAsyncDisposable
             // current state the moment init settles (success or failure) so
             // a page mounted during init isn't left without tabs/history.
             _ = _driverReady.Task.ContinueWith(_ => PushChromeStateAll(), TaskScheduler.Default);
-            Task.Run(() => PerTab ? InitializePerTabAsync() : InitializeMainDriverAsync());
+            Task.Run(() => SplitOn ? InitializePerTabAsync() : WinPerTab ? InitializeWinPerTabAsync() : InitializeMainDriverAsync());
         });
         window.RegisterMaximizedHandler((_, _) =>
         {
             _winMax = true;
+            _winTabs?.RefitAll();
             PushChromeStateAll();
         });
         window.RegisterRestoredHandler((_, _) =>
         {
             _winMax = window.Maximized;
+            _winTabs?.RefitAll();
             PushChromeStateAll();
         });
+        if (IsWindows)
+        {
+            // Per-tab WebView2 views are plain children of this window: keep them sized to it,
+            // tell them when it moves, and hand keyboard focus back to the shown one on activation
+            // (Photino hands it to its own, hidden, bootstrap view first).
+            window.RegisterSizeChangedHandler((_, _) => _winTabs?.RefitAll());
+            window.RegisterLocationChangedHandler((_, _) => _winTabs?.NotifyMoved());
+            window.RegisterFocusInHandler((_, _) =>
+            {
+                if (Tabs.ActiveExact?.WinView is Win.WinTabs.View v) _winTabs?.FocusView(v);
+            });
+        }
         if (IsMac)
         {
             // The webview's autoresizing mask keeps it pinned top-left; if a
@@ -556,6 +586,7 @@ public sealed class BrowserController : IAsyncDisposable
         }
         window.RegisterWindowClosingHandler((_, _) =>
         {
+            try { _winTabs?.CloseAll(); } catch { }
             tab.IsClosed = true;
             Tabs.Remove(tab.Id);
             _rw.RemoveTab(tab.Id); // a closed tab takes its Rewind history with it
@@ -735,12 +766,297 @@ public sealed class BrowserController : IAsyncDisposable
         }
     }
 
+    // ------------------------------------------------------------------
+    // Per-tab views (Windows / WebView2)
+    // ------------------------------------------------------------------
+
+    /// <summary>Every tab stays live by default. BRAIN_MAXLIVE=n opts into a cap: older views are
+    /// then evicted (destroyed, rebuilt + reloaded on demand) — for machines short on RAM.</summary>
+    private int MaxLiveViews =>
+        int.TryParse(Environment.GetEnvironmentVariable("BRAIN_MAXLIVE"), out var n) && n >= 2 ? n : int.MaxValue;
+
+    /// <summary>The browser arguments Photino's native layer builds for its own WebView2
+    /// environment. A second environment on the same user-data folder only joins the same
+    /// browser process if these match exactly, so the composition is replicated verbatim
+    /// (Photino.Windows.cpp, AttachWebView).</summary>
+    private string PhotinoBrowserArgs(string debugParam)
+    {
+        bool B(Func<bool> f, bool dflt) { try { return f(); } catch { return dflt; } }
+        var w = _mainWindow!;
+        return Win.ViewPolicy.ComposePhotinoArgs(DesktopUserAgent,
+            B(() => w.MediaAutoplayEnabled, true), B(() => w.FileSystemAccessEnabled, true),
+            B(() => w.WebSecurityEnabled, true), B(() => w.JavascriptClipboardAccessEnabled, true),
+            B(() => w.MediaStreamEnabled, true), B(() => w.SmoothScrollingEnabled, true),
+            B(() => w.IgnoreCertificateErrorsEnabled, false), debugParam);
+    }
+
+    /// <summary>Windows per-tab startup: create the shared WebView2 environment, connect CDP to
+    /// it, give the first tab a view. Any failure falls back to one shared view for all tabs.</summary>
+    private async Task InitializeWinPerTabAsync()
+    {
+        // Never leave the user staring at an empty window: if per-tab startup stalls, fall back.
+        var work = InitializeWinPerTabCoreAsync();
+        if (await Task.WhenAny(work, Task.Delay(TimeSpan.FromSeconds(25))) == work) return;
+        Log("per-tab WebView2 startup did not finish within 25 s — using one shared view");
+        await FallbackToSharedViewAsync();
+    }
+
+    private async Task InitializeWinPerTabCoreAsync()
+    {
+        try
+        {
+            Log("per-tab startup: creating WebView2 environment");
+            var first = Tabs.All.First(t => t.IsMain);
+            _firstTab = first;
+            var win = _mainWindow ?? throw new InvalidOperationException("No window");
+            var ws = new Win.WinTabs(InvokeOnUi, () => win.WindowHandle, _grantPermissions)
+            {
+                // opt-in: a suspended tab freezes its JS, and every tab is meant to stay live
+                SuspendEnabled = Environment.GetEnvironmentVariable("BRAIN_SUSPEND") == "1",
+                PrewarmEnabled = Environment.GetEnvironmentVariable("BRAIN_PREWARM") != "0",
+                Log = Log,
+                OnMessage = OnPageViewMessage,
+                OnAudible = (id, on) => { if (Tabs.Find(id) is { } t) SetTabAudible(t, on); },
+                OnNewTab = url => _ = NewTabAsync(url, default),
+            };
+            _winTabs = ws;
+
+            var shared = new Win.WinTabs.EnvConfig(
+                Path.Combine(_userDataDir, "webview"),
+                PhotinoBrowserArgs($"--remote-debugging-port={CdpPort!.Value}"),
+                CdpPort!.Value);
+            var privPort = FindFreePort();
+            var fallback = new Win.WinTabs.EnvConfig(
+                Path.Combine(_userDataDir, "webview-tabs"),
+                PhotinoBrowserArgs($"--remote-debugging-port={privPort}"),
+                privPort);
+            await ws.InitializeAsync(shared, fallback);
+            Log("per-tab startup: environment ready (" + (ws.SharedEnvironment ? "shared" : "private") + "), connecting CDP on port " + ws.Port);
+
+            _cdpBrowser = await Cdp.CdpClient.ConnectAsync(ws.Port, CancellationToken.None);
+            Log("per-tab startup: CDP connected, creating first view");
+            await EnsureTabViewAsync(first);
+            ShowTabView(first);
+            _driverTab = first;
+            first.Bound.TrySetResult();
+            _driverReady.TrySetResult();
+            Log("driver ready: per-tab WebView2 views (" + (ws.SharedEnvironment ? "shared browser process" : "private environment") + ")");
+
+            _ = Task.Run(async () =>
+            {
+                try { await NavigateAsync(first.LastUrl, first); Log("per-tab startup: first page loaded"); }
+                catch (Exception ex) { Log("first load failed: " + ex.Message); }
+                // diagnostics for "window stays blank" reports: where the views sit and what the page sees
+                try
+                {
+                    await Task.Delay(2500);
+                    Log("window layout: " + InvokeOnUi(() => Native.Win32.DescribeWindow(win.WindowHandle)));
+                    var d = first.Driver;
+                    if (d is not null)
+                    {
+                        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+                        var r = await d.EvaluateAsync(
+                            "JSON.stringify({w:innerWidth,h:innerHeight,rs:document.readyState,vis:document.visibilityState,chrome:!!window.__brainChrome,len:document.documentElement.outerHTML.length,title:document.title})",
+                            false, cts.Token);
+                        Log("first page: " + JsonToText(r));
+                    }
+                }
+                catch (Exception ex) { Log("diagnostics failed: " + ex.Message); }
+            });
+            _ = Task.Delay(400).ContinueWith(_ =>
+            {
+                GC.Collect(2, GCCollectionMode.Aggressive, blocking: false, compacting: true);
+            }, TaskScheduler.Default);
+        }
+        catch (Exception ex)
+        {
+            Log("per-tab WebView2 views unavailable — all tabs share one view: " + ex);
+            if (!_winTabsFailed) await FallbackToSharedViewAsync();
+        }
+    }
+
+    /// <summary>Per-tab views could not be created: drop what exists and run the original
+    /// single-webview model (the Photino window's own webview) instead.</summary>
+    private async Task FallbackToSharedViewAsync()
+    {
+        if (_winTabsFailed) return; // already falling back (watchdog and the failure path can both arrive)
+        try
+        {
+            _winTabsFailed = true;
+            var ws = _winTabs;
+            _winTabs = null;
+            try { ws?.CloseAll(); } catch { }
+            try { if (_cdpBrowser is not null) await _cdpBrowser.DisposeAsync(); } catch { }
+            _cdpBrowser = null;
+            _viewTasks.Clear();
+            foreach (var t in Tabs.All) { t.Driver = null; t.WinView = null; t.Evicted = false; }
+            var first = Tabs.All.FirstOrDefault(t => t.IsMain) ?? Tabs.All.First();
+            _docTabId = first.Id;
+            InvokeOnUi(() => PrepareLoad(_mainWindow!));
+            await InitializeMainDriverAsync();
+        }
+        catch (Exception ex)
+        {
+            Log("shared-view fallback failed: " + ex);
+            _driverReady.TrySetException(ex);
+        }
+    }
+
+    private async Task<IBrowserDriver> CreateWinTabViewAsync(BrowserTab tab)
+    {
+        try
+        {
+            await _windowCreated.Task;
+            if (!ReferenceEquals(tab, _firstTab)) await _driverReady.Task.WaitAsync(TimeSpan.FromSeconds(25));
+            if (tab.IsClosed) throw new InvalidOperationException("Tab is closed");
+            var ws = _winTabs ?? throw new InvalidOperationException("WebView2 views are not available");
+            var cdp = _cdpBrowser ?? throw new InvalidOperationException("CDP is not connected");
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            // unique per creation: a view rebuilt after eviction must never bind to its dying predecessor's target
+            var marker = "braintab-" + tab.Id.ToString("N")[..8] + Guid.NewGuid().ToString("N")[..8];
+            var view = await ws.CreateViewAsync(tab.Id, tab.IsPrivate, _zoom, marker);
+            tab.BindMarker = view.Marker; // a prewarmed view already carries its own marker
+            var viewMs = sw.ElapsedMilliseconds;
+            if (tab.IsClosed) { ws.Destroy(view); throw new InvalidOperationException("Tab is closed"); }
+            tab.WinView = view;
+            var driver = new Cdp.CdpDriver(cdp, tab, this);
+            tab.Driver = driver;
+            WireDriverEvents(tab, driver);
+            try { await driver.InitializeAsync(this, CancellationToken.None); }
+            catch
+            {
+                tab.Driver = null;
+                tab.WinView = null;
+                try { await driver.DisposeAsync(); } catch { }
+                ws.Destroy(view);
+                throw;
+            }
+            tab.Bound.TrySetResult();
+            ApplyTabMute(tab);
+            Log($"tab {tab.Id.ToString("N")[..8]} view ready in {sw.ElapsedMilliseconds} ms (webview {viewMs} ms{(view.FromSpare ? ", prewarmed" : "")}, cdp {sw.ElapsedMilliseconds - viewMs} ms)");
+            // keep one blank view ready for the next new tab, once things have settled
+            _ = Task.Delay(1500).ContinueWith(_ => { try { ws.PrewarmSpare(_zoom); } catch { } }, TaskScheduler.Default);
+            return driver;
+        }
+        catch
+        {
+            _viewTasks.TryRemove(tab.Id, out _);
+            throw;
+        }
+    }
+
+    private readonly ConcurrentDictionary<Guid, Task> _restoreTasks = new();
+
+    /// <summary>An evicted tab got its view back (empty); load its page again and restore scroll.</summary>
+    private Task RestoreIfNeededAsync(BrowserTab tab)
+    {
+        if (!tab.Evicted) return Task.CompletedTask;
+        return _restoreTasks.GetOrAdd(tab.Id, _ => RestoreEvictedAsync(tab));
+    }
+
+    private async Task RestoreEvictedAsync(BrowserTab tab)
+    {
+        try
+        {
+            await EnsureTabViewAsync(tab);
+            if (tab.IsClosed) return;
+            tab.Evicted = false;
+            var url = tab.LastUrl;
+            if (MessageTrust.IsInternalUrl(url)) await LoadInternalPageAsync(tab, url);
+            else if (!url.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
+            {
+                await NavigatePerTabAsync(tab, url, default);
+                if (tab.ScrollX is { } sx && tab.Driver is { } d)
+                {
+                    try
+                    {
+                        await Task.Delay(220);
+                        await d.EvaluateAsync($"window.scrollTo({sx},{tab.ScrollY ?? 0})", false, default);
+                    }
+                    catch { }
+                }
+            }
+            PushChromeStateAll();
+        }
+        catch (Exception ex) { Log("restoring evicted tab failed: " + ex.Message); }
+        finally { _restoreTasks.TryRemove(tab.Id, out _); }
+    }
+
+    /// <summary>A view that gets hidden never receives "mouse left": whatever the cursor was over in its
+    /// in-page toolbar (usually the tab pill that was just clicked) would keep its hover/pressed look until
+    /// the next mouse move over it. Move the pointer outside the page so the page clears that state.</summary>
+    private async Task ClearHoverAsync(BrowserTab prev)
+    {
+        try
+        {
+            if (prev.IsClosed || prev.Driver is not { } d) return;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await d.MouseMoveAsync(-40, -40, cts.Token);
+        }
+        catch { /* page busy or gone — purely cosmetic */ }
+    }
+
+    private int _evictBusy;
+
+    /// <summary>Keeps at most <see cref="MaxLiveViews"/> live views: the least recently shown
+    /// ones go first. The shown tab, audible tabs, private tabs (their session can't be
+    /// restored) and tabs mid-load are never evicted.</summary>
+    private async Task EvictExcessViewsAsync()
+    {
+        if (!WinPerTab || Interlocked.Exchange(ref _evictBusy, 1) == 1) return;
+        try
+        {
+            foreach (var t in Win.ViewPolicy.PickEvictionVictims(Tabs.All, Tabs.ActiveExact?.Id, MaxLiveViews))
+                await EvictViewAsync(t);
+        }
+        catch (Exception ex) { Log("view eviction failed: " + ex.Message); }
+        finally { Volatile.Write(ref _evictBusy, 0); }
+    }
+
+    private async Task EvictViewAsync(BrowserTab tab)
+    {
+        if (tab.WinView is not Win.WinTabs.View wv || tab.IsClosed) return;
+        // URL, title and (live-reported) scroll position stay on the tab; the page itself goes.
+        tab.Evicted = true;
+        var drv = tab.Driver;
+        tab.Driver = null;
+        tab.WinView = null;
+        tab.Loading = false;
+        tab.IsAudible = false;
+        _viewTasks.TryRemove(tab.Id, out _);
+        try { if (drv is not null) await drv.DisposeAsync(); } catch { }
+        try { _winTabs?.Destroy(wv); } catch { }
+        Log($"evicted tab {tab.Id.ToString("N")[..8]} ({tab.LastUrl}) to cap live views at {MaxLiveViews} (BRAIN_MAXLIVE)");
+        PushChromeStateAll();
+    }
+
+    /// <summary>Pushes one message to a tab's page view (macOS WKWebView or Windows WebView2).</summary>
+    private void PushToView(BrowserTab tab, string json)
+    {
+        if (tab.WinView is Win.WinTabs.View wv) { _winTabs?.Push(wv, json); return; }
+        var view = tab.NativeView;
+        if (view != IntPtr.Zero && Mac.WkTabs.Has(view)) Mac.WkTabs.Push(view, json);
+    }
+
+    private async Task LoadHtmlWinAsync(BrowserTab tab, string html)
+    {
+        if (tab.WinView is not Win.WinTabs.View wv || _winTabs is null)
+            throw new InvalidOperationException("Tab view is not available");
+        await _winTabs.NavigateToStringAsync(wv, html);
+        // NavigateToString documents never produce a stop-loading event: settle the spinner here.
+        tab.Loading = false;
+        try { await EnsurePageHelpersAsync(tab); } catch { }
+        if (Tabs.Active?.Id == tab.Id) SetLoadBar(tab, false);
+        PushChromeStateAll();
+    }
+
     /// <summary>Gives a tab its own web view and driver (idempotent; concurrent
     /// callers share one creation).</summary>
     private Task<IBrowserDriver> EnsureTabViewAsync(BrowserTab tab)
     {
-        if (tab.Driver is { } existing && tab.NativeView != IntPtr.Zero) return Task.FromResult(existing);
-        return _viewTasks.GetOrAdd(tab.Id, _ => CreateTabViewAsync(tab));
+        if (tab.Driver is { } existing && tab.HasView) return Task.FromResult(existing);
+        return _viewTasks.GetOrAdd(tab.Id, _ => WinPerTab ? CreateWinTabViewAsync(tab) : CreateTabViewAsync(tab));
     }
 
     private async Task<IBrowserDriver> CreateTabViewAsync(BrowserTab tab)
@@ -772,13 +1088,19 @@ public sealed class BrowserController : IAsyncDisposable
     /// sitting in the view being hidden (so a focused address bar stays focused).</summary>
     private void ShowTabView(BrowserTab tab)
     {
-        if (!PerTab || tab.NativeView == IntPtr.Zero) return;
-        var view = tab.NativeView;
-        InvokeOnUi(() =>
+        if (!PerTab || !tab.HasView) return;
+        tab.LastActiveUtc = DateTime.UtcNow;
+        if (tab.WinView is Win.WinTabs.View wv)
+            _winTabs?.Show(wv);
+        else
         {
-            var nsWin = Mac.MacWindow.WindowByNumber(_nsWindowNumber);
-            Mac.WkTabs.Show(nsWin, view);
-        });
+            var view = tab.NativeView;
+            InvokeOnUi(() =>
+            {
+                var nsWin = Mac.MacWindow.WindowByNumber(_nsWindowNumber);
+                Mac.WkTabs.Show(nsWin, view);
+            });
+        }
         // the toolbar must repaint for the newly shown page (dedupe would skip it)
         _lastPushedStateJson = null;
     }
@@ -788,10 +1110,14 @@ public sealed class BrowserController : IAsyncDisposable
         tab.IsClosed = true;
         var drv = tab.Driver;
         var view = tab.NativeView;
+        var winView = tab.WinView;
         tab.Driver = null;
         tab.NativeView = IntPtr.Zero;
+        tab.WinView = null;
         _viewTasks.TryRemove(tab.Id, out _);
         try { if (drv is not null) await drv.DisposeAsync(); } catch { }
+        if (winView is Win.WinTabs.View wv)
+            try { _winTabs?.Destroy(wv); } catch { }
         if (view != IntPtr.Zero)
             try { InvokeOnUi(() => Mac.WkTabs.Destroy(view)); } catch { }
     }
@@ -845,6 +1171,8 @@ public sealed class BrowserController : IAsyncDisposable
             {
                 // each tab tracks its own load; only the shown tab drives the spinner / bar
                 tab.Loading = true;
+                // a document is being created (link click, back/forward, redirect): refresh its boot payload
+                if (WinPerTab) _ = driver.SetBootStateAsync(BuildChromeStateJson(null, "inj"), CancellationToken.None);
                 if (Tabs.Active?.Id == tab.Id)
                 {
                     PushChromeStateAll();
@@ -994,6 +1322,8 @@ public sealed class BrowserController : IAsyncDisposable
         if (SiteKey(url) != SiteKey(tab.LastUrl)) tab.LastTitle = null;
         SetTabUrl(tab, url);
         PushChromeStateAll();
+        // Bake chrome state into the next document so the toolbar paints final state on first paint.
+        if (WinPerTab) try { await driver.SetBootStateAsync(BuildChromeStateJson(ConsumeFresh(), "inj"), ct); } catch { }
         var result = await driver.NavigateAsync(url, ct);
         if (!tab.IsClosed && result.Ok && result.Url.Length > 0 && result.Url != "about:blank")
             SetTabUrl(tab, result.Url);
@@ -1032,7 +1362,7 @@ public sealed class BrowserController : IAsyncDisposable
 
     private async Task<NavigateResult> LoadInternalPagePerTabAsync(BrowserTab tab, string url)
     {
-        var driver = (Drivers.WebKitDriver)await EnsureTabViewAsync(tab);
+        var driver = await EnsureTabViewAsync(tab);
         var (page, title) = url switch
         {
             "about:help" => (Assets.HelpHtml, "How to use"),
@@ -1046,7 +1376,8 @@ public sealed class BrowserController : IAsyncDisposable
         SetTabUrl(tab, url);
         tab.LastTitle = title;
         PushChromeStateAll();
-        await driver.LoadHtmlAsync(InjectBootState(page), default);
+        if (driver is Drivers.WebKitDriver wk) await wk.LoadHtmlAsync(InjectBootState(page), default);
+        else await LoadHtmlWinAsync(tab, InjectBootState(page));
         return NavigateResult.Success(url, tab.LastTitle);
     }
 
@@ -1200,6 +1531,7 @@ public sealed class BrowserController : IAsyncDisposable
             SetWindowTitleFor(tab);
             await NavigateAsync(url ?? "newtab", tab, ct);
             if (url is not null) ConsumeFresh(); // only internal pages carry it in their boot state
+            if (WinPerTab) _ = EvictExcessViewsAsync();
         }
         catch
         {
@@ -1227,12 +1559,25 @@ public sealed class BrowserController : IAsyncDisposable
         {
             if (Tabs.ActiveExact?.Id != tab.Id)
             {
+                var prev = Tabs.ActiveExact;
+                var swSw = System.Diagnostics.Stopwatch.StartNew();
                 Tabs.Activate(tab.Id);
                 await EnsureTabViewAsync(tab);
+                var ensureMs = swSw.ElapsedMilliseconds;
+                // Windows: let the target page's own toolbar take the new state while it is still hidden,
+                // so the reveal shows a finished toolbar instead of a stale one that then re-renders
+                if (WinPerTab) { _lastPushedStateJson = null; PushChromeStateAll(); }
                 ShowTabView(tab);
+                if (WinPerTab) Log($"switch to {tab.Id.ToString("N")[..8]}: ensure {ensureMs} ms, show {swSw.ElapsedMilliseconds - ensureMs} ms");
                 SetWindowTitleFor(tab);
                 _ = RefreshNavStateAsync(tab);
                 _ = RaiseWindowAsync(tab, ct);
+                if (WinPerTab)
+                {
+                    if (prev is not null) _ = ClearHoverAsync(prev);
+                    _ = RestoreIfNeededAsync(tab); // evicted tab: the view is up (empty), load its page now
+                    _ = EvictExcessViewsAsync();
+                }
             }
             PushChromeStateAll();
             return true;
@@ -1442,6 +1787,7 @@ public sealed class BrowserController : IAsyncDisposable
     {
         if (PerTab)
         {
+            if (tab.WinView is Win.WinTabs.View wv) { _winTabs?.SetZoom(wv, percent); return; }
             var v = tab.NativeView;
             if (v != IntPtr.Zero) tab.Window.Invoke(() => { if (Mac.WkTabs.Has(v)) Mac.WkTabs.SetZoom(v, percent); });
             return;
@@ -1468,7 +1814,8 @@ public sealed class BrowserController : IAsyncDisposable
         {
             InvokeOnUi(() =>
             {
-                if (PerTab) Mac.WkTabs.SetZoomAll(pct);
+                if (SplitOn) Mac.WkTabs.SetZoomAll(pct);
+                else if (WinPerTab) _winTabs?.SetZoomAll(pct);
                 else if (_mainWindow is not null) _mainWindow.Zoom = pct;
             });
         }
@@ -1547,9 +1894,8 @@ public sealed class BrowserController : IAsyncDisposable
         if (PerTab)
         {
             // the tab's own page view, plus the toolbar view when it cares about this push
-            var view = tab.NativeView;
-            if (view != IntPtr.Zero && Mac.WkTabs.Has(view)) Mac.WkTabs.Push(view, json);
-            if (Mac.WkBar.Exists && !PageOnlyPush(json))
+            PushToView(tab, json);
+            if (SplitOn && Mac.WkBar.Exists && !PageOnlyPush(json))
                 try { Mac.WkBar.Eval("window.__brainBarPush&&window.__brainBarPush(" + json + ")"); } catch { }
             return;
         }
@@ -1776,7 +2122,7 @@ public sealed class BrowserController : IAsyncDisposable
                             {
                                 // a hidden tab's page just mounted: bring only that page up to date
                                 var sj = BuildChromeStateJson(null);
-                                try { InvokeOnUi(() => { var v = tab.NativeView; if (v != IntPtr.Zero && Mac.WkTabs.Has(v)) Mac.WkTabs.Push(v, sj); }); } catch { }
+                                try { InvokeOnUi(() => PushToView(tab, sj)); } catch { }
                             }
                             else PushChromeStateAll();
                             // A login submit navigated away before its prompt could
@@ -1844,7 +2190,9 @@ public sealed class BrowserController : IAsyncDisposable
                             try { InvokeOnUi(() => Native.Win32.BeginNcDrag(_mainWindow?.WindowHandle ?? IntPtr.Zero, ht)); } catch { }
                             break;
                         case "bm": ToggleBookmark(active); break;
-                        case "scroll": if (!PerTab) RecordScroll(DocTab ?? active, arg); break; // per-tab views keep their own scroll
+                        // macOS per-tab views keep their own scroll; shared views and Windows views (which can be
+                        // evicted and reloaded) need it recorded
+                        case "scroll": if (!SplitOn) RecordScroll(PerTab ? tab : (DocTab ?? active), arg); break;
                         // DevTools panel feed + REPL
                         // Downloads
                         case "dllist": PushDownloads(); break;
@@ -1992,7 +2340,7 @@ public sealed class BrowserController : IAsyncDisposable
             aud = t.IsAudible && (PerTab || t.Id == _docTabId),
             // owns the live document — lets chrome.js predict whether a
             // switch is instant (doc/overlay) or a navigation
-            doc = PerTab || t.Id == _docTabId, // per-tab views are all "live": switching never reloads
+            doc = PerTab ? !t.Evicted : t.Id == _docTabId, // live per-tab views: switching never reloads
         }).ToList();
         object[] hist;
         lock (_history)
@@ -2026,7 +2374,7 @@ public sealed class BrowserController : IAsyncDisposable
             mtl = IsMac && !_noToolbar,
             // mute/audio handled natively by the engine; otherwise chrome.js
             // enforces and detects it inside the page
-            nat = IsMac,
+            nat = IsMac || WinPerTab,
             w = _winMax ? 1 : 0,
             dt = _dtOpen ? _dtTab : "",
             privActive = Tabs.Active?.IsPrivate == true,
@@ -3589,6 +3937,10 @@ public sealed class BrowserController : IAsyncDisposable
         catch (Exception ex) { Log("page check failed: " + ex.Message); }
     }
 
+    /// <summary>Every tab owns a live view (macOS split mode, Windows WebView2) — switching never reloads.</summary>
+    public bool PerTabViews => PerTab;
+    /// <summary>Windows per-tab views are capped (see <see cref="MaxLiveViews"/>) and evicted when over.</summary>
+    public bool ViewEvictionActive => WinPerTab && MaxLiveViews != int.MaxValue;
     public bool IsLoading => PerTab ? Tabs.Active?.Loading == true : _loadDepth > 0;
     public (bool CanBack, bool CanFwd) NavState =>
         PerTab ? (Tabs.Active?.CanBack == true, Tabs.Active?.CanFwd == true) : (_canBack, _canFwd);
@@ -3604,7 +3956,15 @@ public sealed class BrowserController : IAsyncDisposable
             // Every tab has its own view; operating on a background tab does not switch to it.
             if (tab.IsClosed) throw new InvalidOperationException("Tab is closed");
             await _driverReady.Task.WaitAsync(TimeSpan.FromSeconds(25), ct);
-            return tab.Driver ?? await EnsureTabViewAsync(tab);
+            var pd = tab.Driver ?? await EnsureTabViewAsync(tab);
+            if (WinPerTab)
+            {
+                tab.LastActiveUtc = DateTime.UtcNow; // in use by an agent: not an eviction candidate
+                // an evicted tab comes back (reloaded) and a suspended one wakes up before it is driven
+                await RestoreIfNeededAsync(tab);
+                if (tab.WinView is Win.WinTabs.View wv) _winTabs?.EnsureResumed(wv);
+            }
+            return tab.Driver ?? pd;
         }
         if (tab.Driver is null)
         {
@@ -3709,7 +4069,34 @@ public sealed class BrowserController : IAsyncDisposable
         while (q.Count > LogCap && q.TryDequeue(out _)) { }
     }
 
-    internal static void Log(string msg) => Console.Error.WriteLine($"[BrAIn] {msg}");
+    private static readonly object _logLock = new();
+    private static StreamWriter? _logFile;
+
+    /// <summary>stderr (stdout carries MCP) and, on Windows — where the GUI-subsystem exe has no console —
+    /// a log file next to the other app data (%LOCALAPPDATA%\BrAIn\brain.log, reset when it passes 2 MB).</summary>
+    internal static void Log(string msg)
+    {
+        var line = $"[BrAIn] {msg}";
+        try { Console.Error.WriteLine(line); } catch { }
+        if (!IsWindows && Environment.GetEnvironmentVariable("BRAIN_LOG") is null) return;
+        try
+        {
+            lock (_logLock)
+            {
+                if (_logFile is null)
+                {
+                    var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BrAIn");
+                    Directory.CreateDirectory(dir);
+                    var path = Path.Combine(dir, "brain.log");
+                    if (File.Exists(path) && new FileInfo(path).Length > 2_000_000) File.Delete(path);
+                    _logFile = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
+                    _logFile.WriteLine($"---- {DateTime.Now:yyyy-MM-dd HH:mm:ss} pid {Environment.ProcessId} ----");
+                }
+                _logFile.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {msg}");
+            }
+        }
+        catch { /* logging must never throw */ }
+    }
 
     public async ValueTask DisposeAsync()
     {

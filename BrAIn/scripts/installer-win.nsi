@@ -6,7 +6,9 @@
 ;   makensis scripts/installer-win.nsi
 
 !define APPNAME   "BrAIn"
-!define VERSION   "1.0.0"
+!ifndef VERSION
+  !define VERSION "1.0.0"
+!endif
 !define PUBLISHER "BrAIn"
 !define EXE       "BrAIn.exe"
 !define REG_UNINST "Software\Microsoft\Windows\CurrentVersion\Uninstall\BrAIn"
@@ -60,6 +62,7 @@ Section "Install"
 
   CreateDirectory "$SMPROGRAMS\${APPNAME}"
   CreateShortcut  "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"     "$INSTDIR\${EXE}" "" "$INSTDIR\${EXE}" 0
+  CreateShortcut  "$SMPROGRAMS\${APPNAME}\${APPNAME} tab self-test.lnk" "$INSTDIR\${EXE}" "--selftest-tabs" "$INSTDIR\${EXE}" 0
   CreateShortcut  "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk" "$INSTDIR\Uninstall.exe"
   CreateShortcut  "$DESKTOP\${APPNAME}.lnk"                   "$INSTDIR\${EXE}" "" "$INSTDIR\${EXE}" 0
 

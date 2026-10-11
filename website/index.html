@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BrAIn — the browser your AI can actually use</title>
+<meta name="description" content="A desktop browser with an MCP server built in — Rewind page time-travel, a one-keystroke agent kill switch, dev-grade tooling. macOS &amp; Windows.">
+<meta name="theme-color" content="#07070d">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="author" content="BrAIn">
+<link rel="canonical" href="https://brain.gtgroup.dev/">
+<meta property="og:title" content="BrAIn — the browser your AI can actually use">
+<meta property="og:description" content="A real browser with an MCP server inside. Rewind pages, keep every tab live, and stay in control of the agent.">
+<meta property="og:image" content="https://brain.gtgroup.dev/assets/og.png">
+<meta property="og:image:width" content="2400">
+<meta property="og:image:height" content="1260">
+<meta property="og:image:alt" content="BrAIn — a desktop browser with a built-in AI agent, Rewind page time-travel and a human kill switch.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://brain.gtgroup.dev/">
+<meta property="og:site_name" content="BrAIn">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="BrAIn — the browser your AI can actually use">
+<meta name="twitter:description" content="A real browser with an MCP server inside. Rewind pages, keep every tab live, and stay in control of the agent.">
+<meta name="twitter:image" content="https://brain.gtgroup.dev/assets/og.png">
+<meta name="twitter:image:alt" content="BrAIn — a desktop browser with a built-in AI agent, Rewind page time-travel and a human kill switch.">
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="stylesheet" href="assets/style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "BrAIn",
+  "description": "A real desktop browser with an MCP server built into the same process — every page inspectable, every action verifiable, every moment rewindable. Features Rewind page time-travel, in-window DevTools, a password vault, remappable shortcuts and a one-keystroke agent kill switch.",
+  "applicationCategory": "BrowserApplication",
+  "operatingSystem": "macOS, Windows",
+  "softwareVersion": "1.0.1",
+  "url": "https://brain.gtgroup.dev/",
+  "downloadUrl": [
+    "https://brain.gtgroup.dev/downloads/BrAIn-1.0.1-macOS-arm64.dmg",
+    "https://brain.gtgroup.dev/downloads/BrAIn-Setup-1.0.1-x64.exe"
+  ],
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "featureList": "Embedded MCP server, Rewind page time-travel, per-tab live views, agent pause/kill switch, in-window DevTools, password vault, remappable shortcuts, Chrome import",
+  "screenshot": "https://brain.gtgroup.dev/assets/og.png",
+  "sameAs": "https://github.com/GranTurismo/BrAIn"
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "How is BrAIn different from Playwright MCP or an MCP browser extension?", "acceptedAnswer": { "@type": "Answer", "text": "Those drive a browser from the outside — a debug connection, a throwaway profile or an extension sandbox. BrAIn is the MCP server: your real profile and sessions, no setup, and the agent can use things that exist only inside the browser (Rewind, the activity log, flows, the pause switch, the listener registry)." } },
+    { "@type": "Question", "name": "What about CAPTCHAs and logins?", "acceptedAnswer": { "@type": "Answer", "text": "BrAIn doesn't try to defeat them. browser_ask_human brings the tab to the front, shows you a card, waits while you do the step, then the agent carries on. Passwords are never typed by the agent — the vault needs your OS authentication." } },
+    { "@type": "Question", "name": "Is Rewind recording everything I do?", "acceptedAnswer": { "@type": "Answer", "text": "No. It is off by default and asks before it starts. When on, it keeps compressed DOM snapshots in memory only (never on disk), skips private tabs, login pages and sites you exclude, drops a tab's history when the tab closes, and enforces age and size budgets." } },
+    { "@type": "Question", "name": "Does BrAIn send data anywhere?", "acceptedAnswer": { "@type": "Answer", "text": "There is no telemetry, analytics or update-check code in the app. It talks to the sites you visit and to your MCP client over stdio." } },
+    { "@type": "Question", "name": "Why is the RAM so low on macOS — and will Windows match it?", "acceptedAnswer": { "@type": "Answer", "text": "On macOS each tab is a WKWebView; WebKit shares a process pool and throttles background pages hard. Windows uses WebView2, which is Chromium: expect Chromium-class memory per live tab." } },
+    { "@type": "Question", "name": "Why does my OS warn me about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The builds are not code-signed yet. Verify the SHA-256 on this page, then: on macOS right-click the app → Open; on Windows choose More info → Run anyway in SmartScreen." } },
+    { "@type": "Question", "name": "Can I use it as my daily browser?", "acceptedAnswer": { "@type": "Answer", "text": "It has the daily-driver basics — tabs, bookmarks, history, autocomplete, downloads, private tabs, password vault, import, PiP, find, zoom, print, session restore. It does not have an extension store or sync." } }
+  ]
+}
+</script>
+</head>
+<body>
+<div id="loader" aria-hidden="true"><img src="assets/favicon.png" alt="" width="46" height="46"><span>BrAIn</span></div>
+<div class="progress" id="progress"></div>
+<div class="fallback-bg"></div>
+<canvas id="aurora" aria-hidden="true"></canvas>
+<div class="noise"></div>
+
+<!-- ============ NAV ============ -->
+<nav class="top" id="nav">
+  <a class="logo" href="#top"><img src="assets/favicon.png" alt="" width="30" height="30">BrAIn</a>
+  <div class="links" id="links">
+    <a href="#features">Features</a>
+    <a href="#rewind">Rewind</a>
+    <a href="#agent">Agent</a>
+    <a href="#speed">Benchmarks</a>
+    <a href="#connect">Connect</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/GranTurismo/BrAIn" rel="noopener">GitHub</a>
+  </div>
+  <button class="burger" id="burger" aria-label="Menu" aria-expanded="false">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 5h12M3 9h12M3 13h12"/></svg>
+  </button>
+  <a class="btn primary sm" href="#download" data-dl-cta>Download</a>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero" id="top">
+  <div class="wrap cols">
+    <div>
+      <span class="chip rv"><i></i><span>v<span data-version>1.0.1</span> · macOS &amp; Windows</span></span>
+      <h1 class="rv" style="--d:.05s">The browser your AI can actually <span class="grad rot" id="rot">use</span><span class="rot"><span class="cursor"></span></span></h1>
+      <p class="lead rv" style="--d:.12s">BrAIn is a real desktop browser with an <b style="color:var(--ink)">MCP server built into the same process</b>. Your agent sees the real DOM, acts on the real page — and you can rewind it, pause it and audit every step.</p>
+      <p class="triplet rv" style="--d:.16s">Every page <a href="#features">inspectable</a><span>·</span>every action <a href="#agent">verifiable</a><span>·</span>every moment <a href="#rewind">rewindable</a></p>
+      <div class="cta rv" style="--d:.2s">
+        <a class="btn primary" href="#download" id="heroDl">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>
+          <span id="heroDlLabel">Download BrAIn</span>
+        </a>
+        <a class="btn" href="#rewind">See Rewind in action</a>
+      </div>
+      <div class="meta rv" style="--d:.28s">
+        <span class="chip"><i></i>40+ MCP tools</span>
+        <span class="chip"><i></i>WebKit · WebView2</span>
+        <span class="chip"><i></i>No telemetry</span>
+        <span class="chip"><i></i>Source on GitHub</span>
+      </div>
+    </div>
+
+    <div class="hero-win rv" style="--d:.15s">
+      <div class="float card float" style="top:-26px;left:-34px;--d:0s"><b>browser_click</b> role:button:Buy</div>
+      <div class="float card" style="bottom:70px;right:-30px;animation-delay:-3s">Rewind <b style="color:var(--warn)">● 12 snapshots</b></div>
+      <div class="win tilt" id="heroWin">
+        <div class="bar">
+          <div class="lights"><i></i><i></i><i></i></div>
+          <div class="tabs"><span class="tab on"><span class="dot"></span>Checkout</span><span class="tab"><span class="dot"></span>Docs</span><span class="tab"><span class="dot"></span>New tab</span></div>
+          <div class="omni"><b>shop.example</b>/checkout</div>
+          <div class="tools"><i></i><i class="ag" id="hAgent"></i><i></i></div>
+        </div>
+        <div class="page" id="heroPage">
+          <span class="frozen">Frozen · <span id="hAgo">2 min ago</span></span>
+          <div class="shop">
+            <div class="img"></div>
+            <div>
+              <h4>USB-C Cable — 2 m</h4>
+              <p>Braided, 240 W, e-marked.</p>
+              <div class="price" id="hPrice">$19.00<small>incl. tax</small></div>
+              <div class="stock" id="hStock">● In stock — 14 left</div>
+              <button class="buy" id="hBuy" tabindex="-1">Buy now</button>
+            </div>
+          </div>
+          <div class="cursor-ai" id="hCursor"><svg viewBox="0 0 24 24"><path d="M4 2l15 9-6.5 1.6L9 19z" fill="#6fe0c6" stroke="#06241d" stroke-width="1.4" stroke-linejoin="round"/></svg><span class="tag" id="hTag">agent · navigate</span></div>
+        </div>
+        <div class="rw">
+          <span class="lbl" id="hLbl">Live</span>
+          <div class="track" id="hTrack" role="slider" aria-label="Rewind scrubber" aria-valuemin="0" aria-valuemax="100" tabindex="0">
+            <div class="rail"></div><div class="fill" id="hFill"></div><div class="ticks" id="hTicks"></div><div class="thumb" id="hThumb"></div>
+          </div>
+          <button class="live" id="hLive" tabindex="-1">LIVE</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="scroll-hint" aria-hidden="true"><span>scroll</span><i></i></div>
+</header>
+
+<!-- ============ MARQUEE ============ -->
+<div class="marquee" aria-label="Some of the MCP tools BrAIn exposes">
+  <div class="row" id="mq1"></div>
+  <div class="row" id="mq2"></div>
+</div>
+
+<!-- ============ MANIFESTO ============ -->
+<section class="manifesto">
+  <div class="wrap">
+    <p class="m-line" data-words>Browsers haven’t changed in fifteen years.</p>
+    <p class="m-line dim2" data-words>Tabs, an address bar — and a prayer that your AI agent in another app isn’t hallucinating what it clicked.</p>
+    <p class="m-line grad" data-words>The browser that remembers — and the first one your AI can actually use.</p>
+    <div class="m-points">
+      <div class="rv"><b>The AI isn’t a plugin.</b><span>It shares the process and the DOM — no extensions, no screen-scraping, no relay server to hack.</span></div>
+      <div class="rv" style="--d:.06s"><b>Rewind doesn’t exist anywhere else.</b><span>Other browsers can go Back. Only BrAIn can rewind the page itself.</span></div>
+      <div class="rv" style="--d:.12s"><b>Agents you can verify.</b><span>Every call logged with stable locators, tagged on the Rewind timeline, pausable mid-flight, replayable as approved flows.</span></div>
+      <div class="rv" style="--d:.18s"><b>Dev-first instrumentation.</b><span>The browser sees what the page does from the first byte — every listener, every call site.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ STATS ============ -->
+<section style="padding:80px 0 0">
+  <div class="wrap">
+    <div class="stats">
+      <div class="card stat rv spot"><div class="n grad" data-count="40" data-suffix="+">40+</div><div class="t">MCP tools — navigate, snapshot, click, type, tabs, network, cookies, rewind…</div></div>
+      <div class="card stat rv spot" style="--d:.06s"><div class="n grad" data-count="1">1</div><div class="t">process — the browser <i>is</i> the MCP server. No extension, no relay.</div></div>
+      <div class="card stat rv spot" style="--d:.12s"><div class="n grad" data-count="174" data-suffix=" MB">174 MB</div><div class="t">RAM with 25 live tabs on macOS, vs 14.1 GB in Chrome <a href="#speed">(how we measured)</a></div></div>
+      <div class="card stat rv spot" style="--d:.18s"><div class="n grad" data-count="0">0</div><div class="t">telemetry. The app has no analytics or phone-home code.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FEATURES ============ -->
+<section id="features">
+  <div class="wrap">
+    <div class="head rv"><span class="eyebrow">What's inside</span><h2>A browser first.<br><span class="grad">An agent platform second.</span></h2>
+      <p class="lead">Everything you expect — tabs, bookmarks, history, passwords, import, private mode — plus the pieces that make an AI trustworthy in a browser.</p></div>
+    <div class="bento">
+      <div class="card b-a spot rv">
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M4 7l5 5-5 5M12 18h8"/></svg></div>
+        <h3>An MCP server in the same process</h3>
+        <p>Point Claude, Devin or any MCP client at the binary. Snapshots give the agent an accessibility tree with stable element refs (<code>e5</code>), then it clicks, types and verifies on the real page — same window you're looking at.</p>
+        <div class="mini"><div class="code"><span class="c">// claude_desktop_config.json</span>
+{ <span class="n">"mcpServers"</span>: { <span class="n">"brain"</span>: { <span class="n">"command"</span>: <span class="s">"/Applications/BrAIn.app/Contents/MacOS/BrAIn"</span> } } }</div></div>
+      </div>
+      <div class="card b-b spot rv" style="--d:.05s">
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 109-9 9 9 0 00-6.4 2.6L3 8M3 3v5h5M12 7v5l3 2"/></svg></div>
+        <h3>Rewind</h3>
+        <p>Drag a scrubber and the page goes back in time. In-memory, opt-in, searchable.</p>
+        <div class="mini"><a href="#rewind">Try the live demo →</a></div>
+      </div>
+      <div class="card b-c spot rv">
+        <div class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 9h18M8 5v4"/></svg></div>
+        <h3>25 live tabs, agent-proof</h3>
+        <p>Each tab is its own native view — the agent jumps between pages and nothing reloads: no lost drafts, dead sockets or re-verification. Still <a href="#speed">81× lighter</a> than Chrome doing it.</p>
+      </div>
+      <div class="card b-d spot rv" style="--d:.05s">
+        <div class="icon"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg></div>
+        <h3>A kill switch you hold</h3>
+        <p><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>.</kbd> pauses every action tool. Reads keep working. Risky moments ask for OS auth.</p>
+        <div class="mini"><a href="#agent">Watch it block →</a></div>
+      </div>
+      <div class="card b-e spot rv" style="--d:.1s">
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6M14 4l-4 16"/></svg></div>
+        <h3>DevTools, in the window</h3>
+        <p>Elements, console, network, cookies — and a <b style="color:var(--ink)">complete event-listener registry</b> that sees delegated, anonymous and removed listeners with their call site.</p>
+      </div>
+      <div class="card b-f spot rv">
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M5 12h4l2-6 3 12 2-6h3"/></svg></div>
+        <h3>Flows: the agent's work becomes reusable tools</h3>
+        <p>After a task, the agent proposes a parameterised replay of what it did. Nothing runs until you review every step — then it appears as a real <code>flow_*</code> MCP tool.</p>
+        <div class="mini"><div class="pill-row"><span class="pill">propose</span><span class="pill">review each step</span><span class="pill">approve</span><span class="pill">flow_*</span></div></div>
+      </div>
+      <div class="card b-g spot rv" style="--d:.06s">
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg></div>
+        <h3>An audit trail for every call</h3>
+        <p>Each tool call is logged with arguments, result, duration and <i>stable locators</i> (<code>role:button:Save</code>) because refs like <code>e7</code> change per load. Passwords, card fields and cookie values are masked and never written.</p>
+      </div>
+      <div class="card b-h spot rv">
+        <div class="icon"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 118 0v3"/></svg></div>
+        <h3>Password vault</h3>
+        <p>Encrypted, unlocked with Touch ID or Windows Hello. Generator and autofill built in.</p>
+      </div>
+      <div class="card b-i spot rv" style="--d:.05s">
+        <div class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="3"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/></svg></div>
+        <h3>Remap every shortcut</h3>
+        <p>Click a row, press keys. Conflicts are caught, changes sync instantly. <a href="#keys">Try it →</a></p>
+      </div>
+      <div class="card b-j spot rv" style="--d:.1s">
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg></div>
+        <h3>Bring your stuff</h3>
+        <p>Import bookmarks, history and passwords from Chrome and friends — the wizard pulls them straight from local profiles.</p>
+      </div>
+      <div class="card b-full spot rv" style="--d:.14s">
+        <h3>…and it’s a real browser</h3>
+        <p>Everything the promo doesn’t need to brag about, done properly:</p>
+        <div class="mini"><div class="pill-row"><span class="pill">Tabs — drag, mute, reopen</span><span class="pill">Omnibox autocomplete</span><span class="pill">⌘K command palette</span><span class="pill">Private tabs</span><span class="pill">Bookmarks &amp; history</span><span class="pill">Session restore</span><span class="pill">Find · zoom · print/PDF</span><span class="pill">Downloads decisions log</span><span class="pill">Picture-in-picture</span><span class="pill">Link-hover status</span><span class="pill">Password vault · OS auth</span><span class="pill">Aurora chrome</span></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ REWIND DEMO ============ -->
+<section id="rewind">
+  <div class="wrap split">
+    <div class="txt">
+      <span class="eyebrow rv">Rewind · the signature feature</span>
+      <h2 class="rv">Browsing finally has <span class="grad">an undo</span>.</h2>
+      <p class="lead rv">The tweet that refreshed away. The price that changed mid-checkout. The form that ate itself. Rewind keeps a compressed timeline of what each tab showed — and lets you scrub, search and read it, byte-for-byte.</p>
+      <ul class="rv">
+        <li><span><b>Opt-in, in memory only.</b> Off until you turn it on. Nothing touches disk, nothing leaves the machine.</span></li>
+        <li><span><b>Search the past.</b> “When did this page say ‘sold out’?” — find the snapshot and jump to it.</span></li>
+        <li><span><b>See what the agent did.</b> Agent actions are tagged on the timeline (the mint ticks).</span></li>
+        <li><span><b>Cheap to run.</b> Adaptive capture ≈ ≤2.5% of a core; age, size and count budgets live in the ⚙ menu.</span></li>
+        <li><span><b>Private by default.</b> Private tabs, login pages and excluded sites are never recorded.</span></li>
+      </ul>
+      <p class="note rv">This is a simulation of the interaction, running entirely in your browser. Drag the scrubber, or type a search.</p>
+    </div>
+    <div class="card demo rv" style="--d:.1s">
+      <div class="dh"><span class="dots"><i></i><i></i><i></i></span><span>markets.example — live</span><span class="sp"></span><span id="rwCount">0 snapshots</span></div>
+      <div class="feed" id="rwFeed"><span class="frozen">Frozen · <span id="rwAgo">now</span></span><div id="rwRows"></div></div>
+      <div class="ctrl">
+        <span class="lbl" id="rwLbl" style="font-size:12px;color:var(--mut);min-width:92px;font-variant-numeric:tabular-nums">Live</span>
+        <div class="track" id="rwTrack" role="slider" aria-label="Rewind scrubber" tabindex="0" style="min-width:160px"><div class="rail"></div><div class="fill" id="rwFill"></div><div class="ticks" id="rwTicks"></div><div class="thumb" id="rwThumb"></div></div>
+        <button class="btn sm" id="rwLive">Live</button>
+      </div>
+      <div class="ctrl" style="padding-top:0;border-top:0">
+        <input class="field" id="rwSearch" placeholder="Search snapshots… try “ETH” or “halt”" autocomplete="off" spellcheck="false">
+        <button class="btn sm" id="rwPause">Pause feed</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ AGENT DEMO ============ -->
+<section id="agent">
+  <div class="wrap split rev">
+    <div class="card demo rv">
+      <div class="dh"><span class="dots"><i></i><i></i><i></i></span><span>MCP client ⇄ BrAIn (stdio)</span><span class="sp"></span><span>illustrative session</span></div>
+      <div class="term" id="term" aria-live="polite"></div>
+      <div class="agentbar" id="agentbar">
+        <span class="st"><span class="led"></span><span id="agentSt">Agent running</span></span>
+        <button class="btn sm" id="pauseBtn">Pause agent <kbd>Ctrl+Shift+.</kbd></button>
+        <button class="btn sm" id="replayBtn" title="Replay the session">↻</button>
+      </div>
+    </div>
+    <div class="txt">
+      <span class="eyebrow rv">Agent control</span>
+      <h2 class="rv">Powerful agents.<br><span class="grad">Human veto.</span></h2>
+      <p class="lead rv">Agentic browsing is only useful if you can trust it. BrAIn makes the agent visible, interruptible and auditable — not a black box in another app.</p>
+      <ul class="rv">
+        <li><span><b>One keystroke pauses all action tools.</b> They return <code>BLOCKED</code> and tell the agent to wait; read-only tools keep working.</span></li>
+        <li><span><b>A live Agent indicator</b> pulses while a tool runs, with a count of blocked attempts.</span></li>
+        <li><span><b>Hand-offs for human-only steps.</b> Logins, 2FA and CAPTCHAs: <code>browser_ask_human</code> brings the tab forward and waits for you.</span></li>
+        <li><span><b>Sensitive moments need OS auth</b> — the password vault never opens for an agent on its own.</span></li>
+      </ul>
+      <p class="note rv">Try it: press <b>Pause agent</b> while the session is running.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SHORTCUTS ============ -->
+<section id="keys">
+  <div class="wrap split">
+    <div class="txt">
+      <span class="eyebrow rv">Shortcuts</span>
+      <h2 class="rv">Your keys. <span class="grad">Your browser.</span></h2>
+      <p class="lead rv">Over 50 actions have default bindings that follow each platform's conventions — and every one is remappable from <code>about:shortcuts</code>, with live conflict detection.</p>
+      <ul class="rv">
+        <li><span><b>Click, press, done.</b> Capture mode never fires the shortcut you're recording.</span></li>
+        <li><span><b>Conflicts are explained</b> and you choose whether to steal the key.</span></li>
+        <li><span><b>Unbind with ⌫, reset one or all.</b> Changes persist and sync everywhere.</span></li>
+      </ul>
+    </div>
+    <div class="card demo rv" style="--d:.1s">
+      <div class="dh"><span class="dots"><i></i><i></i><i></i></span><span>about:shortcuts</span><span class="sp"></span>
+        <div class="seg" id="platSeg"><button data-p="mac">macOS</button><button data-p="win">Windows</button></div></div>
+      <div class="keys" id="keyList"></div>
+      <div class="warnline" id="keyWarn"></div>
+      <div class="kbar"><span class="sp" id="keyHint">Click a row, then press the new shortcut. Esc cancels · ⌫ unbinds.</span><button class="btn sm" id="keyResetAll">Reset all</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ BENCHMARK ============ -->
+<section id="speed">
+  <div class="wrap">
+    <div class="head rv"><span class="eyebrow">Benchmarks</span><h2>25 real sites. 25 tabs. <span class="grad">None closed.</span></h2>
+      <p class="lead">Each site opened as a new tab in one window, load time from the page's own <code>loadEventEnd</code>, memory as the browser's whole process tree after every tab.</p></div>
+    <div class="benchgrid">
+      <div class="card bigbars rv" id="bars">
+        <h3>Memory after 25 tabs</h3>
+        <div class="bar-row"><div class="hd"><span>Chrome</span><b data-to="14102">14,102 MB</b></div><div class="bar-bg"><div class="bar-fill chrome" data-w="100"></div></div></div>
+        <div class="bar-row"><div class="hd"><span>BrAIn</span><b data-to="174">174 MB</b></div><div class="bar-bg"><div class="bar-fill brain" data-w="1.23"></div></div></div>
+        <div class="ratio"><b class="grad" data-ratio="81">81×</b>less memory at the end — and BrAIn idles at <b style="display:inline;font-size:inherit;color:var(--ink)">156 MB</b> vs Chrome's <b style="display:inline;font-size:inherit;color:var(--ink)">1,211 MB</b>.</div>
+      </div>
+      <div class="card chartwrap rv" style="--d:.08s" id="chartCard">
+        <div class="legend"><span><i style="background:#a5a5bd"></i>Chrome</span><span><i style="background:linear-gradient(90deg,#8f7cff,#6fe0c6)"></i>BrAIn</span><span style="margin-left:auto">RAM (MB) as each tab opens — hover</span></div>
+        <svg id="chart" viewBox="0 0 700 300" role="img" aria-label="Memory growth over 25 tabs: Chrome grows to 14 GB, BrAIn stays near 170 MB"></svg>
+        <div class="tip" id="tip"></div>
+      </div>
+    </div>
+    <div class="caveat rv"><b>Read this before quoting it.</b> macOS on Apple Silicon, one sample per site, same machine and network, Chrome with a fresh profile and no extensions. BrAIn's number is real process-tree memory but reflects WebKit's shared process pool — it is a different engine, not a smaller Chrome. Load speed is a near tie (<b style="color:var(--ink)">BrAIn faster on 11 sites, Chrome on 13</b>; differences under ~200 ms are noise). <b>Windows has not been benchmarked yet</b> and will use more memory than macOS: WebView2 is Chromium. Full method and raw data in <a href="https://github.com/GranTurismo/BrAIn/blob/main/BENCHMARK.md" rel="noopener">BENCHMARK.md</a>.</div>
+    <details class="card tbl rv">
+      <summary>Per-site load times <span style="font-weight:400;color:var(--mut);font-size:14px;margin-left:auto;margin-right:14px">click a column to sort</span></summary>
+      <div class="scrollx"><table class="t" id="loadTable"><thead><tr><th data-k="site">Site</th><th data-k="c">Chrome (ms)</th><th data-k="b">BrAIn (ms)</th><th data-k="d">Δ</th></tr></thead><tbody></tbody></table></div>
+    </details>
+  </div>
+</section>
+
+<!-- ============ ARCHITECTURE ============ -->
+<section id="how">
+  <div class="wrap">
+    <div class="head rv"><span class="eyebrow">How it works</span><h2>No bridge. No extension. <span class="grad">One process.</span></h2>
+      <p class="lead">Other setups drive a browser from the outside. BrAIn is built the other way round: the browser exposes itself.</p></div>
+    <div class="card arch rv">
+      <svg viewBox="0 0 1000 430" role="img" aria-label="Architecture: MCP client talks over stdio to the BrAIn process, which contains the MCP host, the browser controller, Rewind and the activity log, and drives one native view per tab.">
+        <defs>
+          <linearGradient id="g1" x1="0" x2="1"><stop offset="0" stop-color="#8f7cff"/><stop offset="1" stop-color="#6fe0c6"/></linearGradient>
+        </defs>
+        <rect class="node" x="20" y="150" width="190" height="130" rx="18"/>
+        <text x="115" y="195" text-anchor="middle" font-size="17" font-weight="700">Your AI client</text>
+        <text x="115" y="220" text-anchor="middle" class="sub">Claude · Devin</text>
+        <text x="115" y="240" text-anchor="middle" class="sub">any MCP client</text>
+
+        <path class="flow" d="M210 215 H320" stroke="url(#g1)" stroke-width="3" fill="none"/>
+        <text x="265" y="200" text-anchor="middle" class="sub">stdio</text>
+        <text x="265" y="238" text-anchor="middle" class="sub">JSON-RPC</text>
+
+        <rect class="node hi" x="320" y="30" width="400" height="370" rx="24"/>
+        <text x="520" y="64" text-anchor="middle" font-size="15" font-weight="800" letter-spacing="3" fill="#b9b9ff">BrAIn PROCESS</text>
+        <rect class="node" x="350" y="90" width="160" height="70" rx="14"/><text x="430" y="122" text-anchor="middle" font-weight="650">MCP host</text><text x="430" y="143" text-anchor="middle" class="sub">40+ tools</text>
+        <rect class="node" x="530" y="90" width="160" height="70" rx="14"/><text x="610" y="122" text-anchor="middle" font-weight="650">Controller</text><text x="610" y="143" text-anchor="middle" class="sub">tabs · state · trust</text>
+        <rect class="node mint" x="350" y="185" width="160" height="70" rx="14"/><text x="430" y="217" text-anchor="middle" font-weight="650">Rewind</text><text x="430" y="238" text-anchor="middle" class="sub">in-memory timeline</text>
+        <rect class="node mint" x="530" y="185" width="160" height="70" rx="14"/><text x="610" y="217" text-anchor="middle" font-weight="650">Activity + Flows</text><text x="610" y="238" text-anchor="middle" class="sub">audit · approvals</text>
+        <rect class="node" x="350" y="285" width="340" height="86" rx="14"/><text x="520" y="318" text-anchor="middle" font-weight="650">Driver</text><text x="520" y="340" text-anchor="middle" class="sub">WKWebView (macOS) · WebView2 + CDP (Windows)</text>
+        <path class="flow" d="M430 160 V185 M610 160 V185 M520 255 V285" stroke="#8f7cff" stroke-width="2" fill="none" opacity=".7"/>
+
+        <path class="flow" d="M720 215 H790" stroke="url(#g1)" stroke-width="3" fill="none"/>
+        <rect class="node" x="790" y="60" width="190" height="64" rx="14"/><text x="885" y="98" text-anchor="middle" font-weight="650">Tab 1 · own view</text>
+        <rect class="node" x="790" y="150" width="190" height="64" rx="14"/><text x="885" y="188" text-anchor="middle" font-weight="650">Tab 2 · own view</text>
+        <rect class="node" x="790" y="240" width="190" height="64" rx="14"/><text x="885" y="278" text-anchor="middle" font-weight="650">Tab 3 · own view</text>
+        <rect class="node" x="790" y="330" width="190" height="64" rx="14" stroke-dasharray="5 6"/><text x="885" y="368" text-anchor="middle" font-weight="650" fill="#9393b0">… every tab</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CONNECT ============ -->
+<section id="connect">
+  <div class="wrap split">
+    <div class="txt">
+      <span class="eyebrow rv">Connect your AI</span>
+      <h2 class="rv">Two lines of config.</h2>
+      <p class="lead rv">BrAIn speaks MCP over stdio. Point your client at the executable and it opens a browser window and serves tools until the client disconnects.</p>
+      <ul class="rv">
+        <li><span><b>Typical loop:</b> <code>browser_navigate</code> → <code>browser_snapshot</code> → <code>browser_click</code> / <code>browser_type</code> → <code>browser_state</code> to verify.</span></li>
+        <li><span><b>Elements by ref or intent:</b> <code>e5</code>, <code>css:#id</code>, <code>text:Sign in</code>, <code>role:button:Submit</code>, <code>xpath:…</code></span></li>
+        <li><span><b>Open on a page:</b> add <code>"args": ["https://example.com"]</code>.</span></li>
+      </ul>
+    </div>
+    <div class="rv" style="--d:.1s">
+      <div class="tabsrow" id="cfgTabs"><button data-c="mac" class="on">macOS</button><button data-c="win">Windows</button><button data-c="args">With a start page</button></div>
+      <div class="snip"><button class="copy" id="cfgCopy">Copy</button><div class="code" id="cfgCode"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ DOWNLOAD ============ -->
+<section id="download">
+  <div class="wrap">
+    <div class="head rv" style="text-align:center;max-width:760px;margin-inline:auto"><span class="eyebrow">Download</span><h2>Get <span class="grad">BrAIn</span> <span style="color:var(--mut);font-weight:500;font-size:.5em;vertical-align:middle">v<span data-version>1.0.1</span></span></h2>
+      <p class="lead" style="margin-inline:auto">Free. Installers are hosted right here, with SHA-256 checksums you can verify in your browser before you run anything.</p></div>
+    <div class="dl-grid" id="dlGrid"></div>
+
+    <div class="status card rv">
+      <div><b><span class="k" style="background:var(--good)"></span>macOS · Apple Silicon</b>Tested every release — per-tab views, Rewind, MCP tools and the benchmark ran here.</div>
+      <div><b><span class="k" style="background:var(--warn)"></span>Windows · x64</b>First public build. Per-tab WebView2 views are new — expect rough edges and please report them. Logs: <code>%LOCALAPPDATA%\BrAIn\brain.log</code></div>
+      <div><b><span class="k" style="background:var(--dim)"></span>Not yet</b>Intel Macs, Linux and ARM Windows. Builds are <b style="color:var(--ink)">unsigned</b> for now (see steps above).</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section id="faq">
+  <div class="wrap">
+    <div class="head rv" style="text-align:center"><span class="eyebrow">FAQ</span><h2>Straight answers.</h2></div>
+    <div class="faq rv">
+      <details><summary>How is this different from Playwright MCP or an MCP browser extension?</summary><div class="ans"><p>Those drive a browser from the outside — a debug connection, a throwaway profile or an extension sandbox. BrAIn <i>is</i> the MCP server: your real profile and sessions, no setup, and the agent can use things that exist only inside the browser (Rewind, the activity log, flows, the pause switch, the listener registry).</p><p>The trade-off: BrAIn only automates itself. If your workflow spans other desktop apps, a computer-use agent can still do that — and can control BrAIn too.</p></div></details>
+      <details><summary>What about CAPTCHAs and logins?</summary><div class="ans"><p>BrAIn doesn't try to defeat them. <code>browser_ask_human</code> brings the tab to the front, shows you a card, waits while you do the step, then the agent carries on. Passwords are never typed by the agent from memory — the vault needs your OS authentication.</p></div></details>
+      <details><summary>Is Rewind recording everything I do?</summary><div class="ans"><p>No. It is off by default and asks before it starts. When on, it keeps compressed DOM snapshots in memory only (never on disk), skips private tabs, login pages and sites you exclude, drops a tab's history when the tab closes, and enforces age and size budgets. The agent can only read it if you separately allow that.</p></div></details>
+      <details><summary>Does BrAIn send data anywhere?</summary><div class="ans"><p>There is no telemetry, analytics or update-check code in the app. It talks to the sites you visit and to your MCP client over stdio. Whatever your AI client does with tool results is governed by that client.</p></div></details>
+      <details><summary>Why is the RAM so low on macOS — and will Windows match it?</summary><div class="ans"><p>On macOS each tab is a WKWebView; WebKit shares a process pool and throttles background pages hard. Windows uses WebView2, which is Chromium: expect Chromium-class memory per live tab, though it shares one browser process and our views avoid Chrome's extra helpers. I haven't measured Windows yet, so I won't quote a number.</p></div></details>
+      <details><summary>Why does my OS warn me about the installer?</summary><div class="ans"><p>The builds are not code-signed yet (that needs a paid certificate on each platform). Verify the SHA-256 on this page, then: on macOS right-click the app → Open (or <code>xattr -dr com.apple.quarantine /Applications/BrAIn.app</code>); on Windows choose <b>More info → Run anyway</b> in SmartScreen.</p></div></details>
+      <details><summary>Can I use it as my daily browser?</summary><div class="ans"><p>It has the daily-driver basics — tabs, bookmarks, history, autocomplete, downloads, private tabs, password vault, import, PiP, find, zoom, print, session restore. It does not have an extension store or sync. Try it for a week and tell us what's missing.</p></div></details>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="fc">
+      <div><a class="logo" href="#top"><img src="assets/favicon.png" alt="" width="30" height="30">BrAIn</a><p style="margin:14px 0 0;max-width:340px">The browser that remembers — and the first one your AI can actually use.</p></div>
+      <div style="display:flex;gap:48px;flex-wrap:wrap">
+        <div><b style="color:var(--ink)">Product</b><br><a href="#features">Features</a><br><a href="#rewind">Rewind</a><br><a href="#speed">Benchmarks</a><br><a href="#download">Download</a></div>
+        <div><b style="color:var(--ink)">Project</b><br><a href="https://github.com/GranTurismo/BrAIn" rel="noopener">GitHub</a><br><a href="https://github.com/GranTurismo/BrAIn/issues" rel="noopener">Report an issue</a><br><a href="downloads/SHA256SUMS.txt">SHA256SUMS</a></div>
+      </div>
+    </div>
+    <div class="big" aria-hidden="true">BrAIn</div>
+  </div>
+</footer>
+<div id="toast" role="status"></div>
+<script src="downloads/downloads.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

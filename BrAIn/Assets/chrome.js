@@ -31,6 +31,23 @@
     // ROLE 'page' = the page view (page-level features: DevTools, find, page
     // context menu, password prompts, new-tab overlay). Anything one view
     // can't do itself is relayed through the host (pageui:/barui: verbs).
+    // Trusted Types: pages such as YouTube send `require-trusted-types-for 'script'`, which makes every
+    // string assigned to innerHTML / outerHTML / srcdoc throw. H() routes OUR markup — and only ours —
+    // through a policy of our own. (Pages that also send a `trusted-types` allow-list without this name
+    // refuse the policy; then H() returns the plain string and the bar simply can't mount there.)
+    function H(s) {
+        var p = window.__brainTTP;
+        if (p === undefined) {
+            p = null;
+            try {
+                if (window.trustedTypes && trustedTypes.createPolicy)
+                    p = trustedTypes.createPolicy('brain-chrome', { createHTML: function (x) { return x; } });
+            } catch (e) { }
+            try { window.__brainTTP = p; } catch (e) { }
+        }
+        return p ? p.createHTML(s) : s;
+    }
+
     var ROLE = window.__BRAIN_ROLE === 'bar' ? 'bar' : 'page';
     var SPLIT = ROLE === 'bar' || window.__BRAIN_SPLIT === true;
     var state = { tabs: [], loading: false, canBack: true, canFwd: false, hist: [] };
@@ -534,9 +551,9 @@
         var el = document.createElement('div');
         el.className = 'tab';
         el.setAttribute('data-id', t.id);
-        el.innerHTML = '<span class="dot"></span><span class="t"></span>' +
+        el.innerHTML = H('<span class="dot"></span><span class="t"></span>' +
             '<span class="snd"></span>' +
-            '<span class="x" title="Close tab">' + SVG.close + '</span>';
+            '<span class="x" title="Close tab">' + SVG.close + '</span>');
         el.draggable = true;
         el.addEventListener('click', function (e) {
             var sn = e.target.closest && e.target.closest('.snd');
@@ -588,7 +605,7 @@
             el._snd = sndMode;
             var sn = el.querySelector('.snd');
             sn.className = 'snd' + (sndMode ? ' on' + (sndMode === 'm' ? ' muted' : '') : '');
-            sn.innerHTML = sndMode === 'm' ? SVG.mute : sndMode === 'a' ? SVG.snd : '';
+            sn.innerHTML = H(sndMode === 'm' ? SVG.mute : sndMode === 'a' ? SVG.snd : '');
             sn.title = t.mute ? 'Unmute tab' : 'Mute tab';
         }
         var busy = t.active && state.loading && loadSlow;
@@ -601,20 +618,20 @@
             if (busy) {
                 dot.className = 'dot spin';
                 dot.style.background = '';
-                dot.innerHTML = '';
+                dot.innerHTML = H('');
             } else if (t.priv) {
                 dot.className = 'dot mask';
                 dot.style.background = 'rgba(124,124,255,.16)';
-                dot.innerHTML = SVG.mask;
+                dot.innerHTML = H(SVG.mask);
             } else {
                 dot.className = 'dot';
                 dot.style.background = tabHue(t.id);
                 // Favicon replaces the letter — a transparent icon drawn over
                 // the glyph reads as the two overlapping each other.
-                dot.innerHTML = icon
+                dot.innerHTML = H(icon
                     ? '<img class="fav" src="' + esc(icon) + '" alt="" data-l="' + esc(letter) +
                         '" onerror="this.parentNode.textContent=this.dataset.l">'
-                    : esc(letter);
+                    : esc(letter));
             }
         }
     }
@@ -716,7 +733,7 @@
             html += it === null ? '<div class="msep"></div>' :
                 '<div class="mi" data-c="' + it[0] + '">' + it[1] + '</div>';
         }
-        m.innerHTML = html;
+        m.innerHTML = H(html);
         m.style.display = 'block';
         m.style.left = Math.min(x, window.innerWidth - 190) + 'px';
         m.style.top = Math.min(y, window.innerHeight - 200) + 'px';
@@ -811,7 +828,7 @@
             var stoppable = !!(state.loading && loadSlow);
             if (rel._stop !== stoppable) {
                 rel._stop = stoppable;
-                rel.innerHTML = stoppable ? SVG.stop : SVG.reload;
+                rel.innerHTML = H(stoppable ? SVG.stop : SVG.reload);
                 rel.setAttribute('data-cmd', stoppable ? 'stop' : 'reload');
                 rel.classList.toggle('stopping', stoppable);
                 if (stoppable) setTip(rel, 'Stop loading', 'Esc'); else setTip(rel, 'Reload', 'Ctrl+R');
@@ -837,25 +854,25 @@
         if (state.ov) {
             if (lastAddrUrl === '__ov__') return;
             lastAddrUrl = '__ov__';
-            addr.innerHTML = '<span class="dim">Search or type a URL</span>';
+            addr.innerHTML = H('<span class="dim">Search or type a URL</span>');
             if (lock) { lock.style.opacity = '0'; lock.title = ''; }
             return;
         }
         if (url === 'about:blank') {
             if (lastAddrUrl === 'about:blank') return;
             lastAddrUrl = 'about:blank';
-            addr.innerHTML = '<span class="dim">Search or type a URL</span>';
+            addr.innerHTML = H('<span class="dim">Search or type a URL</span>');
             if (lock) { lock.style.opacity = '0'; lock.title = ''; }
             return;
         }
         if (url === lastAddrUrl) return;
         lastAddrUrl = url;
-        addr.innerHTML = prettyUrl(url);
+        addr.innerHTML = H(prettyUrl(url));
         updateStar(sh);
         if (lock) {
             var https = url.startsWith('https:');
             lock.style.opacity = url.startsWith('http') ? '1' : '.35';
-            lock.innerHTML = https ? SVG.lock : SVG.warn;
+            lock.innerHTML = H(https ? SVG.lock : SVG.warn);
             lock.classList.toggle('bad', url.startsWith('http') && !https);
             lock.title = https ? 'Secure connection' : 'Not secure';
         }
@@ -964,7 +981,7 @@
                 (it.t ? '<span class="dt2">' + esc(it.t) + '</span>' : '') +
                 '<span class="du">' + prettyUrl(it.u) + '</span></div>';
         }
-        box.innerHTML = html;
+        box.innerHTML = H(html);
         // '' would fall back to the stylesheet's display:none — must be
         // an explicit value or the dropdown never becomes visible.
         box.style.display = 'block';
@@ -1042,7 +1059,7 @@
         for (var i = 0; i < items.length; i++)
             html += items[i] === null ? '<div class="msep"></div>' :
                 '<div class="mi' + (items[i][2] ? ' ' + items[i][2] : '') + '" data-c="' + items[i][0] + '">' + items[i][1] + '</div>';
-        m.innerHTML = html;
+        m.innerHTML = H(html);
         m.style.display = 'block';
         // clamp against the menu's real size once rendered
         var mw = m.offsetWidth, mh = m.offsetHeight;
@@ -1093,7 +1110,7 @@
         for (var i = 0; i < items.length; i++)
             html += items[i] === null ? '<div class="msep"></div>' :
                 '<div class="mi' + (items[i][2] ? ' ' + items[i][2] : '') + '" data-c="' + items[i][0] + '">' + items[i][1] + '</div>';
-        m.innerHTML = html;
+        m.innerHTML = H(html);
         m.style.display = 'block';
         var mw = m.offsetWidth, mh = m.offsetHeight;
         m.style.left = Math.min(x, Math.max(0, window.innerWidth - mw - 8)) + 'px';
@@ -1326,7 +1343,7 @@
                 '<span class="h">••••••••</span></div>';
         }
         html += '<div class="mi mft" data-mgr="1"><span class="u">Manage passwords…</span></div>';
-        d.innerHTML = html;
+        d.innerHTML = H(html);
         d.style.minWidth = Math.min(280, Math.max(210, field.getBoundingClientRect().width)) + 'px';
         positionPwDrop(sh);
         d.querySelectorAll('.mi').forEach(function (it) {
@@ -1347,11 +1364,11 @@
         pwSaveData = { u: u, p: p };
         var host = o;
         try { host = new URL(o).hostname.replace(/^www\./, ''); } catch (e) { }
-        b.innerHTML = '<span class="top"><span class="k">' + SVG.key + '</span>' +
+        b.innerHTML = H('<span class="top"><span class="k">' + SVG.key + '</span>' +
             '<span class="tx">Save password for <b>' + esc(host) + '</b>' +
             (u ? ' as <b>' + esc(u) + '</b>' : '') + '?</span>' +
             '<button class="xx">' + SVG.close + '</button></span>' +
-            '<span class="btns"><button class="nv">Never</button><button class="sv">Save</button></span>';
+            '<span class="btns"><button class="nv">Never</button><button class="sv">Save</button></span>');
         var hide = function () { b.style.display = 'none'; pwSaveData = null; };
         b.querySelector('.sv').addEventListener('click', function () {
             if (pwSaveData) send('pwsave:' + JSON.stringify(pwSaveData));
@@ -1377,15 +1394,15 @@
         state.belt = belt;
         var b = sh.getElementById('askcard'); if (!b) return;
         var ask = belt.ask || [];
-        if (!ask.length) { b.style.display = 'none'; b.innerHTML = ''; beltAskId = ''; return; }
+        if (!ask.length) { b.style.display = 'none'; b.innerHTML = H(''); beltAskId = ''; return; }
         var a = ask[0];
         beltAskId = a.id;
         var tool = String(a.tool || '').replace(/^browser_/, '').replace(/_/g, ' ');
-        b.innerHTML = '<span class="top"><span class="k">' + BELT_SVG + '</span><span class="qt">An AI agent wants to <b>' + esc(tool) + '</b>' +
+        b.innerHTML = H('<span class="top"><span class="k">' + BELT_SVG + '</span><span class="qt">An AI agent wants to <b>' + esc(tool) + '</b>' +
             (a.label ? ' “<b>' + esc(a.label) + '</b>”' : '') + (a.host ? ' on <b>' + esc(a.host) + '</b>' : '') +
             '<br><i>' + esc(a.why || '') + '</i></span></span>' +
             (ask.length > 1 ? '<span class="more">+' + (ask.length - 1) + ' more waiting</span>' : '') +
-            '<span class="btns"><button class="dn">Deny</button><button class="st">Allow this site 10 min</button><button class="ok">Allow once</button></span>';
+            '<span class="btns"><button class="dn">Deny</button><button class="st">Allow this site 10 min</button><button class="ok">Allow once</button></span>');
         var wire = function (cls, choice) {
             b.querySelector(cls).addEventListener('click', function (e) {
                 if (!e.isTrusted || !beltAskId) return; // script-made clicks never count
@@ -1406,13 +1423,13 @@
         if (!ho) return;
         var b = sh.getElementById('hocard'); if (!b) return;
         var ask = ho.ask || [];
-        if (!ask.length) { b.style.display = 'none'; b.innerHTML = ''; hoId = ''; return; }
+        if (!ask.length) { b.style.display = 'none'; b.innerHTML = H(''); hoId = ''; return; }
         var a = ask[0];
         hoId = a.id;
-        b.innerHTML = '<span class="top"><span class="k">' + HO_SVG + '</span><span class="qt"><b>Your AI agent needs you</b>' + (a.host ? ' on <b>' + esc(a.host) + '</b>' : '') +
+        b.innerHTML = H('<span class="top"><span class="k">' + HO_SVG + '</span><span class="qt"><b>Your AI agent needs you</b>' + (a.host ? ' on <b>' + esc(a.host) + '</b>' : '') +
             '<br>' + esc(a.message || '') + '<br><i>Do it in the page, then press Done.</i></span></span>' +
             (ask.length > 1 ? '<span class="more">+' + (ask.length - 1) + ' more waiting</span>' : '') +
-            '<span class="btns"><button class="st">I can\u2019t do this</button><button class="ok">Done</button></span>';
+            '<span class="btns"><button class="st">I can\u2019t do this</button><button class="ok">Done</button></span>');
         var wire = function (cls, choice) {
             b.querySelector(cls).addEventListener('click', function (e) {
                 if (!e.isTrusted || !hoId) return; // script-made clicks never count
@@ -1442,14 +1459,14 @@
     function paintRec(sh) {
         var p = sh && sh.getElementById('recpill'); if (!p) return;
         var r = state.rec;
-        if (!(r && r.on)) { p.style.display = 'none'; p.innerHTML = ''; return; }
-        p.innerHTML = '<i class="rd"></i><span>Recording · ' + r.n + (r.n === 1 ? ' step' : ' steps') + '</span><button type="button">Stop</button>';
+        if (!(r && r.on)) { p.style.display = 'none'; p.innerHTML = H(''); return; }
+        p.innerHTML = H('<i class="rd"></i><span>Recording · ' + r.n + (r.n === 1 ? ' step' : ' steps') + '</span><button type="button">Stop</button>');
         p.querySelector('button').addEventListener('click', function (e) { if (e.isTrusted) openRecCard(sh); });
         p.style.display = 'flex';
     }
     function closeRecCard(sh) {
         var c = sh && sh.getElementById('reccard');
-        if (c) { c.style.display = 'none'; c.innerHTML = ''; }
+        if (c) { c.style.display = 'none'; c.innerHTML = H(''); }
     }
     function recArgGuess(label) {
         return String(label || '').replace(/^Type into\s*/i, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24) || 'value';
@@ -1466,12 +1483,12 @@
             rows += '<div class="st"><span class="n">' + (i + 1) + '</span><span class="rl">' + esc(s.label) +
                 (s.value && s.kind !== 'select' ? ' <b>' + esc(String(s.value).slice(0, 40)) + '</b>' : '') + '</span>' + extra + '</div>';
         });
-        c.innerHTML = '<div class="hd">Save this flow</div>' +
+        c.innerHTML = H('<div class="hd">Save this flow</div>' +
             '<input class="nm" placeholder="name, e.g. get_invoice" value="' + esc(defName) + '">' +
             '<input class="ds" placeholder="what it does (the agent reads this)">' +
             '<div class="sl">' + (rows || '<div class="st"><span class="rl">Nothing recorded yet — click around the page first.</span></div>') + '</div>' +
             '<div class="hint">Tick “argument” on a typed value to let callers change it. Passwords and card numbers are never stored.</div>' +
-            '<span class="btns"><button type="button" class="dn">Discard</button><button type="button" class="kp">Keep recording</button><button type="button" class="ok">Save flow</button></span>';
+            '<span class="btns"><button type="button" class="dn">Discard</button><button type="button" class="kp">Keep recording</button><button type="button" class="ok">Save flow</button></span>');
         c.querySelector('.dn').addEventListener('click', function (e) { if (e.isTrusted) { send('recdiscard'); closeRecCard(sh); } });
         c.querySelector('.kp').addEventListener('click', function (e) { if (e.isTrusted) closeRecCard(sh); });
         c.querySelector('.ok').addEventListener('click', function (e) {
@@ -1788,7 +1805,7 @@
         html += '<div class="msep"></div>';
         html += '<div class="mi" style="--i:' + (mi++) + '" data-c="more"><span>More tools</span><span class="sc">›</span></div>';
         html += '<div class="mfoot" style="--i:' + (mi++) + '"><span data-c="palette">Command palette <i>' + (IS_MAC ? '⌘K' : 'Ctrl+K') + '</i></span><span data-c="help">How to use <i>F1</i></span></div>';
-        m.innerHTML = html;
+        m.innerHTML = H(html);
         m.classList.add('on');
         m.querySelectorAll('[data-c]').forEach(function (el) {
             el.addEventListener('mousedown', function (e) {
@@ -1833,7 +1850,7 @@
         menuMore().forEach(function (it, i) {
             html += '<div class="smi" style="--i:' + i + '" data-c="' + it[0] + '"><span style="flex:1">' + it[1] + '</span><span class="sc">' + it[2] + '</span></div>';
         });
-        sm.innerHTML = html;
+        sm.innerHTML = H(html);
         sm.style.top = Math.max(40, Math.min(rr.top - 5, innerHeight - 20 - 36 * menuMore().length)) + 'px';
         sm.style.right = (innerWidth - mr.left + 4) + 'px';
         sm.classList.add('on');
@@ -1866,7 +1883,7 @@
             html += '<div class="smi' + (on ? ' cur' : '') + '" style="--i:' + i + '" data-e="' + esc(e.i) + '">' +
                 '<span class="sk">' + (on ? SVG.chk : '') + '</span><span>' + esc(e.n) + '</span></div>';
         });
-        sm.innerHTML = html;
+        sm.innerHTML = H(html);
         sm.style.top = Math.max(40, rr.top - 5) + 'px';
         sm.style.right = (innerWidth - mr.left + 4) + 'px';
         sm.classList.add('on');
@@ -2053,7 +2070,7 @@
                 (r.sub ? '<span class="ps">' + esc(r.sub) + '</span>' : '') +
                 '<span class="pk">' + esc(r.kind) + '</span></div>';
         }
-        box.innerHTML = html || '<div class="pnone">Nothing found</div>';
+        box.innerHTML = H(html || '<div class="pnone">Nothing found</div>');
     }
 
     function palMove(sh, d) {
@@ -2184,11 +2201,11 @@
         var old = sh.getElementById('mdfb'); if (old) old.remove();
         var w = document.createElement('div'); w.id = 'mdfb';
         w.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(5,5,12,.62);display:grid;place-items:center;font:13px system-ui,-apple-system,sans-serif;';
-        w.innerHTML = '<div style="width:min(660px,90vw);background:#12121f;color:#ececf8;border:1px solid rgba(255,255,255,.14);border-radius:16px;padding:16px;box-shadow:0 30px 80px rgba(0,0,0,.6)">' +
+        w.innerHTML = H('<div style="width:min(660px,90vw);background:#12121f;color:#ececf8;border:1px solid rgba(255,255,255,.14);border-radius:16px;padding:16px;box-shadow:0 30px 80px rgba(0,0,0,.6)">' +
             '<div style="font-weight:700;font-size:14px;margin-bottom:6px">Copy this Markdown</div>' +
             '<div style="color:#8a8aa6;margin-bottom:10px">Automatic copy was blocked here. The text is selected — press ' + (IS_MAC ? '⌘C' : 'Ctrl+C') + '.</div>' +
             '<textarea readonly spellcheck="false" style="width:100%;height:280px;resize:vertical;background:#0b0b14;color:#d8d8f0;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px;font:12px/1.5 ui-monospace,Menlo,monospace"></textarea>' +
-            '<div style="text-align:right;margin-top:10px"><button style="font:600 13px system-ui;color:#fff;background:#4b46c9;border:0;border-radius:9px;padding:8px 18px;cursor:pointer">Close</button></div></div>';
+            '<div style="text-align:right;margin-top:10px"><button style="font:600 13px system-ui;color:#fff;background:#4b46c9;border:0;border-radius:9px;padding:8px 18px;cursor:pointer">Close</button></div></div>');
         sh.appendChild(w);
         var ta = w.querySelector('textarea'); ta.value = text;
         var close = function () { w.remove(); };
@@ -2272,7 +2289,7 @@
         function showTip(b) {
             var t = b.getAttribute('data-tip'); if (!t) { hideTip(); return; }
             var sc = fmtSc(b.getAttribute('data-sc'));
-            tip.innerHTML = '<span>' + esc(t) + '</span>' + (sc ? '<kbd>' + esc(sc) + '</kbd>' : '');
+            tip.innerHTML = H('<span>' + esc(t) + '</span>' + (sc ? '<kbd>' + esc(sc) + '</kbd>' : ''));
             var r = b.getBoundingClientRect(), w = tip.offsetWidth;
             tip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
             tip.classList.add('on'); shown = true;
@@ -2333,7 +2350,7 @@
         var key = (ag.p ? 'p' + (ag.k || 0) : 'a');
         if (key !== agKey) {
             agKey = key;
-            b.innerHTML = (ag.p ? SVG.pause : SVG.bot) + (ag.p ? (ag.k ? '<i class="agk">' + Math.min(ag.k, 99) + '</i>' : '') : '<i class="agd"></i>');
+            b.innerHTML = H((ag.p ? SVG.pause : SVG.bot) + (ag.p ? (ag.k ? '<i class="agk">' + Math.min(ag.k, 99) + '</i>' : '') : '<i class="agd"></i>'));
         }
         var tip = ag.p ? 'Agent paused \u2014 click to resume' + (ag.k ? ' (' + ag.k + ' blocked)' : '')
             : run ? 'Agent working' + (ag.t ? ': ' + agLabel(ag.t) : '') + ' \u2014 click to pause'
@@ -2355,7 +2372,7 @@
         // rebuild only on change — the pop animation must not replay on every push
         if (s._bm !== !!state.bm) {
             s._bm = !!state.bm;
-            s.innerHTML = state.bm ? SVG.starF : SVG.star;
+            s.innerHTML = H(state.bm ? SVG.starF : SVG.star);
             s.classList.toggle('yes', !!state.bm);
         }
         setTip(s, state.bm ? 'Remove bookmark' : 'Bookmark this page', 'Ctrl+D');
@@ -2524,12 +2541,12 @@
         var st = d.s === 0 ? 'run' : d.s === 1 ? 'ok' : d.s === 2 ? 'err' : 'off';
         if (full || el._st !== st) {
             el.className = 'dli ' + st + (el._fresh ? ' new' : '');
-            el.innerHTML = '<span class="dic">' + SVG.doc + '</span>' +
+            el.innerHTML = H('<span class="dic">' + SVG.doc + '</span>' +
                 '<span class="db"><b title="' + esc(d.n) + '">' + esc(d.n) + '</b><i></i>' +
                 (d.s === 0 ? '<u><e></e></u>' : '') + '</span>' +
                 (d.s === 0
                     ? '<span class="dab" data-x="1" title="Cancel">' + SVG.close + '</span>'
-                    : '<span class="dab" data-r="1" title="Show in folder">' + SVG.folder + '</span>');
+                    : '<span class="dab" data-r="1" title="Show in folder">' + SVG.folder + '</span>'));
             el._st = st; el._n = d.n;
         }
         if (el._n !== d.n) {
@@ -2578,9 +2595,9 @@
     function renderDl(sh) {
         var p = sh.getElementById('dlp'); if (!p || !dlOpen) return;
         if (!p._rows) {
-            p.innerHTML = '<div class="dph"><span class="dpt">Downloads</span><span class="dtsp"></span>' +
+            p.innerHTML = H('<div class="dph"><span class="dpt">Downloads</span><span class="dtsp"></span>' +
                 '<button class="dtbtn" id="dlclr">Clear</button></div>' +
-                '<div class="dpempty" style="display:none"><span>' + SVG.dl + '</span>No downloads yet</div>';
+                '<div class="dpempty" style="display:none"><span>' + SVG.dl + '</span>No downloads yet</div>');
             p.querySelector('#dlclr').addEventListener('mousedown', function (e) {
                 e.preventDefault(); e.stopPropagation(); send('dlclear');
             });
@@ -2609,7 +2626,7 @@
         if (p && p.classList.contains('on') && !p.classList.contains('bye')) {
             p.classList.add('bye');
             setTimeout(function () {
-                if (!dlOpen) { p.classList.remove('on', 'bye'); p.innerHTML = ''; p._rows = null; }
+                if (!dlOpen) { p.classList.remove('on', 'bye'); p.innerHTML = H(''); p._rows = null; }
             }, 170);
         }
     }
@@ -2982,7 +2999,7 @@
         var w = s.getElementById('wctrl');
         if (w) w.style.display = state.wc ? 'flex' : 'none';
         var mb = s.getElementById('wmaxb');
-        if (mb) { mb.innerHTML = state.w ? SVG.wres : SVG.wmax; mb.title = state.w ? 'Restore down' : 'Maximize'; }
+        if (mb) { mb.innerHTML = H(state.w ? SVG.wres : SVG.wmax); mb.title = state.w ? 'Restore down' : 'Maximize'; }
         var bar = s.querySelector('.bar');
         if (bar) bar.classList.toggle('mtl', state.mtl);
     }
@@ -3072,7 +3089,7 @@
                         '<span class="ct">' + esc(c.t || '') + '</span><span>' + esc(c.x || '') + '</span></div>';
                 }
                 var pinned = list.scrollTop + list.clientHeight >= list.scrollHeight - 30;
-                list.innerHTML = h;
+                list.innerHTML = H(h);
                 if (pinned && dtScrollPin) list.scrollTop = list.scrollHeight;
             }
         }
@@ -3096,7 +3113,7 @@
                         '<span style="color:#77779a">' + (n.sz ? fmtBytes(n.sz) : '') + '</span>' +
                         '<span class="u" title="' + esc(n.u || '') + '">' + esc(n.u || '') + '</span></div>';
                 }
-                nl.innerHTML = h2 || '<div style="padding:12px 14px;color:#55556f">no requests match</div>';
+                nl.innerHTML = H(h2 || '<div style="padding:12px 14px;color:#55556f">no requests match</div>');
             }
         }
     }
@@ -3145,7 +3162,7 @@
         if (e.pd) h += '<div class="dtsec">Request body</div><pre style="white-space:pre-wrap;word-break:break-all;color:#b9b9d4;margin:0 0 4px">' + esc(e.pd) + '</pre>';
         h += '<div class="dtsec">Request headers</div>' + kvRows(e.rq) +
             '<div class="dtsec">Response headers</div>' + kvRows(e.rs) + '</div>';
-        d.innerHTML = h;
+        d.innerHTML = H(h);
         showNetView(sh, 'detail');
         d.querySelector('#dtback').addEventListener('click', function () {
             dtNetSel = null; dtNetEntry = null; showNetView(sh, 'list');
@@ -3156,9 +3173,9 @@
         var box = sh.getElementById('dteh'); if (!box) return;
         var row = document.createElement('div');
         row.className = 'dthr';
-        row.innerHTML = '<input class="dtedit-in hn" placeholder="Name" spellcheck="false">' +
+        row.innerHTML = H('<input class="dtedit-in hn" placeholder="Name" spellcheck="false">' +
             '<input class="dtedit-in hv" placeholder="Value" spellcheck="false">' +
-            '<button class="hx" title="Remove">✕</button>';
+            '<button class="hx" title="Remove">✕</button>');
         row.children[0].value = name || ''; row.children[1].value = val || '';
         row.querySelector('.hx').addEventListener('click', function () { row.remove(); });
         box.appendChild(row);
@@ -3179,7 +3196,7 @@
             '<div class="dtsec">Body</div><textarea id="dteb" class="dtedit-in" spellcheck="false"></textarea>' +
             '<div class="dtsec">Response</div><div id="dteresp"><span style="color:#55556f">not sent yet</span></div>' +
             '</div>';
-        ed.innerHTML = h;
+        ed.innerHTML = H(h);
         ed.querySelector('#dteu').value = e.u;
         if (e.pd) ed.querySelector('#dteb').value = e.pd;
         showNetView(sh, 'edit');
@@ -3197,7 +3214,7 @@
             });
             var btn = sh.getElementById('dtesend');
             btn.disabled = true; btn.textContent = 'Sending…';
-            sh.getElementById('dteresp').innerHTML = '<span style="color:#66667f">sending…</span>';
+            sh.getElementById('dteresp').innerHTML = H('<span style="color:#66667f">sending…</span>');
             send('dtsend:' + JSON.stringify({
                 m: sh.getElementById('dtem').value,
                 u: sh.getElementById('dteu').value.trim(),
@@ -3209,7 +3226,7 @@
         var r = sh.getElementById('dteresp'); if (!r) return;
         var btn = sh.getElementById('dtesend');
         if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
-        if (!j.ok) { r.innerHTML = '<span class="resp-err">✕ ' + esc(j.e || 'request failed') + '</span>'; return; }
+        if (!j.ok) { r.innerHTML = H('<span class="resp-err">✕ ' + esc(j.e || 'request failed') + '</span>'); return; }
         var cls = j.st >= 200 && j.st < 400 ? 'resp-ok' : 'resp-err';
         var h = '<div><span class="' + cls + '" style="font-size:13px;font-weight:700">' + j.st + '</span>' +
             '<span class="rdet"> · ' + j.ms + ' ms · ' + fmtBytes(j.sz) + '</span></div>';
@@ -3226,7 +3243,7 @@
             body = JSON.stringify(pj, null, 2);
         } catch (e) { }
         h += '<pre>' + esc(body.slice(0, 20000)) + '</pre>';
-        r.innerHTML = h;
+        r.innerHTML = H(h);
     }
 
     // ---- Cookies pane ----
@@ -3255,15 +3272,15 @@
                 '<span>' + esc(exp) + '</span><span>' + flags + '</span>' +
                 '<button class="ckx" title="Delete cookie" data-di="' + i + '">✕</button></div>';
         }
-        l.innerHTML = h || '<div class="sempty">' +
-            (dtCk.length ? 'no cookies match the filter' : 'no cookies in the profile') + '</div>';
+        l.innerHTML = H(h || '<div class="sempty">' +
+            (dtCk.length ? 'no cookies match the filter' : 'no cookies in the profile') + '</div>');
     }
     function renderCkEditor(sh) {
         var ed = sh.getElementById('dtcedit'); if (!ed) return;
         if (!dtCkEdit) { ed.style.display = 'none'; return; }
         var c = dtCkEdit;
         ed.innerHTML =
-            '<div class="cer"><input class="dtedit-in" id="cen" placeholder="Name" spellcheck="false" value="' + esc(c.n || '') + '">' +
+            H('<div class="cer"><input class="dtedit-in" id="cen" placeholder="Name" spellcheck="false" value="' + esc(c.n || '') + '">' +
             '<input class="dtedit-in" id="cev" placeholder="Value" spellcheck="false" value="' + esc(c.v || '') + '"></div>' +
             '<div class="cer"><input class="dtedit-in" id="ced" placeholder="Domain" spellcheck="false" value="' +
             esc(c.d || (dtCkHost ? '.' + dtCkHost : '')) + '">' +
@@ -3273,7 +3290,7 @@
             '<label><input type="checkbox" id="ces"' + (c.s ? ' checked' : '') + '> Secure</label>' +
             '<span class="dtsp"></span>' +
             '<button class="dtsend" id="cesave" style="padding:4px 16px">' + (c.add ? 'Add' : 'Save') + '</button>' +
-            '<button class="dtbtn" id="cecancel">Cancel</button></div>';
+            '<button class="dtbtn" id="cecancel">Cancel</button></div>');
         ed.style.display = 'flex';
         sh.getElementById('cecancel').addEventListener('click', function () {
             dtCkEdit = null; renderCkEditor(sh);
@@ -3320,7 +3337,7 @@
                 '<span style="width:14px;flex:none"></span><span class="su">' + esc(u) + '</span>' +
                 '<button class="sbtn">Open</button></div>';
         });
-        l.innerHTML = h;
+        l.innerHTML = H(h);
     }
 
     // Console REPL — echo the input, host evals through the driver
@@ -3330,7 +3347,7 @@
         if (list) {
             var d = document.createElement('div');
             d.className = 'crow out';
-            d.innerHTML = '<span class="ct">›</span><span style="color:#b9b9ff">' + esc(expr) + '</span>';
+            d.innerHTML = H('<span class="ct">›</span><span style="color:#b9b9ff">' + esc(expr) + '</span>');
             list.appendChild(d);
             list.scrollTop = list.scrollHeight;
         }
@@ -3350,7 +3367,7 @@
             v = j.ok ? (typeof j.v === 'string' ? j.v : JSON.stringify(j.v) ?? 'undefined')
                      : 'Uncaught ' + (j.e || 'error');
         } catch (e) { v = String(j.v); }
-        d.innerHTML = '<span class="ct">←</span><span>' + esc(v) + '</span>';
+        d.innerHTML = H('<span class="ct">←</span><span>' + esc(v) + '</span>');
         list.appendChild(d);
         list.scrollTop = list.scrollHeight;
     }
@@ -3425,7 +3442,7 @@
         tx.className = 'tx';
         th.appendChild(tx);
         var lb = document.createElement('span');
-        lb.innerHTML = insLabel(n);
+        lb.innerHTML = H(insLabel(n));
         lb.style.cssText = 'overflow:hidden;text-overflow:ellipsis;min-width:0';
         th.appendChild(lb);
         var dm = document.createElement('span');
@@ -3468,7 +3485,7 @@
     }
     function buildInsTree(sh) {
         var t = sh.getElementById('instree'); if (!t) return;
-        t.innerHTML = '';
+        t.innerHTML = H('');
         insSelRow = null;
         var kids = insKids(document);
         for (var i = 0; i < kids.length; i++) {
@@ -3541,13 +3558,13 @@
     function renderInsDetails(sh, el) {
         var nm = sh.getElementById('insname'); if (!nm) return;
         var ok = el && el.nodeType === 1;
-        nm.innerHTML = ok
+        nm.innerHTML = H(ok
             ? '<b>&lt;' + esc(el.tagName.toLowerCase()) + '&gt;</b><span class="inssel">' + esc(insShort(el)) + '</span>' +
               '<span class="dtsp"></span>' +
               '<button class="dtbtn" id="incsel" title="Copy unique CSS selector">⧉ sel</button>' +
               '<button class="dtbtn" id="inchtml" title="Copy outerHTML">⧉ html</button>' +
               '<button class="dtbtn" id="inview" title="Scroll into view">⇣ view</button>'
-            : '<span style="color:#66667f;font-size:11px">pick or select a node</span>';
+            : '<span style="color:#66667f;font-size:11px">pick or select a node</span>');
         if (ok) {
             nm.querySelector('#incsel').addEventListener('click', function (e) {
                 var b = e.target;
@@ -3566,14 +3583,14 @@
         }
         var b = sh.getElementById('insbox');
         if (b) {
-            if (!ok) b.innerHTML = '';
+            if (!ok) b.innerHTML = H('');
             else {
                 var cs = getComputedStyle(el), r = el.getBoundingClientRect();
-                b.innerHTML = '<div class="bm"><div class="bmL bmm">' + bmVals(px4(cs, 'margin')) + '<i>margin</i>' +
+                b.innerHTML = H('<div class="bm"><div class="bmL bmm">' + bmVals(px4(cs, 'margin')) + '<i>margin</i>' +
                     '<div class="bmL bmb">' + bmVals(px4(cs, 'border')) + '<i>border</i>' +
                     '<div class="bmL bmp">' + bmVals(px4(cs, 'padding')) + '<i>padding</i>' +
                     '<div class="bmC">' + Math.round(r.width) + ' × ' + Math.round(r.height) + '</div>' +
-                    '</div></div></div></div>';
+                    '</div></div></div></div>');
             }
         }
         renderInsInline(sh, el);
@@ -3582,7 +3599,7 @@
         if (at) {
             var ac = sh.getElementById('insac');
             if (!ok || !el.attributes.length) {
-                at.innerHTML = '<div class="sempty">no attributes</div>';
+                at.innerHTML = H('<div class="sempty">no attributes</div>');
                 if (ac) ac.textContent = '';
             }
             else {
@@ -3593,7 +3610,7 @@
                     h += '<div class="stl"><span class="sp" title="' + esc(a.name) + '">' + esc(a.name) +
                         '</span><span class="sv" title="Double-click to edit">' + esc(a.value) + '</span></div>';
                 }
-                at.innerHTML = h;
+                at.innerHTML = H(h);
             }
         }
         renderInsListeners(sh, el);
@@ -3605,12 +3622,12 @@
         var cnt = sh.getElementById('inslc');
         insLData = null;
         if (!el || el.nodeType !== 1 || !window.__brain || !window.__brain.listeners) {
-            box.innerHTML = '<div class="sempty">—</div>'; if (cnt) cnt.textContent = ''; return;
+            box.innerHTML = H('<div class="sempty">—</div>'); if (cnt) cnt.textContent = ''; return;
         }
         var r;
         try { r = window.__brain.listeners(el, { ancestors: insLAnc, removed: insLRem, refs: false, src: true }); }
         catch (e) { r = { ok: false, error: String(e) }; }
-        if (!r || !r.ok) { box.innerHTML = '<div class="sempty">' + esc((r && r.error) || 'unavailable') + '</div>'; if (cnt) cnt.textContent = ''; return; }
+        if (!r || !r.ok) { box.innerHTML = H('<div class="sempty">' + esc((r && r.error) || 'unavailable') + '</div>'); if (cnt) cnt.textContent = ''; return; }
         insLData = r;
         if (cnt) cnt.textContent = r.total ? '· ' + r.total : '';
         var h = r.late ? '<div class="lwarn">Registry started after this page\'s scripts ran — listeners added earlier are missing. Reload for a complete picture.</div>' : '';
@@ -3641,7 +3658,7 @@
             h += '</div>';
         });
         if (r.omitted) h += '<div class="sempty">' + r.omitted + ' more listeners not shown</div>';
-        box.innerHTML = h;
+        box.innerHTML = H(h);
     }
     var STORD = ['Layout', 'Box', 'Text', 'Paint', 'Motion', 'Other'];
     var insStClosed = { Other: true };
@@ -3660,7 +3677,7 @@
     }
     function renderInsStyles(sh, el) {
         var box = sh.getElementById('insstyles'); if (!box) return;
-        if (!el || el.nodeType !== 1) { box.innerHTML = '<div class="sempty">—</div>'; return; }
+        if (!el || el.nodeType !== 1) { box.innerHTML = H('<div class="sempty">—</div>'); return; }
         var cs = getComputedStyle(el), groups = {}, total = 0;
         for (var i = 0; i < cs.length; i++) {
             var k = cs[i], v = cs.getPropertyValue(k);
@@ -3682,7 +3699,7 @@
                     '</span><span class="sv">' + stValHtml(rows[r][1]) + '</span></div>';
             h += '</div></div>';
         }
-        box.innerHTML = h || '<div class="sempty">no styles match</div>';
+        box.innerHTML = H(h || '<div class="sempty">no styles match</div>');
         var c = sh.getElementById('insstc'); if (c) c.textContent = total ? '· ' + total : '';
     }
     function renderInsCrumbs(sh, el) {
@@ -3692,7 +3709,7 @@
             if (i) h += '<span class="csep">›</span>';
             h += '<button class="cr' + (chain[i] === el ? ' on' : '') + '" data-ci="' + i + '">' + esc(insShort(chain[i])) + '</button>';
         }
-        bc.innerHTML = h;
+        bc.innerHTML = H(h);
         bc._chain = chain;
         var cur = bc.querySelector('.cr.on');
         if (cur) cur.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -3724,7 +3741,7 @@
     }
     function renderInsInline(sh, el) {
         var box = sh.getElementById('insinline'); if (!box) return;
-        if (!el || el.nodeType !== 1) { box.innerHTML = ''; return; }
+        if (!el || el.nodeType !== 1) { box.innerHTML = H(''); return; }
         var off = insInlineOff.get(el) || {}, h = '', n = 0;
         for (var i = 0; i < el.style.length; i++) {
             var k = el.style[i];
@@ -3738,7 +3755,7 @@
             '<input class="sin" placeholder="property" spellcheck="false">' +
             '<input class="siv" placeholder="value" spellcheck="false">' +
             '<button class="hx" tabindex="-1">✕</button></div>';
-        box.innerHTML = h;
+        box.innerHTML = H(h);
         var c = sh.getElementById('insic'); if (c) c.textContent = n ? '· ' + n : '';
     }
     function insSilCommit(sh, row) {
@@ -3780,11 +3797,11 @@
             // Text node survives — just swap its content, no rebuild needed.
             try { n.nodeValue = sh.getElementById('inshta').value; } catch (x) { }
             closeInsHtml(sh);
-            if (insSelRow && insSelRow._lb) insSelRow._lb.innerHTML = insLabel(n);
+            if (insSelRow && insSelRow._lb) insSelRow._lb.innerHTML = H(insLabel(n));
             return;
         }
         var p = insParentOf(n);
-        try { n.outerHTML = sh.getElementById('inshta').value; } catch (x) { }
+        try { n.outerHTML = H(sh.getElementById('inshta').value); } catch (x) { }
         closeInsHtml(sh);
         insSel = null; insSelRow = null;
         buildInsTree(sh);
@@ -3813,7 +3830,7 @@
         for (var i = 0; i < items.length; i++)
             html += items[i] === null ? '<div class="msep"></div>' :
                 '<div class="mi' + (items[i][2] ? ' ' + items[i][2] : '') + '" data-c="' + items[i][0] + '">' + items[i][1] + '</div>';
-        m.innerHTML = html;
+        m.innerHTML = H(html);
         m.style.display = 'block';
         var mw = m.offsetWidth, mh = m.offsetHeight;
         m.style.left = Math.min(x, Math.max(0, window.innerWidth - mw - 8)) + 'px';
@@ -3982,7 +3999,7 @@
                     '" onerror="this.parentNode.textContent=this.dataset.l">' : esc(lt)) +
                 '</span><span>' + esc(h) + '</span></div>';
         }
-        tl.innerHTML = html;
+        tl.innerHTML = H(html);
         box.classList.toggle('has', !!html);
     }
 
@@ -4395,12 +4412,12 @@
         if (!state.rw) { lb.textContent = 'Off — turn it on to start recording'; return; }
         if (idx < n) {
             var it = rw.items[idx];
-            lb.innerHTML = '<b>' + rwAgo(Date.now() - it.t) + ' ago</b> · ' + rwClock(it.t) + ' · ' + esc(it.ti || hostOf(it.u)) +
-                (it.tag ? ' <i class="rwtag">' + esc(it.tag) + '</i>' : '');
+            lb.innerHTML = H('<b>' + rwAgo(Date.now() - it.t) + ' ago</b> · ' + rwClock(it.t) + ' · ' + esc(it.ti || hostOf(it.u)) +
+                (it.tag ? ' <i class="rwtag">' + esc(it.tag) + '</i>' : ''));
             lb.title = it.u;
         } else if (n === 0) lb.textContent = why || 'Recording — the first snapshot lands a few seconds after the page settles';
-        else lb.innerHTML = '<b>Live</b> · ' + n + ' snapshot' + (n === 1 ? '' : 's') + ' · last ' + rwAgo(Date.now() - rw.items[n - 1].t) + ' ago' +
-            (why ? ' · <span class="rwwarn">' + esc(why) + '</span>' : '');
+        else lb.innerHTML = H('<b>Live</b> · ' + n + ' snapshot' + (n === 1 ? '' : 's') + ' · last ' + rwAgo(Date.now() - rw.items[n - 1].t) + ' ago' +
+            (why ? ' · <span class="rwwarn">' + esc(why) + '</span>' : ''));
     }
     function rwShow(sh, idx) {
         var it = rw.items[idx]; if (!it) return;
@@ -4427,7 +4444,7 @@
                 d.addEventListener('submit', function (e) { e.preventDefault(); }, true);
             } catch (e) { }
         };
-        f.srcdoc = m.html;
+        f.srcdoc = H(m.html);
     }
     function rwToast(sh, msg) {
         var t = sh && sh.getElementById('rwmsg'); if (!t) return;
@@ -4462,7 +4479,7 @@
         rw.hits.forEach(function (x) {
             h += '<div class="rwr" data-i="' + x.i + '"><b>' + rwClock(x.t) + '</b><span>' + esc(x.sn) + '</span></div>';
         });
-        box.innerHTML = h || '<div class="rwr none">No snapshot of this tab contains that text.</div>';
+        box.innerHTML = H(h || '<div class="rwr none">No snapshot of this tab contains that text.</div>');
         box.style.top = (rwTop() + 46) + 'px';
         box.classList.add('on');
     }
@@ -4474,7 +4491,7 @@
         };
         m.style.top = (rwTop() + 46) + 'px';
         m.innerHTML =
-            '<div class="rwm-h">Keep history for</div><div class="rwm-r">' +
+            H('<div class="rwm-h">Keep history for</div><div class="rwm-r">' +
             chips(state.rwk, [15, 30, 60, 240], 'keep', function (v) { return v < 60 ? v + ' min' : (v / 60) + ' h'; }) + '</div>' +
             '<div class="rwm-h">Memory limit</div><div class="rwm-r">' +
             chips(state.rwm, [64, 128, 256, 512], 'mb', function (v) { return v + ' MB'; }) + '</div>' +
@@ -4483,7 +4500,7 @@
             '<div class="rwm-i" data-a="clear"><span>Clear this tab\u2019s history</span></div>' +
             '<div class="rwm-i" data-a="clearall"><span>Clear everything</span></div>' +
             '<div class="rwm-i danger" data-a="off"><span>Turn Rewind off</span></div>' +
-            '<div class="rwm-f">In memory only · ' + used + ' MB used · never private tabs or login pages</div>';
+            '<div class="rwm-f">In memory only · ' + used + ' MB used · never private tabs or login pages</div>');
     }
     function rwGear(sh) {
         var m = sh.getElementById('rwmenu');
@@ -4672,7 +4689,7 @@
         host.style.cssText = 'all:initial;position:fixed;top:0;left:0;right:0;height:46px;z-index:2147483647;--h:252;';
         var sh = host.attachShadow({ mode: 'open' });
         sh.innerHTML =
-            '<style>' +
+            H('<style>' +
             ':host{all:initial;--ac:hsl(var(--h) 100% 78%);--ac2:hsl(calc(var(--h) - 72) 56% 62%);--mut:#8a8aa6;--dim:#5c5c78;--font:"Segoe UI Variable Text",system-ui,-apple-system,"Segoe UI",sans-serif}* {box-sizing:border-box;margin:0;padding:0}' +
             '.bar{position:fixed;top:0;left:0;right:0;height:46px;display:flex;align-items:center;gap:10px;z-index:10;' +
             'padding:0 12px;' +
@@ -5716,7 +5733,7 @@
             '<button class="dtsend" id="insapp">Apply</button></div></div>' +
             '<div id="insbc"></div></div>' +
             '</div></div>' +
-            '<div id="dthl"></div><div id="dttip"></div><div id="dtpin"></div>';
+            '<div id="dthl"></div><div id="dttip"></div><div id="dtpin"></div>');
 
         sh.querySelector('.nav').addEventListener('click', function (e) {
             var b = e.target.closest('button');
@@ -5820,7 +5837,7 @@
         // Network filters.
         var fp = sh.getElementById('dtfp');
         if (fp) {
-            fp.innerHTML = '';
+            fp.innerHTML = H('');
             NETPILLS.forEach(function (p) {
                 var b = document.createElement('button');
                 b.className = 'fpill' + (dtNetType === p[0] ? ' on' : '');
@@ -5846,7 +5863,7 @@
                 r.classList.toggle('sel', r.dataset.id === dtNetSel);
             });
             var dd = sh.getElementById('dtdetail');
-            if (dd) dd.innerHTML = '<div class="dtbscroll" style="padding:12px 14px;color:#55556f">loading…</div>';
+            if (dd) dd.innerHTML = H('<div class="dtbscroll" style="padding:12px 14px;color:#55556f">loading…</div>');
             showNetView(sh, 'detail');
             send('dtnet:' + dtNetSel);
         });
@@ -6012,7 +6029,7 @@
                     }
                 } catch (x) { }
                 renderInsDetails(sh, insSel);
-                if (insSelRow && insSelRow._lb) insSelRow._lb.innerHTML = insLabel(insSel);
+                if (insSelRow && insSelRow._lb) insSelRow._lb.innerHTML = H(insLabel(insSel));
             };
             inp.addEventListener('keydown', function (ev) {
                 if (ev.key === 'Enter') { ev.preventDefault(); done(true); }
@@ -6262,13 +6279,13 @@
                 tip.style.display = 'block';
                 var ecs = getComputedStyle(el);
                 var ecl = (typeof el.className === 'string' ? el.className : '').trim().split(/\s+/)[0];
-                tip.innerHTML = '<b>' + esc(el.tagName.toLowerCase()) + '</b>' +
+                tip.innerHTML = H('<b>' + esc(el.tagName.toLowerCase()) + '</b>' +
                     (el.id ? '<span style="color:#8fd3ff">#' + esc(el.id) + '</span>' : '') +
                     (ecl ? '<span style="color:#9d9dcc">.' + esc(ecl) + '</span>' : '') +
                     '  ' + Math.round(r.width) + '×' + Math.round(r.height) +
                     '  ' + esc((+parseFloat(ecs.fontSize).toFixed(1)) + 'px') + '/' + esc(ecs.fontWeight) +
                     '<i style="background:' + esc(ecs.color) + '" title="color"></i>' +
-                    '<i style="background:' + esc(ecs.backgroundColor) + '" title="background"></i>';
+                    '<i style="background:' + esc(ecs.backgroundColor) + '" title="background"></i>');
                 tip.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 320)) + 'px';
                 tip.style.top = Math.max(4, r.top - 26) + 'px';
             }, true);

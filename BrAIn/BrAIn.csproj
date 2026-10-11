@@ -21,10 +21,13 @@
     <GarbageCollectionAdaptationMode>1</GarbageCollectionAdaptationMode>
     <TieredPGO>true</TieredPGO>
     <TieredCompilation>true</TieredCompilation>
+    <!-- Don't copy the WebView2 package's IntelliSense .xml files next to the build output. -->
+    <AllowedReferenceRelatedFileExtensions>.pdb</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
     <PackageReference Include="Photino.NET" Version="4.0.16" />
   </ItemGroup>

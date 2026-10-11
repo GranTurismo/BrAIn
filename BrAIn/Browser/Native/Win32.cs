@@ -43,6 +43,74 @@ internal static class Win32
     internal static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
         int x, int y, int cx, int cy, uint flags);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left, Top, Right, Bottom; }
+
+    /// <summary>Client-area size in physical pixels (the WebView2 views' bounds).</summary>
+    internal static (int W, int H) ClientSize(IntPtr hwnd)
+        => hwnd != IntPtr.Zero && GetClientRect(hwnd, out var r) ? (r.Right - r.Left, r.Bottom - r.Top) : (0, 0);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "MessageBoxW")]
+    private static extern int MessageBoxNative(IntPtr hWnd, string text, string caption, uint type);
+
+    /// <summary>Plain topmost information box (the self-test report).</summary>
+    internal static void MessageBox(string text, string caption)
+        => MessageBoxNative(IntPtr.Zero, text, caption, 0x40 /*MB_ICONINFORMATION*/ | 0x40000 /*MB_TOPMOST*/);
+
+    private delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr hWndParent, EnumProc proc, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(IntPtr hWnd, System.Text.StringBuilder sb, int max);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetParent(IntPtr hWnd);
+
+    /// <summary>Direct child windows of <paramref name="hwnd"/> (not their descendants).</summary>
+    internal static List<IntPtr> DirectChildren(IntPtr hwnd)
+    {
+        var list = new List<IntPtr>();
+        EnumChildWindows(hwnd, (h, _) => { if (GetParent(h) == hwnd) list.Add(h); return true; }, IntPtr.Zero);
+        return list;
+    }
+
+    /// <summary>Raises a child window above its siblings without moving, resizing or activating it.</summary>
+    internal static void BringToTop(IntPtr child)
+    {
+        const uint NoSize = 0x0001, NoMove = 0x0002, NoActivate = 0x0010;
+        if (child != IntPtr.Zero) SetWindowPos(child, IntPtr.Zero /*HWND_TOP*/, 0, 0, 0, 0, NoSize | NoMove | NoActivate);
+    }
+
+    /// <summary>Diagnostics: the window's size and its child windows (top of z-order first, as enumerated).</summary>
+    internal static string DescribeWindow(IntPtr hwnd)
+    {
+        var sb = new System.Text.StringBuilder();
+        GetWindowRect(hwnd, out var wr);
+        var (cw, ch) = ClientSize(hwnd);
+        sb.Append($"main hwnd {hwnd} window {wr.Right - wr.Left}x{wr.Bottom - wr.Top} client {cw}x{ch}");
+        EnumChildWindows(hwnd, (h, _) =>
+        {
+            var cls = new System.Text.StringBuilder(64);
+            GetClassNameW(h, cls, 64);
+            GetWindowRect(h, out var r);
+            sb.Append($"\n   child {h} parent {GetParent(h)} {cls} {(IsWindowVisible(h) ? "visible" : "hidden")} {r.Right - r.Left}x{r.Bottom - r.Top} @{r.Left},{r.Top}");
+            return true;
+        }, IntPtr.Zero);
+        return sb.ToString();
+    }
+
     private const int GwlStyle = -16, GwlExStyle = -20;
     private const long WsThickFrame = 0x00040000, WsMinimizeBox = 0x00020000,
         WsMaximizeBox = 0x00010000, WsSysMenu = 0x00080000;

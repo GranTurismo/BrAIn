@@ -41,6 +41,9 @@ public static class Program
                   --no-fullscreen     Do not open in full screen
                   --no-split          (macOS) keep the toolbar inside the page instead of in
                                       its own native view above it (also BRAIN_SPLIT=0)
+                  --selftest-tabs     Run the tab-switching self-test, write selftest-tabs.txt, exit
+                                      (--selftest-quiet skips the result dialog on Windows;
+                                      --selftest-evict also exercises the opt-in live-view cap)
                   --version           Print version
 
                 MCP: this process speaks MCP over stdio. Point your MCP client
@@ -55,7 +58,22 @@ public static class Program
             return 0;
         }
 
+        var selfTest = args.Contains("--selftest-tabs");
+        if (selfTest && args.Contains("--selftest-evict")) Environment.SetEnvironmentVariable("BRAIN_MAXLIVE", "3"); // opt-in cap to exercise eviction
         var controller = new BrowserController(args);
+        var selfTestFails = 0;
+        if (selfTest)
+            _ = Task.Run(async () =>
+            {
+                var run = SelfTest.RunTabsAsync(controller);
+                if (await Task.WhenAny(run, Task.Delay(TimeSpan.FromMinutes(4))) == run) selfTestFails = await run;
+                else
+                {
+                    selfTestFails = 99;
+                    BrowserController.Log("selftest: timed out after 4 minutes");
+                    controller.CloseAllWindows();
+                }
+            });
 
         // MCP host on a background thread; stdio transport must keep stdout
         // clean, so all logging is pushed to stderr.
@@ -121,7 +139,7 @@ public static class Program
             try { await hostTask.WaitAsync(TimeSpan.FromSeconds(3)); }
             catch { /* shutting down anyway */ }
         }
-        return exitCode;
+        return selfTest ? Math.Max(exitCode, selfTestFails) : exitCode;
     }
 
     /// <summary>

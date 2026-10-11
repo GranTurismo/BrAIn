@@ -1,0 +1,80 @@
+name: Deploy website
+
+# Builds website/Dockerfile on any change under website/, pushes to GHCR,
+# then SSHes to the box, pulls and restarts the `brainweb` container.
+#
+# Required repo secrets:
+#   SERVER_HOST       e.g. 51.77.65.222
+#   SERVER_USER       e.g. ubuntu
+#   SERVER_PASSWORD   SSH password
+#
+# The server logs in to GHCR with this job's own GITHUB_TOKEN (valid while the
+# job runs — long enough to pull), so no PAT is needed.
+#
+# The container joins the server's `caddynet` network (no host port) and the
+# existing `caddy` container reverse-proxies brain.gtgroup.dev -> brainweb:80.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+  workflow_dispatch:
+
+concurrency:
+  group: website-deploy
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/granturismo/brain-web
+  CONTAINER: brainweb
+  NET: caddynet
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: website
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          script: |
+            set -e
+            echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            sudo docker pull "${{ env.IMAGE }}:sha-${{ github.sha }}"
+            sudo docker stop "${{ env.CONTAINER }}" 2>/dev/null || true
+            sudo docker rm   "${{ env.CONTAINER }}" 2>/dev/null || true
+            sudo docker run -d --name "${{ env.CONTAINER }}" --restart unless-stopped \
+              --network "${{ env.NET }}" "${{ env.IMAGE }}:sha-${{ github.sha }}"
+            sudo docker image prune -f
+            sleep 2
+            sudo docker ps --filter "name=${{ env.CONTAINER }}" --format "{{.Names}} {{.Status}} {{.Networks}}"
+            sudo docker exec "${{ env.CONTAINER }}" wget -qO- http://127.0.0.1/ >/dev/null
+            curl -sf -o /dev/null -w "brain.gtgroup.dev HTTP %{http_code}\n" https://brain.gtgroup.dev/

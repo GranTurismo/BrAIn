@@ -148,7 +148,13 @@ public sealed class CdpDriver : DriverBase
             var pages = targets.Where(t => t.Type == "page").ToList();
 
             CdpClient.TargetInfo? pick = null;
-            if (Tab.IsMain)
+            if (Tab.BindMarker is { } bm)
+            {
+                // per-tab Windows views: the view was navigated to a blank data URL carrying the marker — an exact match
+                pick = pages.FirstOrDefault(p => p.Url.Contains(bm, StringComparison.Ordinal)
+                                                 || p.Title.Contains(bm, StringComparison.Ordinal));
+            }
+            else if (Tab.IsMain)
                 pick = pages.FirstOrDefault(p => !boundIds.Contains(p.TargetId)) ?? pages.FirstOrDefault();
             else if (Tab.LastUrl.Contains("braintab-"))
             {
@@ -245,7 +251,10 @@ public sealed class CdpDriver : DriverBase
         catch { /* event handling must never throw into the reader */ }
     }
 
-    private readonly Dictionary<string, Downloads.Item> _cdpDownloads = new();
+    // Browser.download* events reach every driver on the shared CDP socket (and Page.download* the
+    // ones attached to the page) — the table is shared so each download is registered exactly once.
+    private static readonly Dictionary<string, Downloads.Item> _cdpDownloads = new();
+    private static readonly object _dlLock = new();
 
     private void HandleDownloadWillBegin(JsonElement p)
     {
@@ -254,12 +263,16 @@ public sealed class CdpDriver : DriverBase
             var guid = p.GetProperty("guid").GetString()!;
             var url = p.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
             var suggested = p.TryGetProperty("suggestedFilename", out var f) ? f.GetString() : null;
-            var it = Controller.Downloads.Begin(url);
-            it.CdpGuid = guid;
-            // The engine writes into Downloads.Dir itself — pre-resolve the
-            // name so the UI shows a filename and Open/Reveal have a path.
-            Controller.Downloads.DestinationFor(it, suggested);
-            _cdpDownloads[guid] = it;
+            lock (_dlLock)
+            {
+                if (_cdpDownloads.ContainsKey(guid)) return;
+                var it = Controller.Downloads.Begin(url);
+                it.CdpGuid = guid;
+                // The engine writes into Downloads.Dir itself — pre-resolve the
+                // name so the UI shows a filename and Open/Reveal have a path.
+                Controller.Downloads.DestinationFor(it, suggested);
+                _cdpDownloads[guid] = it;
+            }
         }
         catch { }
     }
@@ -269,10 +282,16 @@ public sealed class CdpDriver : DriverBase
         try
         {
             var guid = p.TryGetProperty("guid", out var g) ? g.GetString() : null;
-            if (guid is null || !_cdpDownloads.TryGetValue(guid, out var it)) return;
+            if (guid is null) return;
             var state = p.TryGetProperty("state", out var s) ? s.GetString() : null;
-            if (state == "completed") { Controller.Downloads.Finish(it); _cdpDownloads.Remove(guid); }
-            else if (state == "canceled") { Controller.Downloads.Cancel(it.Id); _cdpDownloads.Remove(guid); }
+            Downloads.Item? it;
+            lock (_dlLock)
+            {
+                if (!_cdpDownloads.TryGetValue(guid, out it)) return;
+                if (state is "completed" or "canceled") _cdpDownloads.Remove(guid);
+            }
+            if (state == "completed") Controller.Downloads.Finish(it);
+            else if (state == "canceled") Controller.Downloads.Cancel(it.Id);
             else
             {
                 var recv = p.TryGetProperty("receivedBytes", out var r) ? (long)r.GetDouble() : 0;

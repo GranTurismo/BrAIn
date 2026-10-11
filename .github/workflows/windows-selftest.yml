@@ -1,0 +1,39 @@
+name: Windows tab self-test
+
+# Builds the Windows exe and runs `BrAIn.exe --selftest-tabs` on a hosted Windows runner (WebView2
+# runtime preinstalled): state surviving a tab switch, view eviction + restore, private tabs.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['BrAIn/**', '.github/workflows/windows-selftest.yml']
+
+jobs:
+  selftest:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Publish win-x64
+        run: dotnet publish BrAIn/BrAIn.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false -o out
+      - name: Run tab self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process out\BrAIn.exe -ArgumentList '--selftest-tabs','--selftest-quiet' -PassThru
+          if (-not $p.WaitForExit(300000)) { $p.Kill(); Write-Error 'self-test timed out'; exit 1 }
+          Write-Host "exit code: $($p.ExitCode)"
+          exit $p.ExitCode
+      - name: Collect logs
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force logs | Out-Null
+          Copy-Item "$env:LOCALAPPDATA\BrAIn\selftest-tabs.txt", "$env:LOCALAPPDATA\BrAIn\brain.log" -Destination logs -ErrorAction SilentlyContinue
+          if (Test-Path logs\selftest-tabs.txt) { Get-Content logs\selftest-tabs.txt }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tab-selftest-logs
+          path: logs

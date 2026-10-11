@@ -11,15 +11,14 @@ for p in /usr/local/share/dotnet /opt/homebrew/bin "$HOME/.dotnet"; do
 done
 
 echo "== windows publish"
+rm -rf dist/win-publish   # a stale publish dir can come back incomplete (missing natives / icon)
 dotnet publish BrAIn.csproj -c Release -r win-x64 --self-contained true \
   -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false \
   -o dist/win-publish
 
 echo "== windows installer (nsis)"
 command -v makensis >/dev/null || { echo "makensis missing: brew install makensis"; exit 1; }
-sed "s/!define VERSION   \".*\"/!define VERSION   \"$VER\"/" \
-  scripts/installer-win.nsi > /tmp/installer-win.gen.nsi
-(cd scripts && makensis /tmp/installer-win.gen.nsi)
+(cd scripts && makensis -DVERSION="$VER" installer-win.nsi)
 
 echo "== macOS dmg"
 APP="dist/BrAIn.app"

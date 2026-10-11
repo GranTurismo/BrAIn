@@ -4,9 +4,10 @@ using Photino.NET;
 namespace BrAIn.Browser;
 
 /// <summary>
-/// One browser tab — a logical entry; all tabs share the single main window's
-/// webview (Photino embeds exactly one webview per window). Switching tabs
-/// navigates the window to that tab's URL.
+/// One browser tab. In per-tab mode (macOS split mode, Windows WebView2) it owns a
+/// live view and switching tabs just shows another view; otherwise it is a logical
+/// entry and all tabs share the single main window's webview (Photino embeds exactly
+/// one webview per window) — switching tabs then navigates the window to that URL.
 /// </summary>
 public sealed class BrowserTab
 {
@@ -26,6 +27,24 @@ public sealed class BrowserTab
     /// <summary>macOS per-tab mode: this tab's own WKWebView (never shared).
     /// Zero until the view is created; zero again once the tab is closed.</summary>
     public IntPtr NativeView { get; set; }
+
+    /// <summary>Windows per-tab mode: this tab's own WebView2 view (Browser/Win/WinTabs.cs).
+    /// Null until created, and again after the view is evicted to save memory.</summary>
+    public object? WinView { get; set; }
+
+    /// <summary>Windows per-tab mode: unique marker put in the view's first URL so the
+    /// CDP driver can bind to exactly this page target.</summary>
+    public string? BindMarker { get; set; }
+
+    /// <summary>Windows per-tab mode: the view was destroyed to cap memory; it is rebuilt
+    /// and reloaded to <see cref="LastUrl"/> the next time the tab is shown or driven.</summary>
+    public bool Evicted { get; set; }
+
+    /// <summary>Windows per-tab mode: last time the tab was shown (LRU eviction order).</summary>
+    public DateTime LastActiveUtc { get; set; } = DateTime.UtcNow;
+
+    /// <summary>Per-tab mode: the tab currently has a live view (macOS WKWebView or Windows WebView2).</summary>
+    public bool HasView => NativeView != IntPtr.Zero || WinView is not null;
 
     /// <summary>Per-tab mode: a page load is in flight in this tab's view.</summary>
     public volatile bool Loading;

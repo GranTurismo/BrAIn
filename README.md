@@ -129,10 +129,18 @@ Notes on the design:
 - **`chrome.js`** is injected alongside it: a Shadow-DOM-isolated top bar with
   a tab strip (favicons + loading spinner), back/forward/reload/stop/home
   buttons, an editable omnibox with a history dropdown, a loading progress
-  bar, a link-hover status bubble and a live security indicator. BrAIn
-  tabs are *logical* — Photino embeds exactly one webview per window, so all
-  tabs share the single window and switching tabs navigates it to that tab's
-  URL (mobile-browser style). It talks to the host over Photino's
+  bar, a link-hover status bubble and a live security indicator. Every
+  tab has its own native view — a WKWebView on macOS, a WebView2 controller on
+  Windows — so switching tabs just shows another view: scroll, form input, JS
+  state, audio and in-flight work survive. (Photino itself embeds exactly one
+  webview per window, so the extra views are created by BrAIn: `Browser/Mac/WkTabs.cs`
+  and `Browser/Win/WinTabs.cs`.) Every tab stays live; background tabs are only
+  throttled. Machines short on RAM can opt in to `BRAIN_MAXLIVE=n` (older Windows
+  views are then evicted and reload on demand, scroll restored) or `BRAIN_SUSPEND=1`
+  (hidden Windows tabs freeze after 20 s). If per-tab
+  views can't be created (or with `BRAIN_PERTAB=0`, or `--no-split` / `--no-toolbar`
+  on macOS) all tabs fall back to sharing one view and a switch reloads the page.
+  It talks to the host over Photino's
   `window.external` bridge (`sendMessage` commands out, `SendWebMessage` state
   pushes in) and auto-hides while screenshots are captured.
 
@@ -283,8 +291,9 @@ GitHub −67%, NYT −64%, Cloudflare −43%, Forbes −28%).
 
 ## Known limitations
 
-- macOS build is compile-verified only; the WKWebView bridge needs on-device
-  testing.
+- The Windows per-tab WebView2 views are new and have only been compile-verified;
+  run with `BRAIN_PERTAB=0` to get the previous shared-view behaviour. Diagnostics
+  go to `%LOCALAPPDATA%\BrAIn\brain.log`.
 - `browser_pdf` is Windows-only (CDP `Page.printToPDF`).
 - `browser_click_at` uses real OS-level input on Windows; the JS fallback on
   macOS dispatches synthetic events.

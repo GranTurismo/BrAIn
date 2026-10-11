@@ -27,7 +27,7 @@ pkill -x BrAIn 2>/dev/null; sleep 1
 
 echo "-- install into $APP"
 mkdir -p "$APP/Contents/MacOS"
-rsync -a --exclude '*.pdb' "$OUT"/ "$APP/Contents/MacOS/"
+rsync -a --exclude '*.pdb' --exclude 'runtimes' --exclude 'WebView2Loader.dll' "$OUT"/ "$APP/Contents/MacOS/"
 chmod +x "$APP/Contents/MacOS/BrAIn"
 xattr -cr "$APP" 2>/dev/null
 
