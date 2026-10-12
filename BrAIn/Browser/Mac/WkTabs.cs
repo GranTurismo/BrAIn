@@ -205,9 +205,15 @@ internal static partial class WkTabs
         var ui = ObjC.Send(_boot, ObjC.Sel("UIDelegate"));
         if (ui != IntPtr.Zero) ObjC.Send(wv, ObjC.Sel("setUIDelegate:"), ui);
 
-        // No white flash while a page is still blank: show the window colour.
-        var no = ObjC.Send(ObjC.GetClass("NSNumber"), ObjC.Sel("numberWithBool:"), IntPtr.Zero);
-        ObjC.Send(wv, ObjC.Sel("setValue:forKey:"), no, ObjC.NsString("drawsBackground"));
+        // Pages draw their own background (default white) — a transparent view let the
+        // dark window colour bleed through sites that set no background. Internal pages
+        // set their own dark background in theme.css.
+        var yes = ObjC.Send(ObjC.GetClass("NSNumber"), ObjC.Sel("numberWithBool:"), (IntPtr)1);
+        ObjC.Send(wv, ObjC.Sel("setValue:forKey:"), yes, ObjC.NsString("drawsBackground"));
+        // Web content always sees a light system appearance, so sites don't flip to their
+        // dark style (prefers-color-scheme) just because macOS is in dark mode.
+        var aqua = ObjC.Send(ObjC.GetClass("NSAppearance"), ObjC.Sel("appearanceNamed:"), ObjC.NsString("NSAppearanceNameAqua"));
+        if (aqua != IntPtr.Zero) ObjC.Send(wv, ObjC.Sel("setAppearance:"), aqua);
         ObjC.SendNInt(wv, ObjC.Sel("setAutoresizingMask:"), 18); // width + height follow the window
         ObjC.SendNInt(wv, ObjC.Sel("setHidden:"), 1);
         if (zoomPct != 100) SetZoom(wv, zoomPct);

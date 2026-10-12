@@ -46,12 +46,13 @@ public sealed class CdpDriver : DriverBase
         await _session.SendAsync("Network.enable", null, ct);
         await _session.SendAsync("Log.enable", null, ct);
 
-        // Paint the page background dark during the doc teardown/paint gap —
-        // without this WebView2 strobes white on every tab switch/new tab.
+        // Default page background is white, like other browsers; pages that set their
+        // own background (including dark ones) are unaffected. Also pin the reported
+        // colour scheme to light so sites don't switch to dark just because the OS is.
         try
         {
-            await _session.SendAsync("Emulation.setDefaultBackgroundColorOverride",
-                new { color = new { r = 11, g = 13, b = 18, a = 255 } }, ct);
+            await _session.SendAsync("Emulation.setEmulatedMedia",
+                new { features = new[] { new { name = "prefers-color-scheme", value = "light" } } }, ct);
         }
         catch { }
 
