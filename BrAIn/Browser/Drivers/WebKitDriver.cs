@@ -27,13 +27,44 @@ public sealed class WebKitDriver : DriverBase
     public override string Name => "webkit";
     public override bool SupportsEval => true;
     public override bool SupportsScreenshot => true;
-    public override bool SupportsRealInput => false; // JS-dispatched events only
+    public override bool SupportsRealInput => true;  // CGEvent OS-level input (user activation)
     public override bool SupportsConsoleLog => true; // via brain.js console hook
     public override bool SupportsNetworkLog => true; // via PerformanceResourceTiming polling
     public override bool SupportsCookies => true;    // document.cookie only (no HttpOnly)
 
     public override Task InitializeAsync(BrowserController controller, CancellationToken ct)
         => Tab.NativeView != IntPtr.Zero ? InitializePerTab() : InitializeSharedAsync(controller, ct);
+
+    // ---------------- real OS-level input (CGEvent) ----------------
+    // JS-dispatched events carry no user activation, so gesture-gated features
+    // (passkeys, popups from click handlers) reject them. Posting CGEvents takes
+    // the same path as hardware input. The window is raised first: a real event
+    // lands on whatever is topmost at that screen point.
+
+    private int CgButton(MouseButton b) => b == MouseButton.Right ? 1 : b == MouseButton.Middle ? 2 : 0;
+
+    public override Task ClickAtAsync(double x, double y, MouseButton button, int clickCount, CancellationToken ct)
+    {
+        var view = _webview;
+        if (view == IntPtr.Zero) return base.ClickAtAsync(x, y, button, clickCount, ct);
+        return Task.Run(() => Controller.InvokeOnUi(() =>
+        {
+            var win = MacWindow.WindowByNumber(Tab.MacWindowNumber);
+            MacWindow.Activate(win);
+            MacInput.Click(win, view, x, y, CgButton(button), Math.Clamp(clickCount, 1, 2));
+        }), ct);
+    }
+
+    public override Task MouseMoveAsync(double x, double y, CancellationToken ct)
+    {
+        var view = _webview;
+        if (view == IntPtr.Zero) return base.MouseMoveAsync(x, y, ct);
+        return Task.Run(() => Controller.InvokeOnUi(() =>
+        {
+            var win = MacWindow.WindowByNumber(Tab.MacWindowNumber);
+            MacInput.MoveTo(win, view, x, y);
+        }), ct);
+    }
 
     /// <summary>Per-tab mode: the view already exists (WkTabs.Create) and carries
     /// its own scripts, so there is nothing to discover or inject.</summary>
@@ -140,6 +171,7 @@ public sealed class WebKitDriver : DriverBase
         Tab.MacWindowNumber = windowNumber;
         try { _watchedUrl = ""; } catch { }
         try { Controller.InvokeOnUi(() => MacWindow.EnablePictureInPicture(webview)); } catch { }
+        try { Controller.InvokeOnUi(() => WkPopup.Install(webview)); } catch { }
         try { Controller.InvokeOnUi(() => WkDownloads.Install(webview, Controller)); } catch { }
         // Document-start injection: mounts the chrome bar while the page is
         // still parsing instead of waiting for the post-load eval path.

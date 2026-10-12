@@ -255,9 +255,10 @@ internal static class ActivityRecorder
             if (tool == "browser_evaluate" && args["script"]?.GetValue<string>() is { } sc)
                 args["script"] = ActivityLog.Clip(sc, 2000);
 
-            // Seatbelt: a click or Enter that looks like paying, deleting or sending waits for the user.
-            // Saved flows were approved by the user already, so they are not gated step by step.
-            if (!ActivityLog.ReadOnlyTools.Contains(tool) && browser.Handoff.HasPending)
+            // A "your turn" handoff is open: the user is doing a step in the page.
+            // Everything that would act on the browser waits — including flows,
+            // which replay actions even though the tool itself is read-classified.
+            if ((!ActivityLog.ReadOnlyTools.Contains(tool) || tool == "browser_run_flow") && browser.Handoff.HasPending)
             {
                 log.Add(new ActivityEntry
                 {

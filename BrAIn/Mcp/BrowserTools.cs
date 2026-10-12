@@ -216,7 +216,7 @@ public sealed class BrowserTools(BrowserController browser)
 
     // ========================================================== INTERACTION
 
-    [McpServerTool(Name = "browser_click"), Description("Click an element (scrolls it into view first).")]
+    [McpServerTool(Name = "browser_click"), Description("Click an element (scrolls it into view first). Uses real OS-level input where the driver supports it, so clicks count as user activation (passkeys, popups).")]
     public async Task<string> Click(
         [Description(SelHelp)] string element,
         [Description("Tab id/prefix")] string? tab = null,
@@ -224,6 +224,23 @@ public sealed class BrowserTools(BrowserController browser)
     {
         var t = ResolveTab(tab);
         await EnsureLibAsync(t, ct);
+        // Real OS-level input when the driver has it (macOS CGEvent, WebView2 input):
+        // trusted clicks carry user activation, so gesture-gated flows — passkey
+        // prompts, payment sheets, popup-openers — work like a human click.
+        var driver = await browser.DriverOrThrowAsync(t, ct);
+        if (driver.SupportsRealInput)
+        {
+            var r2 = await browser.EvaluateAsync($"window.__brain.rect({Js(element)})", false, t, ct);
+            if (r2 is { ValueKind: JsonValueKind.Object } o
+                && o.TryGetProperty("w", out var w) && w.GetDouble() > 0
+                && o.TryGetProperty("h", out var h) && h.GetDouble() > 0)
+            {
+                var cx = o.GetProperty("x").GetDouble() + w.GetDouble() / 2;
+                var cy = o.GetProperty("y").GetDouble() + h.GetDouble() / 2;
+                await driver.ClickAtAsync(cx, cy, MouseButton.Left, 1, ct);
+                return $"click {element}: ok (real input)";
+            }
+        }
         var r = await browser.EvaluateTextAsync($"window.__brain.click({Js(element)})", t, ct);
         return $"click {element}: {r}";
     }

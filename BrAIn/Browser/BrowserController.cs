@@ -713,6 +713,8 @@ public sealed class BrowserController : IAsyncDisposable
 
             _nsWindowNumber = number;
             first.MacWindowNumber = number;
+            Mac.WkPopup.OnNewTab = url => _ = Task.Run(() => NewTabAsync(url, default));
+            Mac.WkPopup.Log = Log;
             InvokeOnUi(() =>
             {
                 Mac.WkTabs.SetBootstrap(boot);
@@ -2502,11 +2504,12 @@ public sealed class BrowserController : IAsyncDisposable
     private void PushHandoff()
     {
         if (_noToolbar || !_driverReady.Task.IsCompleted) return;
-        var t = Tabs.Main ?? Tabs.All.FirstOrDefault();
-        if (t is null || t.IsClosed) return;
+        // Every tab gets the card: the agent may be working on a background tab
+        // while the user is looking at another one.
         var json = JsonSerializer.Serialize(new { b = 49, ho = Handoff.View() });
-        try { InvokeOnUi(() => { if (!t.IsClosed) SendUi(t, json); }); }
-        catch { /* window mid-close */ }
+        foreach (var t in Tabs.All)
+            try { InvokeOnUi(() => { if (!t.IsClosed) SendUi(t, json); }); }
+            catch { /* window mid-close */ }
     }
 
     /// <summary>{b:48}: recording state for the pill and the save card, plus the result of a save.

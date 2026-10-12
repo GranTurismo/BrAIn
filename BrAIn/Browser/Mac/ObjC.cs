@@ -97,6 +97,12 @@ internal static partial class ObjC
     internal static partial MacWindow.CGPoint SendPointFromView(IntPtr recv, IntPtr sel,
         MacWindow.CGPoint p, IntPtr view);
 
+    /// CGRect + NSUInteger + NSUInteger + BOOL args
+    /// (-[NSWindow initWithContentRect:styleMask:backing:defer:]).
+    [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
+    internal static partial IntPtr SendRectNIntNIntBool(IntPtr recv, IntPtr sel,
+        MacWindow.CGRect rect, nint a, nint b, byte c);
+
     /// +[NSEvent mouseEventWithType:location:modifierFlags:timestamp:
     /// windowNumber:context:eventNumber:clickCount:pressure:]
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]

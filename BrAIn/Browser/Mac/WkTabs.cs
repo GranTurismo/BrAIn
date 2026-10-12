@@ -131,7 +131,18 @@ internal static partial class WkTabs
 
     /// <summary>The bootstrap view Photino created. It is hidden and only used
     /// as the template new tab views copy their configuration from.</summary>
-    internal static void SetBootstrap(IntPtr bootView) => _boot = bootView;
+    internal static void SetBootstrap(IntPtr bootView)
+    {
+        _boot = bootView;
+        // Wrap its UIDelegate before tab views are made: Create copies the
+        // bootstrap delegate, so every view inherits the popup handler too.
+        try { WkPopup.Install(bootView); } catch { }
+    }
+
+    /// <summary>The bootstrap view's navigation delegate — popup windows reuse
+    /// it so loads inside them behave like tab loads.</summary>
+    internal static IntPtr BootstrapNavDelegate =>
+        _boot == IntPtr.Zero ? IntPtr.Zero : ObjC.Send(_boot, ObjC.Sel("navigationDelegate"));
 
     /// <summary>Frame of the page area: everything below the toolbar strip.</summary>
     private static MacWindow.CGRect PageFrame(IntPtr content)
