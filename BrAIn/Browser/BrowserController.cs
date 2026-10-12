@@ -130,6 +130,7 @@ public sealed class BrowserController : IAsyncDisposable
     public BrAIn.Mcp.Seatbelt Belt { get; private set; } = null!;
     public BrAIn.Mcp.Handoff Handoff { get; private set; } = null!;
     public BrAIn.Mcp.FlowRecorder Recorder { get; private set; } = null!;
+    public Updater Updater { get; } = new();
 
     private Cdp.CdpClient? _cdpBrowser; // Windows: browser-level CDP connection
     /// <summary>The tab object that owns the shared window's driver. Kept
@@ -330,11 +331,18 @@ public sealed class BrowserController : IAsyncDisposable
         Belt.Changed += PushBelt;
         Handoff = new BrAIn.Mcp.Handoff();
         Handoff.Changed += PushHandoff;
+        Updater.Changed += () => { Log("update: " + Updater); PushUpdate(); };
         Recorder = new BrAIn.Mcp.FlowRecorder();
         Recorder.Changed += () => PushRec();
         LoadStores();
         Downloads.Changed += PushDownloads;
         Task.Run(CleanupStaleProfiles);
+        // Release check in the background; the menu badge lights up if one lands.
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(4000);
+            try { await Updater.CheckAsync(false, CancellationToken.None); } catch { }
+        });
     }
 
     // ---------------- persisted stores (bookmarks + history) ----------------
@@ -2135,6 +2143,15 @@ public sealed class BrowserController : IAsyncDisposable
                             break;
                         case "shot": _ = SaveScreenshotAsync(active, true); break;
                         case "shotview": _ = SaveScreenshotAsync(active, false); break;
+                        case "updatecheck": _ = Updater.CheckAsync(force: true, CancellationToken.None); break;
+                        case "updateapply":
+                            // One click does the whole dance: fetch if needed, then swap + relaunch.
+                            _ = Task.Run(async () =>
+                            {
+                                await Updater.DownloadAsync(CancellationToken.None);
+                                Updater.ApplyAndRelaunch();
+                            });
+                            break;
                         case "zoomin": ZoomBy(+1); break;
                         case "zoomout": ZoomBy(-1); break;
                         case "zoomreset": SetZoomLevel(100); break;
@@ -2507,6 +2524,14 @@ public sealed class BrowserController : IAsyncDisposable
         // Every tab gets the card: the agent may be working on a background tab
         // while the user is looking at another one.
         var json = JsonSerializer.Serialize(new { b = 49, ho = Handoff.View() });
+        foreach (var t in Tabs.All)
+            try { InvokeOnUi(() => { if (!t.IsClosed) SendUi(t, json); }); }
+            catch { /* window mid-close */ }
+    }
+
+    private void PushUpdate()
+    {
+        var json = JsonSerializer.Serialize(new { b = 61, upd = Updater.View() });
         foreach (var t in Tabs.All)
             try { InvokeOnUi(() => { if (!t.IsClosed) SendUi(t, json); }); }
             catch { /* window mid-close */ }

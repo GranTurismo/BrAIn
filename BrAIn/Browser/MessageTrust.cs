@@ -20,7 +20,7 @@ internal static class MessageTrust
         "pwdel", "pwget", "pwreveal",
     };
 
-    private static readonly HashSet<string> BarOnly = new(StringComparer.Ordinal) { "askok", "beltmode", "handoff" };
+    private static readonly HashSet<string> BarOnly = new(StringComparer.Ordinal) { "askok", "beltmode", "handoff", "updateapply" };
 
     private static readonly HashSet<string> InternalUrls = new(StringComparer.Ordinal)
     {

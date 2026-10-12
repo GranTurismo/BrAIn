@@ -1764,10 +1764,31 @@
             ['Settings', [
                 ['se', 'Search engine', seName() + ' ›'],
                 ['import', 'Import browser data', ''],
+                ['upd', updLabel(), updBadge()],
             ]],
         ];
         return secs;
     }
+    // Update row label/shortcut: mirrors the phases pushed as {b:61,upd}.
+    function updLabel() {
+        var u = state.upd || {};
+        switch (u.ph) {
+            case 'checking': return 'Checking for updates…';
+            case 'available': return 'Update to v' + u.v;
+            case 'downloading': return 'Downloading update… ' + (u.pct || 0) + '%';
+            case 'ready': return 'Restart to update to v' + u.v;
+            case 'uptodate': return 'BrAIn is up to date';
+            case 'error': return 'Update failed — try again';
+            case 'disabled': return 'Updates unavailable (dev build)';
+            default: return 'Check for updates';
+        }
+    }
+    function updBadge() {
+        var u = state.upd || {};
+        if (u.ph === 'available' || u.ph === 'ready') return 'NEW';
+        return 'v' + (u.cur || '');
+    }
+
     function menuMore() {
         var items = [];
         if (state.sess > 0) items.push(['restore', 'Restore last session (' + state.sess + ')', '']);
@@ -1926,6 +1947,11 @@
         if (c === 'print') { if (ROLE === 'bar') { send('pageui:print'); return; } try { window.print(); } catch (e) { } return; }
         if (c === 'viewsource') { send('newtab:view-source:' + curUrl()); return; }
         if (c === 'help') { send('newtab:about:help'); return; }
+        if (c === 'upd') {
+            var uph = (state.upd || {}).ph;
+            send(uph === 'available' || uph === 'ready' ? 'updateapply' : 'updatecheck');
+            return;
+        }
         if (c === 'shortcuts') { send('newtab:about:shortcuts'); return; }
         if (c === 'newpriv') { openNewTab(true); return; }
         if (c === 'newtab') { openNewTab(false); return; }
@@ -1986,6 +2012,7 @@
             ['topmost', 'Toggle always on top', 'pin window float', IS_MAC ? '⌃⌥T' : 'Ctrl+Alt+T'],
             ['shortcuts', 'Keyboard shortcuts', 'hotkeys keys bindings cheat sheet', IS_MAC ? '⌘/' : 'Ctrl+/'],
             ['help', 'How to use BrAIn', 'help guide mcp docs', 'F1'],
+            ['upd', updLabel(), 'update upgrade version release download install new', updBadge()],
         ].concat(state.sel.map(function (e) {
             return ['se:' + e.i, 'Search engine: ' + e.n,
                 'default search provider engine ' + e.n.toLowerCase(), e.i === state.se ? '✓' : ''];
@@ -6447,6 +6474,11 @@
                         onRwSearch(sh, j);
                     } else if (j && j.b === 74) {
                         rwCapture(j.tag || 'agent', true); // host asks for a (usually agent-tagged) snapshot
+                    } else if (j && j.b === 61) {
+                        state.upd = j.upd;
+                        // Refresh an open menu so the row shows the new phase at once.
+                        var um = sh.getElementById('menu');
+                        if (um && um.classList.contains('on')) { um.classList.remove('on'); showMenu(sh); }
                     }
                 } catch (e) { }
             });

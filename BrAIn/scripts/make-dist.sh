@@ -5,7 +5,10 @@
 # Requires the mac app to be built first (scripts/rebuild-mac.command).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VER="${1:-1.0.0}"
+# Version comes from the csproj (<Version>) so the binary the updater reports
+# always matches the installer name. Override with an explicit arg if needed.
+VER="${1:-$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' BrAIn.csproj | head -1)}"
+[ -n "$VER" ] || { echo "no <Version> in BrAIn.csproj"; exit 1; }
 for p in /usr/local/share/dotnet /opt/homebrew/bin "$HOME/.dotnet"; do
   [ -x "$p/dotnet" ] && export PATH="$p:$PATH"
 done
