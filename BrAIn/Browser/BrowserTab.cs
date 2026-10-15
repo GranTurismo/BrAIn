@@ -48,6 +48,9 @@ public sealed class BrowserTab
 
     /// <summary>Per-tab mode: a page load is in flight in this tab's view.</summary>
     public volatile bool Loading;
+    /// <summary>Second loading stage: the server has answered and content is arriving
+    /// (false while still connecting / waiting for the first response).</summary>
+    public volatile bool Receiving;
 
     /// <summary>Per-tab mode: this tab's view can go back / forward.</summary>
     public bool CanBack { get; set; }

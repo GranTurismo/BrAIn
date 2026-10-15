@@ -61,6 +61,7 @@
     var lastSig = '';      // tab-strip render signature — skip DOM rebuilds when unchanged
     var findOpen = false;  // find-in-page bar visible
     var lastScrollReport = 0;
+    state.tbh = []; state.tbx = [];
     state.bmarks = []; state.bm = false; state.zoom = 100; state.topmost = false;
     state.sess = 0; state.privActive = false;
     state.rw = false; state.rwa = false; state.rwk = 30; state.rwm = 128; state.rws = [];
@@ -611,12 +612,15 @@
         var busy = t.active && state.loading && loadSlow;
         var icon = t.icon || '';
         var letter = (title || '?').trim().charAt(0).toUpperCase();
-        var faceSig = letter + '|' + icon + '|' + (busy ? 'B' : '') + (t.priv ? 'P' : '') + '|' + t.id;
+        var rx = busy && !!t.rx; // stage 2: server answered, content arriving (stage 1 = connecting)
+        el.classList.toggle('wait', !!busy && !rx);
+        var faceSig = letter + '|' + icon + '|' + (busy ? (rx ? 'R' : 'B') : '') + (t.priv ? 'P' : '') + '|' + t.id;
+        el.classList.toggle('busy', !!busy);
         if (el._face !== faceSig) {
             el._face = faceSig;
             var dot = el.querySelector('.dot');
             if (busy) {
-                dot.className = 'dot spin';
+                dot.className = 'dot spin' + (rx ? '' : ' wait');
                 dot.style.background = '';
                 dot.innerHTML = H('');
             } else if (t.priv) {
@@ -889,6 +893,16 @@
         return ghostAt >= 0 && t.length >= ghostAt ? t.slice(0, ghostAt) : t;
     }
 
+    // The host only pushes the 40 most recent visits in state.hist; older
+    // (e.g. imported) history is searched host-side per keystroke and the
+    // matches land here via b:81, keyed by the lowercased query.
+    var remoteHist = { q: '', items: [] };
+    function requestHist() {
+        var q = readQuery().trim();
+        if (!q || q.toLowerCase() === remoteHist.q) return;
+        send('histq:' + q);
+    }
+
     function filteredHist() {
         var s = sh0();
         if (!s) return [];
@@ -911,8 +925,9 @@
             out.push({ u: bu, t: b.t, i: b.i, bm: 1 });
         }
         var scored = [];
-        for (var j = 0; j < state.hist.length; j++) {
-            var it = state.hist[j];
+        var hsrc = ql && remoteHist.q === ql ? state.hist.concat(remoteHist.items) : state.hist;
+        for (var j = 0; j < hsrc.length; j++) {
+            var it = hsrc[j];
             var u = typeof it === 'string' ? it : it.u;
             if (!u || seen[u]) continue;
             var sc = 0;
@@ -1007,6 +1022,7 @@
         if (editing || !addr || !inp) return;
         editing = true;
         dirty = false;
+        remoteHist = { q: '', items: [] };
         ghostAt = -1; ghostBlock = null;
         addr.style.display = 'none';
         inp.style.display = 'block';
@@ -1763,6 +1779,7 @@
             ]],
             ['Settings', [
                 ['se', 'Search engine', seName() + ' ›'],
+                ['tbcustom', 'Customize toolbar…', ''],
                 ['import', 'Import browser data', ''],
                 ['upd', updLabel(), updBadge()],
             ]],
@@ -1934,6 +1951,7 @@
         if (c === 'pin') { var atPin = activeTab(); if (atPin) send('pin:' + atPin.id); return; }
         if (c === 'dupe') { var atDupe = activeTab(); if (atDupe) send('dupetab:' + atDupe.id); return; }
         if (c === 'closeothers') { var atCO = activeTab(); if (atCO) send('closeothers:' + atCO.id); return; }
+        if (c === 'tbcustom') { showTbc(sh); return; }
         if (c === 'history') { send('navigate:about:history'); return; }
         if (c === 'pw') { send('navigate:about:passwords'); return; }
         if (c === 'flows') { send('navigate:about:flows'); return; }
@@ -2301,8 +2319,96 @@
         el.removeAttribute('title'); // ours replaces the slow native tooltip
     }
 
+    // ---------------- toolbar customization ----------------
+    // Buttons right of the address bar: the built-in ones can be hidden and a
+    // few shortcuts added. Stored host-side (prefs.json) so every page/window
+    // agrees; {tbh: hidden built-ins, tbx: added shortcuts} ride the b:9 state.
+    var TB_BUILTIN = [['agbtn', 'AI agent'], ['pip', 'Picture-in-picture'], ['star', 'Bookmark this page'], ['rwb', 'Rewind'], ['dlbtn', 'Downloads']];
+    function tbIc(d) { return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + d + '</svg>'; }
+    var TB_EXTRA = [
+        { id: 'history',  n: 'History',          sc: 'Ctrl+H',       svg: tbIc('<circle cx="8" cy="8" r="5.6"/><path d="M8 4.6V8l2.3 1.5"/>') },
+        { id: 'pw',       n: 'Passwords',        sc: 'Ctrl+Shift+O', svg: tbIc('<circle cx="5.6" cy="9.6" r="2.6"/><path d="M7.5 7.8 12.6 2.8M10.6 4.8l1.8 1.8"/>') },
+        { id: 'flows',    n: 'Flows & activity', sc: 'Ctrl+Shift+F', svg: tbIc('<circle cx="3.6" cy="4" r="1.5"/><circle cx="12.4" cy="12" r="1.5"/><path d="M5.1 4H9a2 2 0 0 1 2 2v4.5"/>') },
+        { id: 'shot',     n: 'Screenshot',       sc: 'Ctrl+Shift+S', svg: tbIc('<rect x="2" y="4.2" width="12" height="8.6" rx="2"/><circle cx="8" cy="8.5" r="2.2"/><path d="M5.8 4.2 6.6 2.8h2.8l.8 1.4"/>') },
+        { id: 'devtools', n: 'Developer tools',  sc: 'F12',          svg: tbIc('<path d="m5.4 5-3 3 3 3M10.6 5l3 3-3 3M9 3.4 7 12.6"/>') },
+        { id: 'print',    n: 'Print',            sc: 'Ctrl+P',       svg: tbIc('<path d="M4.6 6V2.8h6.8V6M4.6 11.4H3a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v3.4a1 1 0 0 1-1 1h-1.6"/><rect x="4.6" y="9.2" width="6.8" height="4.2" rx=".8"/>') }
+    ];
+    function applyTbPrefs(sh) {
+        var tools = sh && sh.getElementById('tools'); if (!tools) return;
+        var h = state.tbh || [], x = state.tbx || [];
+        var sig = h.join(',') + '|' + x.join(',');
+        if (tools._tbsig === sig) return;
+        tools._tbsig = sig;
+        TB_BUILTIN.forEach(function (b) { tools.classList.toggle('h-' + b[0], h.indexOf(b[0]) >= 0); });
+        Array.prototype.forEach.call(tools.querySelectorAll('.xtra'), function (n) { n.remove(); });
+        var mb = sh.getElementById('mbtn');
+        TB_EXTRA.forEach(function (d) {
+            if (x.indexOf(d.id) < 0) return;
+            var b = document.createElement('button');
+            b.className = 'tb xtra';
+            b.setAttribute('data-x', d.id);
+            b.setAttribute('data-tip', d.n);
+            b.setAttribute('data-sc', d.sc);
+            b.innerHTML = H(d.svg);
+            ['mousedown', 'click'].forEach(function (ev) {
+                b.addEventListener(ev, function (e) { e.stopPropagation(); e.preventDefault(); });
+            });
+            b.addEventListener('click', function () { menuCmd(sh, d.id); });
+            tools.insertBefore(b, mb);
+        });
+    }
+    function tbSave(sh) {
+        send('tbset:' + JSON.stringify({ h: state.tbh || [], x: state.tbx || [] }));
+        applyTbPrefs(sh);
+    }
+    function showTbc(sh) {
+        var m = sh.getElementById('menu'); if (!m) return;
+        function row(kind, id, label, on, svg) {
+            return '<div class="tbrow' + (on ? ' on' : '') + '" data-k="' + kind + '" data-id="' + id + '">' +
+                (svg || '') + '<span>' + label + '</span><i></i></div>';
+        }
+        function paint() {
+            var h = state.tbh || [], x = state.tbx || [];
+            var html = '<div class="mlabel">Customize toolbar</div>' +
+                '<div class="tbhint">Pick the buttons shown right of the address bar.</div>' +
+                '<div class="mlabel">Built-in</div>';
+            TB_BUILTIN.forEach(function (b) { html += row('b', b[0], b[1], h.indexOf(b[0]) < 0); });
+            html += '<div class="mlabel">Add shortcuts</div>';
+            TB_EXTRA.forEach(function (d) { html += row('x', d.id, d.n, x.indexOf(d.id) >= 0, d.svg); });
+            html += '<div class="msep"></div><div class="mi tbreset"><span>Reset to default</span></div>';
+            m.innerHTML = H(html);
+            m.classList.add('on');
+            Array.prototype.forEach.call(m.querySelectorAll('.tbrow'), function (el) {
+                el.addEventListener('mousedown', function (e) {
+                    e.preventDefault(); e.stopPropagation();
+                    var id = el.getAttribute('data-id'), list = el.getAttribute('data-k') === 'b' ? 'tbh' : 'tbx';
+                    var arr = (state[list] || []).slice(), i = arr.indexOf(id);
+                    if (i >= 0) arr.splice(i, 1); else arr.push(id);
+                    state[list] = arr;
+                    tbSave(sh); paint();
+                });
+            });
+            var rs = m.querySelector('.tbreset');
+            if (rs) rs.addEventListener('mousedown', function (e) {
+                e.preventDefault(); e.stopPropagation();
+                state.tbh = []; state.tbx = [];
+                tbSave(sh); paint();
+            });
+        }
+        paint();
+        var off = function (e) {
+            var t = e && e.target;
+            if (t && t.closest && t.closest('#menu')) return;
+            m.classList.remove('on');
+            document.removeEventListener('mousedown', off, true);
+        };
+        setTimeout(function () { rawOn(document, 'mousedown', off, true); }, 0);
+    }
+
     function wireTools(sh) {
         wireHoverGroup(sh, 'tools', 'hl', '.tb');
+        sh.getElementById('tools').addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); showTbc(sh); });
+        applyTbPrefs(sh);
         wireHoverGroup(sh, 'nav', 'nhl', '.nav-b');
     }
 
@@ -3918,6 +4024,7 @@
         state.canFwd = !!b.canFwd;
         state.hist = Array.isArray(b.hist) ? b.hist : [];
         state.bmarks = Array.isArray(b.bmarks) ? b.bmarks : [];
+        state.tbh = Array.isArray(b.tbh) ? b.tbh : []; state.tbx = Array.isArray(b.tbx) ? b.tbx : [];
         state.bm = !!b.bm;
         state.zoom = b.zoom || 100;
         state.topmost = !!b.topmost;
@@ -4798,9 +4905,33 @@
             'animation:iconin .18s ease both}' +
             '@keyframes iconin{from{opacity:0}to{opacity:1}}' +
             '.tab .dot.spin{background:transparent;box-shadow:none}' +
-            '.tab .dot.spin::before{content:"";width:13px;height:13px;border-radius:50%;' +
-            'border:2px solid hsl(var(--h) 100% 74% / .2);border-top-color:hsl(var(--h) 100% 81%);animation:rot .65s linear infinite}' +
+            // loading: a glowing comet ring around a breathing core, plus a light sweep along the tab's underline
+            '.tab .dot.spin::before{content:"";position:absolute;width:19px;height:19px;border-radius:50%;' +
+            'background:conic-gradient(from 0deg,transparent 0deg,hsl(var(--h) 100% 74% / .15) 90deg,hsl(var(--h) 100% 78%) 280deg,#fff 360deg);' +
+            '-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 2.6px),#000 calc(100% - 2.2px));' +
+            'mask:radial-gradient(farthest-side,transparent calc(100% - 2.6px),#000 calc(100% - 2.2px));' +
+            'filter:drop-shadow(0 0 3px hsl(var(--h) 100% 72% / .9));animation:rot .85s cubic-bezier(.45,.1,.55,.9) infinite}' +
+            '.tab .dot.spin::after{content:"";width:5px;height:5px;border-radius:50%;' +
+            'background:radial-gradient(circle,#fff,hsl(var(--h) 100% 78%));box-shadow:0 0 8px hsl(var(--h) 100% 72%);' +
+            'animation:corepulse 1.2s ease-in-out infinite}' +
+            // stage 1 (connecting / waiting for the server): a calmer, counter-clockwise dashed ring in muted tones
+            '.tab .dot.spin.wait::before{background:repeating-conic-gradient(hsl(var(--h) 30% 80% / .85) 0deg 20deg,transparent 20deg 45deg);' +
+            'filter:none;animation:rotr 2.2s linear infinite}' +
+            '.tab .dot.spin.wait::after{background:hsl(var(--h) 30% 82% / .8);box-shadow:none;animation:corewait 1.6s ease-in-out infinite}' +
+            '@keyframes rotr{to{transform:rotate(-360deg)}}' +
+            '@keyframes corewait{0%,100%{transform:scale(.5);opacity:.35}50%{transform:scale(.9);opacity:.8}}' +
+            '.tab.active.busy.wait:not(.dropmark-r)::after{height:2px;' +
+            'background:linear-gradient(90deg,hsl(var(--h) 40% 78% / .55),hsl(calc(var(--h) - 72) 35% 62% / .55));' +
+            'box-shadow:none;animation:tabwait 1.6s ease-in-out infinite}' +
+            '@keyframes tabwait{0%,100%{opacity:.35}50%{opacity:1}}' +
             '@keyframes rot{to{transform:rotate(360deg)}}' +
+            '@keyframes corepulse{0%,100%{transform:scale(.55);opacity:.55}50%{transform:scale(1.15);opacity:1}}' +
+            '.tab.active.busy:not(.dropmark-r)::after{height:3px;' +
+            'background:linear-gradient(90deg,transparent,rgba(255,255,255,.95),transparent) -60% 0/38% 100% no-repeat,' +
+            'linear-gradient(90deg,hsl(var(--h) 100% 78%),hsl(calc(var(--h) - 72) 62% 62%));' +
+            'animation:tabsweep 1.15s ease-in-out infinite}' +
+            '@keyframes tabsweep{to{background-position:170% 0,0 0}}' +
+            '@media (prefers-reduced-motion:reduce){.tab .dot.spin.wait::before,.tab .dot.spin.wait::after,.tab .dot.spin::before,.tab .dot.spin::after,.tab.active.busy::after{animation-duration:3s}}' +
             '.tab .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;font-weight:500;letter-spacing:.1px}' +
             '.tab .x{width:18px;height:18px;border-radius:999px;display:grid;place-items:center;color:#8a8aa4;flex:none;' +
             'opacity:0;transition:opacity .15s,background .12s,color .12s,transform .15s}' +
@@ -4999,6 +5130,16 @@
             '.tb:hover{color:#fff}.tb:active{transform:scale(.84)}' +
             '.tb svg{width:15px;height:15px;display:block}' +
             '#pip,#star{display:none}' +
+            '.tools.h-agbtn #agbtn,.tools.h-pip #pip,.tools.h-star #star,.tools.h-rwb #rwb,.tools.h-dlbtn #dlbtn{display:none!important}' +
+            '.tbhint{padding:0 14px 6px;color:#7c7c98;font-size:11.5px}' +
+            '.tbrow{display:flex;align-items:center;gap:10px;margin:1px 6px;padding:7px 8px;border-radius:9px;cursor:pointer;color:#cfcfe6;font-size:12.5px;user-select:none}' +
+            '.tbrow:hover{background:rgba(255,255,255,.06)}' +
+            '.tbrow svg{width:15px;height:15px;flex:none;color:#9a9ab8}' +
+            '.tbrow span{flex:1}' +
+            '.tbrow i{width:28px;height:16px;border-radius:9px;background:rgba(255,255,255,.14);position:relative;flex:none;transition:background .18s}' +
+            '.tbrow i::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .2s cubic-bezier(.3,1.4,.5,1)}' +
+            '.tbrow.on i{background:hsl(var(--h) 100% 66%)}' +
+            '.tbrow.on i::after{transform:translateX(12px)}' +
             '.tsep{width:1px;height:16px;margin:0 3px;background:rgba(255,255,255,.08);flex:none}' +
             '.orb svg{color:hsl(var(--h) 100% 82%);filter:drop-shadow(0 0 5px hsl(var(--h) 100% 70% / .65));' +
             'transition:transform .55s cubic-bezier(.16,1,.3,1)}' +
@@ -6197,7 +6338,7 @@
             inp.setSelectionRange(s0 + t.length, s0 + t.length);
             dirty = true; ghostAt = -1; ghostBlock = null;
             dropIdx = -1;
-            renderDrops(sh); applyInline(sh);
+            renderDrops(sh); applyInline(sh); requestHist();
         });
         inp.addEventListener('input', function () {
             dirty = true;
@@ -6207,6 +6348,7 @@
             dropIdx = -1;
             renderDrops(sh);
             applyInline(sh);
+            requestHist();
         });
         inp.addEventListener('keydown', function (e) {
             e.stopPropagation();
@@ -6389,6 +6531,8 @@
                         state.canFwd = !!j.canFwd;
                         state.hist = Array.isArray(j.hist) ? j.hist : [];
                         state.bmarks = Array.isArray(j.bmarks) ? j.bmarks : [];
+                        state.tbh = Array.isArray(j.tbh) ? j.tbh : []; state.tbx = Array.isArray(j.tbx) ? j.tbx : [];
+                        applyTbPrefs(sh);
                         state.bm = !!j.bm;
                         state.zoom = j.zoom || 100;
                         state.topmost = !!j.topmost;
@@ -6433,6 +6577,14 @@
                         if (INTERNAL_DOC) try {
                             document.dispatchEvent(new CustomEvent('brain-state', { detail: state }));
                         } catch (e2) { }
+                    } else if (j && j.b === 81) {
+                        if (editing && dirty && String(j.q || '').toLowerCase() === readQuery().trim().toLowerCase()) {
+                            remoteHist = { q: String(j.q).toLowerCase(), items: Array.isArray(j.items) ? j.items : [] };
+                            var inp81 = sh.getElementById('addrIn');
+                            if (inp81 && ghostAt >= 0 && inp81.value.length >= ghostAt) { inp81.value = inp81.value.slice(0, ghostAt); ghostAt = -1; }
+                            renderDrops(sh);
+                            applyInline(sh);
+                        }
                     } else if (j && j.b === 10 && dtOpen) {
                         dtLast = j;
                         renderDt(sh, j);

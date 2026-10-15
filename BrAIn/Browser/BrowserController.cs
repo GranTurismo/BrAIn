@@ -347,6 +347,10 @@ public sealed class BrowserController : IAsyncDisposable
 
     // ---------------- persisted stores (bookmarks + history) ----------------
 
+    private static string[] ReadIds(JsonElement e, string[] allowed) => e.ValueKind != JsonValueKind.Array ? [] :
+        e.EnumerateArray().Select(v => v.ValueKind == JsonValueKind.String ? v.GetString() : null)
+         .Where(v => v is not null && allowed.Contains(v)).Select(v => v!).Distinct().ToArray();
+
     private void LoadStores()
     {
         try
@@ -375,6 +379,8 @@ public sealed class BrowserController : IAsyncDisposable
             if (File.Exists(pPath))
             {
                 var root = JsonDocument.Parse(File.ReadAllText(pPath)).RootElement;
+                if (root.TryGetProperty("tbh", out var tbh)) _tbHide = ReadIds(tbh, TbBuiltinIds);
+                if (root.TryGetProperty("tbx", out var tbx)) _tbExtra = ReadIds(tbx, TbExtraIds);
                 if (root.TryGetProperty("se", out var se))
                     _engine = SearchEngines.FirstOrDefault(x => x.Id == se.GetString()) ?? _engine;
                 // Rewind is opt-in: absent / malformed = off.
@@ -1177,6 +1183,7 @@ public sealed class BrowserController : IAsyncDisposable
         };
         driver.LoadStarted += (_, _) =>
         {
+            tab.Receiving = false; // back to the connecting stage until the response commits
             if (PerTab)
             {
                 // each tab tracks its own load; only the shown tab drives the spinner / bar
@@ -1537,9 +1544,26 @@ public sealed class BrowserController : IAsyncDisposable
         try
         {
             await EnsureTabViewAsync(tab);
-            if (Tabs.Active?.Id == tab.Id) ShowTabView(tab); // an empty view in the window colour while it loads
+            // macOS: keep the previous page on screen until the new one has content, then swap
+            // (with the fade) — showing the still-empty view first reads as a flash, as if a whole
+            // new window opened. Slow network loads give up waiting and show the view anyway.
+            var holdShow = !WinPerTab;
+            if (!holdShow && Tabs.Active?.Id == tab.Id) ShowTabView(tab); // an empty view in the window colour while it loads
             SetWindowTitleFor(tab);
-            await NavigateAsync(url ?? "newtab", tab, ct);
+            var nav = NavigateAsync(url ?? "newtab", tab, ct);
+            if (holdShow)
+            {
+                await Task.WhenAny(nav, Task.Delay(url is null ? 700 : 350, CancellationToken.None));
+                if (nav.IsCompletedSuccessfully)
+                {
+                    // hand the hidden page its toolbar state now so the reveal shows a finished toolbar
+                    _lastPushedStateJson = null;
+                    PushChromeStateAll();
+                    await Task.Delay(70, CancellationToken.None); // let the first paint land
+                }
+                if (!tab.IsClosed && Tabs.Active?.Id == tab.Id) ShowTabView(tab);
+            }
+            await nav;
             if (url is not null) ConsumeFresh(); // only internal pages carry it in their boot state
             if (WinPerTab) _ = EvictExcessViewsAsync();
         }
@@ -2224,6 +2248,7 @@ public sealed class BrowserController : IAsyncDisposable
                         // Custom key bindings (about:shortcuts). keyset:<id>:<gesture>
                         // stores an override ("" = unbind); keyreset[:<id>] restores.
                         case "keyset": KeySet(arg); break;
+                        case "tbset": TbSet(arg); break;
                         case "keyreset": KeyReset(arg); break;
                         // Rewind (opt-in page time travel) — see the Rewind region below.
                         case "rwtoggle": RwSetOn(arg == "1"); break;
@@ -2308,6 +2333,7 @@ public sealed class BrowserController : IAsyncDisposable
                         case "actget": FlowUiActivityDetail(tab, arg); break;
                         case "actclear": Activity.Clear(); PushFlowsState(tab); break;
                         case "histget": PushHistory(tab); break;
+                        case "histq": PushHistorySearch(tab, arg); break;
                         case "histdel": if (arg.Length > 0) { DeleteHistory(arg); PushHistory(tab); } break;
                         case "histclear": ClearHistory(); PushHistory(tab); break;
                         case "importscan": await ImportScanAsync(tab); break;
@@ -2356,6 +2382,7 @@ public sealed class BrowserController : IAsyncDisposable
             priv = t.IsPrivate,
             pin = t.IsPinned,
             mute = t.IsMuted,
+            rx = t.Receiving,
             aud = t.IsAudible && (PerTab || t.Id == _docTabId),
             // owns the live document — lets chrome.js predict whether a
             // switch is instant (doc/overlay) or a navigation
@@ -2383,6 +2410,7 @@ public sealed class BrowserController : IAsyncDisposable
             ov,
             hist,
             bmarks,
+            tbh = _tbHide, tbx = _tbExtra,
             bm = isBm,
             zoom = _zoom,
             topmost = _topmost,
@@ -2407,6 +2435,15 @@ public sealed class BrowserController : IAsyncDisposable
             fresh,
             src,
         });
+    }
+
+    /// <summary>The tab's server response has committed: flips its loading indicator from the
+    /// connecting stage to the receiving stage.</summary>
+    internal void MarkReceiving(BrowserTab tab)
+    {
+        if (tab.Receiving || tab.IsClosed) return;
+        tab.Receiving = true;
+        PushChromeStateAll();
     }
 
     private string? _lastPushedStateJson;
@@ -2648,9 +2685,34 @@ public sealed class BrowserController : IAsyncDisposable
         PushChromeStateAll();
     }
 
+    // Toolbar customization (buttons right of the address bar): hidden built-ins + added shortcuts.
+    private static readonly string[] TbBuiltinIds = ["agbtn", "pip", "star", "rwb", "dlbtn"];
+    private static readonly string[] TbExtraIds = ["history", "pw", "flows", "shot", "devtools", "print"];
+    private string[] _tbHide = [];
+    private string[] _tbExtra = [];
+
+    /// <summary>tbset:{"h":[..],"x":[..]} — replace the toolbar layout. Ids are whitelisted so a
+    /// page can't smuggle arbitrary strings into prefs.json or the toolbar.</summary>
+    private void TbSet(string arg)
+    {
+        try
+        {
+            var root = JsonDocument.Parse(arg).RootElement;
+            static string[] Pick(JsonElement e, string[] allowed) => e.ValueKind != JsonValueKind.Array ? [] :
+                e.EnumerateArray().Select(v => v.ValueKind == JsonValueKind.String ? v.GetString() : null)
+                 .Where(v => v is not null && allowed.Contains(v)).Select(v => v!).Distinct().ToArray();
+            _tbHide = root.TryGetProperty("h", out var h) ? Pick(h, TbBuiltinIds) : [];
+            _tbExtra = root.TryGetProperty("x", out var x) ? Pick(x, TbExtraIds) : [];
+        }
+        catch { return; }
+        SavePrefs();
+        PushChromeStateAll();
+    }
+
     private void SavePrefs() => SaveStore("prefs.json", new
     {
         se = _engine.Id,
+        tbh = _tbHide, tbx = _tbExtra,
         rw = _rwOn, rwa = _rwAgent, rwk = _rwKeepMin, rwm = _rwMaxMb, rws = RwSkipList(),
         keys = _keyBinds,
     });
@@ -3748,6 +3810,36 @@ public sealed class BrowserController : IAsyncDisposable
         var e = Activity.Find(new[] { id }).FirstOrDefault();
         if (e is null) return;
         PushJson(tab, JsonSerializer.Serialize(new { b = 34, entry = e }, FlowUiJson));
+    }
+
+    /// <summary>Omnibox lookup over the whole history (b:81). The bar only
+    /// receives the 40 most recent visits, so older — typically imported —
+    /// entries are matched here with the same scoring chrome.js applies.</summary>
+    private void PushHistorySearch(BrowserTab tab, string query)
+    {
+        var q = query.Trim().ToLowerInvariant();
+        if (tab.IsClosed || q.Length == 0) return;
+        List<(HistoryEntry E, int Sc)> hits = new();
+        lock (_history)
+        {
+            foreach (var h in _history)
+            {
+                var ul = h.Url.ToLowerInvariant();
+                var bare = System.Text.RegularExpressions.Regex.Replace(ul, @"^https?://(www\.)?", "");
+                var host = Uri.TryCreate(h.Url, UriKind.Absolute, out var uri) ? uri.Host.ToLowerInvariant() : "";
+                int sc;
+                if (ul.StartsWith(q) || bare.StartsWith(q) || host.StartsWith(q)) sc = 100;
+                else if (ul.Contains(q)) sc = 40;
+                else if ((h.Title ?? "").Contains(q, StringComparison.OrdinalIgnoreCase)) sc = 25;
+                else continue;
+                hits.Add((h, sc + Math.Min(h.Visits, 20)));
+            }
+        }
+        var items = hits.OrderByDescending(x => x.Sc).ThenByDescending(x => x.E.Time).Take(8)
+            .Select(x => (object)new { u = x.E.Url, t = x.E.Title, i = x.E.Icon, d = x.E.Time, v = x.E.Visits }).ToArray();
+        var json = JsonSerializer.Serialize(new { b = 81, q = query.Trim(), items });
+        try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
+        catch { /* window mid-close */ }
     }
 
     /// <summary>Full history list for the about:history page (b:16).</summary>

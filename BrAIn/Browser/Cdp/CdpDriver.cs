@@ -237,7 +237,10 @@ public sealed class CdpDriver : DriverBase
                     if (e.Params.TryGetProperty("frame", out var fr))
                     {
                         if (!fr.TryGetProperty("parentId", out _))
+                        {
                             _mainFrameId = fr.TryGetProperty("id", out var fid) ? fid.GetString() : null;
+                            Controller.MarkReceiving(Tab); // main document committed: server has answered
+                        }
                         if (fr.TryGetProperty("url", out var fu))
                             BrowserController.Log($"frameNavigated: {fu.GetString()}");
                     }

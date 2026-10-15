@@ -272,7 +272,9 @@ internal static partial class WkTabs
             fr != IntPtr.Zero && fr != nsWindow &&
             ObjC.SendBool(fr, ObjC.Sel("respondsToSelector:"), ObjC.Sel("isDescendantOf:")) != 0 &&
             ObjC.SendBool(fr, ObjC.Sel("isDescendantOf:"), v) != 0;
+        var wasHidden = (ObjC.SendNInt(view, ObjC.Sel("isHidden")) & 0xFF) != 0;
         ObjC.SendNInt(view, ObjC.Sel("setHidden:"), 0);
+        if (wasHidden) FadeIn(view);
         foreach (var v in _views.Keys)
         {
             if (v == view) continue;
@@ -283,6 +285,33 @@ internal static partial class WkTabs
         if (_boot != IntPtr.Zero && (fr == _boot || InsideView(_boot))) focusWasInHidden = true;
         Active = view;
         if (focusWasInHidden) ObjC.Send(nsWindow, ObjC.Sel("makeFirstResponder:"), view);
+    }
+
+    /// <summary>Soft entrance for a page view that just became visible (new tab,
+    /// switch, or the neighbour after a close): a short fade plus a few points of
+    /// upward settle. Core Animation only — the model layer is untouched, so a
+    /// dropped animation can never leave the page translucent.</summary>
+    private static void FadeIn(IntPtr view)
+    {
+        try
+        {
+            var layer = ObjC.Send(view, ObjC.Sel("layer"));
+            if (layer == IntPtr.Zero) return;
+            var num = ObjC.GetClass("NSNumber");
+            var timing = ObjC.Send(ObjC.GetClass("CAMediaTimingFunction"), ObjC.Sel("functionWithName:"), ObjC.NsString("easeOut"));
+            IntPtr Anim(string keyPath, double from, double to, double dur)
+            {
+                var a = ObjC.Send(ObjC.GetClass("CABasicAnimation"), ObjC.Sel("animationWithKeyPath:"), ObjC.NsString(keyPath));
+                ObjC.Send(a, ObjC.Sel("setFromValue:"), ObjC.SendDoubleArg(num, ObjC.Sel("numberWithDouble:"), from));
+                ObjC.Send(a, ObjC.Sel("setToValue:"), ObjC.SendDoubleArg(num, ObjC.Sel("numberWithDouble:"), to));
+                ObjC.SendDoubleArg(a, ObjC.Sel("setDuration:"), dur);
+                if (timing != IntPtr.Zero) ObjC.Send(a, ObjC.Sel("setTimingFunction:"), timing);
+                return a;
+            }
+            ObjC.Send(layer, ObjC.Sel("addAnimation:forKey:"), Anim("opacity", 0, 1, 0.18), ObjC.NsString("brainFade"));
+            ObjC.Send(layer, ObjC.Sel("addAnimation:forKey:"), Anim("transform.translation.y", 8, 0, 0.22), ObjC.NsString("brainSettle"));
+        }
+        catch { /* purely cosmetic */ }
     }
 
     internal static void FocusActive(IntPtr nsWindow)

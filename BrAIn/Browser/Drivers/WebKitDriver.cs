@@ -816,6 +816,9 @@ public sealed class WebKitDriver : DriverBase
 
                 var loading = PageLoading;
                 if (loading) { RaiseLoadStarted(); _sawLoad = true; }
+                if (loading && _webview is var rw && rw != IntPtr.Zero && (Controller.DocOwner ?? Tab) is { Receiving: false } rt
+                    && Controller.InvokeOnUi(() => Alive(rw) ? MacWindow.WebViewProgress(rw) : 0.0) >= 0.15)
+                    Controller.MarkReceiving(rt);
 
                 var age = DateTime.UtcNow - _loadStartAt;
                 if (_loading && (!loading && _sawLoad || !_sawLoad && age > TimeSpan.FromSeconds(4) || age > TimeSpan.FromSeconds(60)))
@@ -857,13 +860,14 @@ public sealed class WebKitDriver : DriverBase
                 if (!_loading && (Interlocked.Increment(ref _watchTick) % 3 != 0)) return;
                 var wv = _webview;
                 if (wv == IntPtr.Zero || Tab.IsClosed) return;
-                var (loading, url, audible) = Controller.InvokeOnUi(() => WkTabs.Has(wv)
-                    ? (MacWindow.IsWebViewLoading(wv), MacWindow.GetWebViewUrl(wv), MacWindow.IsWebViewPlayingAudio(wv))
-                    : (false, (string?)null, false));
+                var (loading, url, audible, prog) = Controller.InvokeOnUi(() => WkTabs.Has(wv)
+                    ? (MacWindow.IsWebViewLoading(wv), MacWindow.GetWebViewUrl(wv), MacWindow.IsWebViewPlayingAudio(wv), MacWindow.WebViewProgress(wv))
+                    : (false, (string?)null, false, 0.0));
 
                 if (audible != _audible) { _audible = audible; Controller.SetTabAudible(Tab, audible); }
 
                 if (loading) { RaiseLoadStarted(); _sawLoad = true; }
+                if (loading && prog >= 0.15) Controller.MarkReceiving(Tab);
                 var age = DateTime.UtcNow - _loadStartAt;
                 if (_loading && (!loading && _sawLoad || !_sawLoad && age > TimeSpan.FromSeconds(4) || age > TimeSpan.FromSeconds(60)))
                     RaiseLoadCompleted();

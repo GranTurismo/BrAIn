@@ -150,6 +150,10 @@ internal static partial class MacWindow
         return true;
     }
 
+    /// <summary>WKWebView.estimatedProgress (0..1): sits near the 0.1 floor while connecting / waiting on the
+    /// server and climbs once the response has committed and content is arriving.</summary>
+    internal static double WebViewProgress(IntPtr webview) => ObjC.SendDouble(webview, ObjC.Sel("estimatedProgress"));
+
     /// <summary>WKWebView.isLoading — the native load flag (a BOOL, so only the low byte is meaningful).</summary>
     internal static bool IsWebViewLoading(IntPtr webview) => (ObjC.SendNInt(webview, ObjC.Sel("isLoading")) & 0xFF) != 0;
 
