@@ -88,11 +88,13 @@ public static class Program
         builder.Services.AddSingleton(controller.Tabs);
         builder.Services.AddSingleton(controller.Activity);
         builder.Services.AddSingleton(controller.Flows);
+        builder.Services.AddSingleton(controller.Scripts);
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
             .WithTools<BrowserTools>()
             .WithTools<FlowTools>()
+            .WithTools<UserScriptTools>()
             // Record every tool call (primitives and flow_* alike) in calls.jsonl.
             .WithRequestFilters(f => f.AddCallToolFilter(ActivityRecorder.Create(controller, controller.Activity)));
 

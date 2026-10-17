@@ -13,7 +13,7 @@
     <AssemblyName>BrAIn</AssemblyName>
     <!-- The updater compares this against the latest GitHub release tag — bump it
          together with scripts/make-dist.sh's version argument. -->
-    <Version>1.0.4</Version>
+    <Version>1.1.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <!-- macOS bundle settings are applied when publishing for osx-* RIDs -->
@@ -45,6 +45,7 @@
     <EmbeddedResource Include="Assets\import.html" LogicalName="BrAIn.Assets.import.html" />
     <EmbeddedResource Include="Assets\passwords.html" LogicalName="BrAIn.Assets.passwords.html" />
     <EmbeddedResource Include="Assets\flows.html" LogicalName="BrAIn.Assets.flows.html" />
+    <EmbeddedResource Include="Assets\personality.html" LogicalName="BrAIn.Assets.personality.html" />
     <EmbeddedResource Include="Assets\chrome.js" LogicalName="BrAIn.Assets.chrome.js" />
     <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

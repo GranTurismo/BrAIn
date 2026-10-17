@@ -18,13 +18,14 @@ internal static class MessageTrust
         "importgo", "importscan",
         "keyset", "keyreset",
         "pwdel", "pwget", "pwreveal",
+        "usget", "ussave", "usdel", "ustoggle", "usrun", "ustest", "usexclude", "usclrerr",
     };
 
     private static readonly HashSet<string> BarOnly = new(StringComparer.Ordinal) { "askok", "beltmode", "handoff", "histq", "updateapply" };
 
     private static readonly HashSet<string> InternalUrls = new(StringComparer.Ordinal)
     {
-        "about:newtab", "about:help", "about:shortcuts", "about:history", "about:import", "about:passwords", "about:flows",
+        "about:newtab", "about:help", "about:shortcuts", "about:history", "about:import", "about:passwords", "about:flows", "about:personality",
     };
 
     public static bool IsInternalUrl(string? url)

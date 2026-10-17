@@ -98,6 +98,7 @@ To open on a specific page at startup, add `"args": ["https://example.com"]`.
 | Windows/tabs | `browser_tabs`, `browser_new_tab`, `browser_switch_tab`, `browser_close_tab`, `browser_window_resize`, `browser_window_state`, `browser_set_viewport`, `browser_zoom` |
 | Diagnostics | `browser_evaluate`, `browser_console_log`, `browser_network_requests`, `browser_cookies` |
 | Page history | `browser_rewind` (list / read / search the tab's past states — opt-in, see Rewind below) |
+| Site scripts | `userscript_create`, `userscript_install_template`, `userscript_run`, `userscript_errors`, `userscript_get`, `userscript_list`, `userscript_templates`, `userscript_update`, `userscript_delete` (see Site scripts below) |
 
 Element selectors accept: snapshot refs (`e5`), CSS (`css:#id` or bare
 `#id`), text (`text:Sign in`), role+name (`role:button:Submit`), or XPath
@@ -231,6 +232,29 @@ use ⋮ → *Pause agent*, or press `Ctrl+Shift+.` to pause: action tools
 wait, running flows stop before their next step, and read-only tools (state,
 snapshot, text, screenshot…) keep working. The button turns amber and counts
 blocked attempts. Click again to resume. Pause is per app run (not persisted).
+
+## Site scripts — JavaScript that runs itself
+
+Open the **Personality** page (⋮ → Personality, or `about:personality`) to manage
+scripts that BrAIn runs automatically every time a matching site loads.
+
+- **Write your own** — a name, URL patterns (`example.com` covers subdomains,
+  `*.site.com/blog/*`, `https://x.com/*`, or `*` for every site) and JavaScript. The
+  code runs once per page load after the DOM is ready, with full DOM access.
+- **Quick tweaks** — one-click templates: auto-reject cookie banners, remove
+  newsletter pop-ups, un-stick fixed bars, stop autoplaying video, unlock
+  copy & right-click, dark mode, YouTube cleanup.
+- **Let an agent write it** — `userscript_create` saves a script an agent wrote.
+  Agent scripts are **drafts**: nothing an AI writes runs until you review the code
+  and switch it on. Agents can test with `userscript_run`, debug with
+  `userscript_errors`, and revise with `userscript_update`; they cannot modify or
+  delete scripts you wrote.
+- **See and control what runs** — a `</>` toolbar button lists the scripts
+  matching the current page and pauses one per site. Errors (including ones thrown
+  later from timers and observers) show on the script's row with a ready-to-paste
+  fix prompt for your agent.
+
+Scripts are stored in `userscripts.json` next to the other profile data.
 
 ## Performance vs Chrome
 

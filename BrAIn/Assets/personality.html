@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Personality — BrAIn</title>
+<script>
+  // Served via LoadRawString — flags itself so the host maps the tab to
+  // about:personality instead of the literal about:blank that location.href reports.
+  window.__brainPersonality = 1;
+  window.__brainPersonalityData = __BRAIN_PERSONALITY_JSON__;
+</script>
+<style>
+/*@THEME*/
+  body { padding: 76px 24px 96px; }
+  .wrap { max-width: 1040px; }
+
+  /* ---- hero ---- */
+  .hero {
+    position: relative; overflow: hidden; border-radius: 28px; padding: 56px 52px 50px;
+    border: 1px solid hsl(var(--h) 100% 78% / .22);
+    background:
+      radial-gradient(620px 340px at 88% -20%, hsl(calc(var(--h) - 72) 70% 55% / .45), transparent 70%),
+      radial-gradient(560px 360px at 0% 120%, hsl(var(--h) 85% 58% / .42), transparent 70%),
+      linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+    box-shadow: 0 30px 80px -20px hsl(var(--h) 90% 55% / .35), inset 0 1px 0 rgba(255,255,255,.1);
+  }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px; padding: 5px 13px 5px 10px; border-radius: 99px;
+    font-size: 11px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase;
+    color: hsl(var(--h) 100% 88%); background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12);
+  }
+  .eyebrow i { width: 7px; height: 7px; border-radius: 50%; background: #6fe0c6; box-shadow: 0 0 10px #6fe0c6; }
+  h1 {
+    margin: 20px 0 14px; font-size: 64px; line-height: 1.02; font-weight: 800; letter-spacing: -1.5px;
+    background: linear-gradient(115deg, #ffffff 5%, #b9b9ff 45%, #6fe0c6 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede { max-width: 600px; font-size: 17px; line-height: 1.65; color: #b4b4d0; }
+  .lede b { color: #fff; font-weight: 600; }
+  .stats { display: flex; gap: 34px; margin-top: 30px; flex-wrap: wrap; }
+  .stat b { display: block; font-size: 26px; font-weight: 800; color: #fff; letter-spacing: -.5px; }
+  .stat span { font-size: 11.5px; font-weight: 600; letter-spacing: .8px; text-transform: uppercase; color: var(--dim); }
+
+  /* ---- section heads ---- */
+  .sec { margin: 54px 0 20px; }
+
+  /* ---- flagship ---- */
+  .flag {
+    display: grid; grid-template-columns: 1.15fr 1fr; gap: 0; overflow: hidden; border-radius: 24px; position: relative;
+    border: 1px solid hsl(var(--h) 100% 78% / .2);
+    background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.025));
+    box-shadow: 0 20px 60px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.07);
+  }
+  .flag .txt { padding: 38px 38px 36px; }
+  .flag h3 { font-size: 28px; line-height: 1.15; font-weight: 750; letter-spacing: -.4px; color: #fff; margin: 14px 0 12px; }
+  .flag p { color: #a4a4c2; line-height: 1.7; font-size: 14.5px; }
+  .flag p + p { margin-top: 10px; }
+  .flag p b { color: #e6e6fa; font-weight: 600; }
+  .demo {
+    padding: 28px; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(420px 300px at 50% 40%, hsl(var(--h) 80% 50% / .22), transparent 75%), rgba(0,0,0,.28);
+    border-left: 1px solid var(--line);
+  }
+  .term {
+    width: 100%; border-radius: 14px; background: #0a0a14; border: 1px solid rgba(255,255,255,.09);
+    font: 12.5px/1.75 var(--mono); color: #9b9bb8; overflow: hidden; box-shadow: 0 16px 40px rgba(0,0,0,.5);
+  }
+  .term .bar { display: flex; gap: 6px; padding: 10px 13px; background: rgba(255,255,255,.04); border-bottom: 1px solid var(--line); }
+  .term .bar i { width: 9px; height: 9px; border-radius: 50%; background: rgba(255,255,255,.14); }
+  .term pre { padding: 14px 16px; white-space: pre-wrap; font: inherit; }
+  .term .k { color: hsl(var(--h) 100% 80%); } .term .g { color: #6fe0c6; } .term .d { color: #5c5c78; }
+
+  /* ---- grid ---- */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .fc {
+    position: relative; padding: 24px 22px 22px; border-radius: 20px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.025));
+    border: 1px solid var(--line); box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+    transition: transform .18s cubic-bezier(.16,1,.3,1), border-color .18s, box-shadow .18s;
+  }
+  .fc::before {
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 2px; opacity: .85;
+    background: linear-gradient(90deg, hsl(var(--c) 85% 66%), transparent 85%);
+  }
+  .fc:hover { transform: translateY(-3px); border-color: hsl(var(--c) 85% 70% / .45);
+    box-shadow: 0 18px 44px -14px hsl(var(--c) 85% 55% / .45), inset 0 1px 0 rgba(255,255,255,.07); }
+  .fc.live { cursor: pointer; }
+  .ico {
+    width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center; margin-bottom: 16px;
+    color: #fff; background: linear-gradient(140deg, hsl(var(--c) 80% 62%), hsl(calc(var(--c) + 40) 70% 46%));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.28), 0 8px 20px -8px hsl(var(--c) 90% 55% / .7);
+  }
+  .ico svg { width: 21px; height: 21px; }
+  .fc h4 { font-size: 16.5px; font-weight: 700; color: #f2f2ff; letter-spacing: -.1px; margin-bottom: 7px; }
+  .fc p { font-size: 13px; line-height: 1.6; color: #8f8fae; }
+  .tag {
+    position: absolute; top: 18px; right: 18px; font-size: 9.5px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 6px; color: #b0b0cc; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.08);
+  }
+  .tag.on { color: #0d2a22; background: #6fe0c6; border-color: transparent; }
+  .tag.wip { color: #f2c14e; background: rgba(242,193,78,.12); border-color: rgba(242,193,78,.25); }
+  .go { margin-top: 14px; display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 650; color: hsl(var(--c) 90% 78%); }
+
+
+  /* ---- site scripts ---- */
+  .ss { border-radius: 24px; padding: 30px 30px 26px; position: relative; overflow: hidden;
+    border: 1px solid hsl(var(--h) 100% 78% / .2);
+    background: radial-gradient(520px 260px at 100% 0%, hsl(calc(var(--h) - 72) 70% 50% / .16), transparent 70%),
+      linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.025));
+    box-shadow: 0 20px 60px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.07); }
+  .ss-head { display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+  .ss-head .t { flex: 1; min-width: 260px; }
+  .ss-head h3 { font-size: 26px; font-weight: 750; letter-spacing: -.4px; color: #fff; margin: 12px 0 8px; }
+  .ss-head p { color: #a4a4c2; line-height: 1.65; font-size: 14px; max-width: 640px; }
+  .ss-head p b { color: #e6e6fa; font-weight: 600; }
+  .pbtn { padding: 11px 20px; border-radius: 12px; border: 0; cursor: pointer; color: #fff; font: 650 13.5px var(--font);
+    background: linear-gradient(120deg, hsl(var(--h) 80% 64%), hsl(calc(var(--h) - 40) 70% 56%));
+    box-shadow: 0 8px 22px -6px hsl(var(--h) 90% 60% / .6), inset 0 1px 0 rgba(255,255,255,.22); transition: filter .15s, transform .1s; }
+  .pbtn:hover { filter: brightness(1.1); } .pbtn:active { transform: scale(.97); }
+  .gbtn { padding: 8px 14px; border-radius: 10px; cursor: pointer; color: #cfcfe8; font: 600 12.5px var(--font);
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); transition: background .12s, color .12s; }
+  .gbtn:hover { background: rgba(255,255,255,.12); color: #fff; }
+  .gbtn[disabled] { opacity: .5; pointer-events: none; }
+  .sub2 { margin: 26px 0 12px; font-size: 11px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; color: var(--dim); }
+
+  .agent { margin-top: 18px; padding: 14px 16px; border-radius: 14px; font-size: 13px; line-height: 1.6; color: #a4a4c2;
+    background: hsl(var(--h) 80% 60% / .1); border: 1px dashed hsl(var(--h) 100% 78% / .3); }
+  .agent b { color: #e6e6fa; } .agent code { font-size: 12px; }
+
+  .tpls { display: grid; grid-template-columns: repeat(auto-fill, minmax(236px, 1fr)); gap: 12px; }
+  .tp { display: flex; flex-direction: column; gap: 6px; padding: 14px 15px; border-radius: 15px;
+    background: rgba(255,255,255,.04); border: 1px solid var(--line); transition: border-color .15s, background .15s; }
+  .tp:hover { background: rgba(255,255,255,.065); border-color: hsl(var(--h) 100% 78% / .3); }
+  .tp .r1 { display: flex; align-items: center; gap: 10px; }
+  .tp .ti { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; color: #fff;
+    background: linear-gradient(140deg, hsl(var(--h) 80% 62%), hsl(calc(var(--h) - 50) 70% 48%)); box-shadow: inset 0 1px 0 rgba(255,255,255,.25); }
+  .tp .ti svg { width: 16px; height: 16px; }
+  .tp h5 { font-size: 13.5px; font-weight: 650; color: #f0f0ff; }
+  .tp p { font-size: 12px; line-height: 1.55; color: #8585a6; flex: 1; }
+  .tp .ft { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+  .tp .ft span { font-size: 11px; color: var(--dim); }
+
+  .banner { display: none; margin-top: 20px; padding: 13px 16px; border-radius: 14px; align-items: center; gap: 12px; font-size: 13px;
+    color: #f2d58a; background: rgba(242,193,78,.1); border: 1px solid rgba(242,193,78,.28); }
+  .banner.on { display: flex; } .banner b { color: #ffe9ac; } .banner span { flex: 1; }
+
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .sr { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border-radius: 15px;
+    background: rgba(255,255,255,.04); border: 1px solid var(--line); }
+  .sr.draft { border-color: rgba(242,193,78,.35); background: rgba(242,193,78,.05); }
+  .sr .nm { min-width: 0; flex: 1; }
+  .sr .nm b { display: block; font-size: 14px; font-weight: 650; color: #f2f2ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sr .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
+  .chip { font: 11px var(--mono); padding: 2px 8px; border-radius: 6px; color: #a9a9c8; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.07); }
+  .src { font-size: 10px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; padding: 3px 8px; border-radius: 6px; flex: none;
+    color: #b0b0cc; background: rgba(255,255,255,.07); }
+  .src.ai { color: #0b2420; background: #6fe0c6; } .src.dr { color: #f2c14e; background: rgba(242,193,78,.14); }
+  .sw { width: 38px; height: 22px; border-radius: 99px; flex: none; position: relative; cursor: pointer; border: 0;
+    background: rgba(255,255,255,.14); transition: background .15s; }
+  .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    transition: transform .18s cubic-bezier(.16,1,.3,1); box-shadow: 0 2px 6px rgba(0,0,0,.4); }
+  .sw.on { background: linear-gradient(120deg, hsl(var(--h) 80% 64%), hsl(calc(var(--h) - 40) 70% 56%)); }
+  .sw.on::after { transform: translateX(16px); }
+  .ib { width: 30px; height: 30px; border: 0; border-radius: 9px; background: transparent; color: var(--dim); cursor: pointer; display: grid; place-items: center; flex: none; transition: background .12s, color .12s; }
+  .ib:hover { background: rgba(255,255,255,.1); color: #e0e0f4; } .ib.del:hover { background: rgba(232,17,35,.18); color: #ffb4b9; }
+  .ib svg { width: 15px; height: 15px; }
+  .none { padding: 26px 10px; text-align: center; color: #50506a; font-size: 13.5px; line-height: 1.7; }
+
+  .chip.pz { color: #f2c14e; background: rgba(242,193,78,.1); border-color: rgba(242,193,78,.25); cursor: pointer; }
+  .chip.pz:hover { background: rgba(242,193,78,.2); }
+  .meta { margin-top: 6px; font-size: 11.5px; color: var(--dim); }
+  .er { margin-top: 7px; padding: 8px 10px; border-radius: 10px; font: 11.5px/1.5 var(--mono); color: #ffb4b9; cursor: pointer;
+    background: rgba(255,90,110,.09); border: 1px solid rgba(255,90,110,.25); white-space: pre-wrap; word-break: break-word; }
+  .er .ehd { font: 700 10px var(--font); letter-spacing: .8px; text-transform: uppercase; color: #ff8a94; display: flex; gap: 10px; align-items: center; margin-bottom: 3px; }
+  .er .ehd a { margin-left: auto; font-weight: 600; letter-spacing: 0; text-transform: none; }
+  .er.c .more { display: none; }
+  .toast { position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; z-index: 60;
+    max-width: min(560px, 92vw); padding: 12px 18px; border-radius: 14px; font-size: 13px; line-height: 1.5;
+    background: rgba(22,22,34,.98); border: 1px solid rgba(255,255,255,.14); color: #e6e6fa; box-shadow: 0 18px 50px rgba(0,0,0,.6);
+    transition: opacity .2s, transform .25s cubic-bezier(.16,1,.3,1); }
+  .toast.on { opacity: 1; transform: translate(-50%, 0); }
+  .toast.ok { border-color: rgba(111,224,198,.45); } .toast.bad { border-color: rgba(255,138,148,.5); color: #ffc4c9; }
+  .modal { position: fixed; inset: 0; z-index: 50; display: none; place-items: center; padding: 20px; background: rgba(4,4,10,.66); }
+  .modal.on { display: grid; }
+  .mbox { width: min(760px, 100%); max-height: calc(100vh - 40px); overflow: auto; border-radius: 22px; padding: 26px;
+    background: linear-gradient(180deg, rgba(26,26,42,.99), rgba(16,16,28,.99)); border: 1px solid hsl(var(--h) 100% 78% / .25);
+    box-shadow: 0 34px 90px rgba(0,0,0,.65); }
+  .mbox h4 { font-size: 20px; font-weight: 750; color: #fff; margin-bottom: 16px; }
+  .fl { display: block; font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--dim); margin: 14px 0 6px; }
+  .in { width: 100%; padding: 11px 14px; border-radius: 12px; outline: none; color: #f0f0fc; font: 14px var(--font);
+    background: var(--glass); border: 1px solid rgba(255,255,255,.1); transition: border-color .15s, box-shadow .15s; }
+  .in:focus { border-color: hsl(var(--h) 100% 74% / .55); box-shadow: 0 0 0 4px hsl(var(--h) 100% 74% / .13); }
+  textarea.in { resize: vertical; font: 12.5px/1.6 var(--mono); min-height: 74px; }
+  textarea.code { min-height: 260px; white-space: pre; overflow: auto; tab-size: 2; }
+  .hint { font-size: 12px; color: #6c6c8a; margin-top: 6px; line-height: 1.55; }
+  .mact { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
+  .mact .err { flex: 1; color: #ff9aa3; font-size: 12.5px; }
+  .warn { margin-top: 14px; padding: 11px 14px; border-radius: 12px; font-size: 12.5px; line-height: 1.55; color: #f2d58a;
+    background: rgba(242,193,78,.1); border: 1px solid rgba(242,193,78,.28); display: none; }
+  .warn.on { display: block; }
+
+  .foot { margin-top: 56px; text-align: center; color: #50506a; font-size: 12.5px; line-height: 1.8; }
+  .foot a { color: var(--mut); }
+
+  @media (max-width: 860px) {
+    .flag { grid-template-columns: 1fr; } .demo { border-left: 0; border-top: 1px solid var(--line); }
+    .grid { grid-template-columns: repeat(2, 1fr); } h1 { font-size: 48px; } .hero { padding: 40px 28px; }
+  }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <div class="wrap">
+
+    <section class="hero">
+      <span class="eyebrow"><i></i>BrAIn Personality</span>
+      <h1>A browser with<br>a mind of its own.</h1>
+      <p class="lede">Other browsers show you the web. BrAIn <b>understands it</b> — it turns websites into tools, bends pages to your will, and works alongside you or without you. This is where the features no other browser has live.</p>
+      <div class="stats">
+        <div class="stat"><b>81&times;</b><span>less RAM than Chrome</span></div>
+        <div class="stat"><b>35+</b><span>MCP tools built in</span></div>
+        <div class="stat"><b>1</b><span>window, you + your agent</span></div>
+      </div>
+    </section>
+
+
+    <div class="sec" id="scripts"><h2>Site scripts</h2></div>
+    <section class="ss">
+      <div class="ss-head">
+        <div class="t">
+          <span class="tag on" style="position:static">Live</span>
+          <h3>Scripts that run themselves.</h3>
+          <p>Write JavaScript once and BrAIn runs it <b>automatically every time a matching site loads</b> &mdash; reject cookie banners, hide clutter, restyle pages, anything the DOM allows. Or just <b>ask your AI agent</b> to write it for you.</p>
+        </div>
+        <button class="pbtn" id="new">&#65291; New script</button>
+      </div>
+
+      <div class="agent"><b>Let your agent write it.</b> Tell your AI &ldquo;write a script that hides the sidebar on example.com&rdquo; &mdash; it tests the code on the live page, then saves it with the <code>userscript_create</code> MCP tool. Agent scripts arrive here as <b>drafts</b>: you review the code and switch them on, so nothing an AI writes runs without your OK.</div>
+
+      <div class="banner" id="banner"><span id="bantx"></span><button class="gbtn" id="banbtn">Review</button></div>
+
+      <div class="sub2">Quick tweaks</div>
+      <div class="tpls" id="tpls"></div>
+
+      <div class="sub2">Your scripts</div>
+      <div class="list" id="list"></div>
+    </section>
+
+    <div class="toast" id="toast"></div>
+    <div class="modal" id="modal">
+      <div class="mbox">
+        <h4 id="mtitle">New script</h4>
+        <div class="warn" id="mwarn"></div>
+        <label class="fl" for="f-name">Name</label>
+        <input class="in" id="f-name" placeholder="e.g. Hide the sidebar" maxlength="80" autocomplete="off" spellcheck="false" />
+        <label class="fl" for="f-match">Runs on</label>
+        <textarea class="in" id="f-match" rows="3" placeholder="example.com&#10;*.news.com/articles/*&#10;*" spellcheck="false"></textarea>
+        <div class="hint">One pattern per line. <code>example.com</code> covers its subdomains, <code>*</code> means every site.</div>
+        <label class="fl" for="f-js">JavaScript</label>
+        <textarea class="in code" id="f-js" spellcheck="false" placeholder="// runs in the page once the DOM is ready&#10;document.querySelector('.sidebar')?.remove();"></textarea>
+        <div class="hint">Full DOM access. Runs once per page load; use <code>return</code> to stop early or a <code>MutationObserver</code> for things that appear later. Reload a tab after saving to see it take effect.</div>
+        <div class="mact"><span class="err" id="merr"></span>
+          <button class="gbtn" id="mtest" title="Run this code on an open tab that matches the sites above">Test on open tab</button>
+          <button class="gbtn" id="mcancel">Cancel</button>
+          <button class="pbtn" id="msave">Save</button></div>
+      </div>
+    </div>
+
+    <div class="sec"><h2>Flagship</h2></div>
+    <section class="flag">
+      <div class="txt">
+        <span class="tag wip" style="position:static">In development</span>
+        <h3>Every website becomes an API.</h3>
+        <p>BrAIn watches the requests a site makes behind the scenes and compiles them into <b>typed tools</b> your agent can call directly — no clicking, no screenshots, no guessing where the button moved.</p>
+        <p>Your agent uses your own logged-in session, so it works on sites that have <b>no public API at all</b>. Faster, cheaper, and far more reliable than driving the UI.</p>
+      </div>
+      <div class="demo">
+        <div class="term">
+          <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="d">// learned from your session on github.com</span>
+<span class="k">github</span>.list_notifications()
+<span class="k">github</span>.get_pull_request(<span class="g">repo</span>, <span class="g">n</span>)
+<span class="k">github</span>.comment(<span class="g">issue</span>, <span class="g">body</span>)
+
+<span class="d">// 1 call · 140 ms · 0 clicks</span></pre>
+        </div>
+      </div>
+    </section>
+
+    <div class="sec"><h2>Breaking features</h2></div>
+    <section class="grid">
+
+      <article class="fc" style="--c:200">
+        <span class="tag wip">Planned</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3"/></svg></div>
+        <h4>Session hub</h4>
+        <p>Give any AI access to the accounts you're signed into — banks, portals, government sites — with no API keys and no OAuth apps.</p>
+      </article>
+
+      <article class="fc live" style="--c:290" id="c-scripts">
+        <span class="tag on">Live</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg></div>
+        <h4>Rewrite any site</h4>
+        <p>Auto-run scripts on any website &mdash; write them yourself, start from a template, or let your AI agent draft them.</p>
+        <span class="go">Open Site scripts &darr;</span>
+      </article>
+
+      <article class="fc" style="--c:160">
+        <span class="tag wip">Planned</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
+        <h4>Swarm mode</h4>
+        <p>"Compare 40 laptops" opens 40 tabs in parallel, extracts each, cross-checks the results and hands you one table. Light enough to actually run.</p>
+      </article>
+
+      <article class="fc" style="--c:25">
+        <span class="tag wip">Planned</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <h4>Dark-pattern bodyguard</h4>
+        <p>Rejects cookie banners, finds the hidden "cancel subscription" flow, unsubscribes you, and flags fake timers and fake reviews.</p>
+      </article>
+
+      <article class="fc" style="--c:320">
+        <span class="tag wip">Planned</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".6" fill="currentColor"/></svg></div>
+        <h4>Goals, not tabs</h4>
+        <p>Organize around what you're doing — "plan Berlin trip", "tax filing". Each goal keeps its pages, notes and agent progress, ready to resume.</p>
+      </article>
+
+      <article class="fc live" style="--c:255" id="c-flows">
+        <span class="tag on">Live</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg></div>
+        <h4>Teach once, replay forever</h4>
+        <p>Record what you do, then let the agent replay it. See every tool call and recording under Flows &amp; activity.</p>
+        <span class="go">Open Flows &amp; activity &rarr;</span>
+      </article>
+
+    </section>
+
+    <div class="foot">
+      Features marked <b style="color:#f2c14e">Planned</b> or <b style="color:#f2c14e">In development</b> aren't available yet.<br>
+      Internal page &middot; <a href="#" id="back">&larr; Back to new tab</a>
+    </div>
+  </div>
+<script>
+  function send(cmd) {
+    try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
+  }
+  document.getElementById('back').addEventListener('click', function (e) {
+    e.preventDefault(); send('navigate:about:newtab');
+  });
+
+  var DATA = window.__brainPersonalityData || { items: [], templates: [] };
+  var items = DATA.items || [], templates = DATA.templates || [], editing = null;
+  function $(id) { return document.getElementById(id); }
+  function esc(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  var IC = {
+    shield: '<path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+    mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
+    pin: '<path d="M12 17v5"/><path d="M8 3h8l-1 7 3 3H6l3-3z"/>',
+    pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
+    unlock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 017.5-2"/>',
+    moon: '<path d="M21 13A9 9 0 1111 3a7 7 0 0010 10z"/>',
+    play: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9l5 3-5 3z"/>'
+  };
+  function ico(k) { return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (IC[k] || IC.shield) + '</svg>'; }
+
+  function drawTpls() {
+    var have = {};
+    items.forEach(function (s) { if (s.template) have[s.template] = 1; });
+    $('tpls').innerHTML = templates.map(function (t) {
+      return '<div class="tp"><div class="r1"><span class="ti">' + ico(t.icon) + '</span><h5>' + esc(t.name) + '</h5></div>' +
+        '<p>' + esc(t.description) + '</p><div class="ft"><span>' + esc(t.matches.join(', ') === '*' ? 'All sites' : t.matches.join(', ')) + '</span>' +
+        (have[t.id] ? '<button class="gbtn" disabled>Added</button>' : '<button class="gbtn" data-add="' + esc(t.id) + '">Add</button>') + '</div></div>';
+    }).join('');
+  }
+  function drawList() {
+    var el = $('list');
+    if (!items.length) { el.innerHTML = '<div class="none">No scripts yet.<br>Add a quick tweak above, write your own, or ask your AI agent.</div>'; }
+    else el.innerHTML = items.map(function (s) {
+      var draft = s.pending;
+      var src = draft ? '<span class="src dr">Draft</span>' : s.source === 'agent' ? '<span class="src ai">AI</span>' : s.source === 'template' ? '<span class="src">Template</span>' : '<span class="src">You</span>';
+      var errs = s.errors || [];
+      var ago = s.lastRun ? Math.max(1, Math.round((Date.now() - s.lastRun) / 60000)) : 0;
+      var meta = s.runs ? 'Ran ' + s.runs + '× this session' + (ago ? ' · last ' + (ago < 2 ? 'just now' : ago + ' min ago') : '') : (draft ? '' : s.enabled ? 'Hasn’t run yet — open a matching site' : '');
+      return '<div class="sr' + (draft ? ' draft' : '') + '" data-id="' + esc(s.id) + '" style="flex-wrap:wrap">' +
+        (draft ? '' : '<button class="sw' + (s.enabled ? ' on' : '') + '" data-tg="' + esc(s.id) + '" title="' + (s.enabled ? 'Turn off' : 'Turn on') + '"></button>') +
+        '<div class="nm"><b>' + esc(s.name) + '</b><div class="chips">' +
+        s.matches.slice(0, 4).map(function (m) { return '<span class="chip">' + esc(m === '*' ? 'all sites' : m) + '</span>'; }).join('') +
+        (s.matches.length > 4 ? '<span class="chip">+' + (s.matches.length - 4) + '</span>' : '') +
+        (s.exclude || []).map(function (h) { return '<span class="chip pz" data-rs="' + esc(s.id) + '|' + esc(h) + '" title="Paused on this site — click to resume">⏸ ' + esc(h) + ' ✕</span>'; }).join('') +
+        '</div>' + (meta ? '<div class="meta">' + esc(meta) + '</div>' : '') + '</div>' + src +
+        (draft ? '<button class="pbtn" data-ed="' + esc(s.id) + '" style="padding:8px 14px;font-size:12.5px">Review</button>'
+               : '<button class="ib" data-run="' + esc(s.id) + '" title="Run now on an open matching tab"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>' +
+                 '<button class="ib" data-ed="' + esc(s.id) + '" title="Edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg></button>') +
+        '<button class="ib del" data-dl="' + esc(s.id) + '" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>' +
+        (errs.length ? '<div class="er c" data-er="' + esc(s.id) + '" style="flex-basis:100%"><div class="ehd">⚠ ' + errs.length + ' error' + (errs.length === 1 ? '' : 's') +
+          '<a href="#" data-fix="' + esc(s.id) + '">Copy fix prompt</a><a href="#" data-clr="' + esc(s.id) + '" style="margin-left:0">Clear</a></div>' +
+          esc(errs[errs.length - 1].m.split('\n')[0]) + (errs[errs.length - 1].h ? '  (' + esc(errs[errs.length - 1].h) + ')' : '') +
+          '<span class="more">' + '</span></div>' : '') +
+        '</div>';
+    }).join('');
+    var n = items.filter(function (s) { return s.pending; }).length;
+    $('banner').classList.toggle('on', n > 0);
+    $('bantx').innerHTML = '<b>' + n + ' script' + (n === 1 ? '' : 's') + '</b> drafted by your AI agent ' + (n === 1 ? 'is' : 'are') + ' waiting for your review. Nothing runs until you approve.';
+  }
+  function draw() { drawTpls(); drawList(); }
+
+  function openEditor(s) {
+    editing = s || null;
+    var draft = s && s.pending;
+    $('mtitle').textContent = !s ? 'New script' : draft ? 'Review AI draft' : 'Edit script';
+    $('f-name').value = s ? s.name : '';
+    $('f-match').value = s ? s.matches.join('\n') : '';
+    $('f-js').value = s ? s.js : '';
+    $('merr').textContent = '';
+    $('msave').textContent = draft ? 'Approve & turn on' : 'Save';
+    var w = $('mwarn');
+    w.classList.toggle('on', !!draft);
+    w.textContent = draft ? 'Written by your AI agent. Read the code before approving — once on, it runs automatically on every matching page.' : '';
+    $('modal').classList.add('on');
+    $('f-name').focus();
+  }
+  function closeEditor() { $('modal').classList.remove('on'); editing = null; }
+
+  function saveEditor() {
+    var matches = $('f-match').value.split(/\n+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    var body = {
+      id: editing ? editing.id : '', name: $('f-name').value, matches: matches, js: $('f-js').value,
+      description: editing ? editing.description : '', enabled: editing ? (editing.pending ? true : editing.enabled) : true,
+      source: editing ? editing.source : 'user', template: editing ? editing.template : null
+    };
+    $('merr').textContent = '';
+    send('ussave:' + JSON.stringify(body));
+  }
+
+  var toastT = 0;
+  function toast(text, kind) {
+    var t = $('toast'); t.textContent = text; t.className = 'toast on' + (kind ? ' ' + kind : '');
+    clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove('on'); }, kind === 'bad' ? 7000 : 3500);
+  }
+  function fixPrompt(sc) {
+    if (!sc) return;
+    var e = (sc.errors || []).map(function (x) { return x.m; }).join('\n---\n');
+    var txt = 'My BrAIn site script "' + sc.name + '" (id ' + sc.id + ') is throwing errors:\n\n' + e +
+      '\n\nUse userscript_get to read it, fix it, test it with userscript_run, then save the fix with userscript_update.';
+    var ta = document.createElement('textarea'); ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    var ok = false; try { ok = document.execCommand('copy'); } catch (x) { }
+    ta.remove();
+    toast(ok ? 'Fix prompt copied \u2014 paste it to your AI agent.' : 'Could not copy automatically.', ok ? 'ok' : 'bad');
+  }
+  $('mtest').addEventListener('click', function () {
+    var matches = $('f-match').value.split(/\n+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    send('ustest:' + JSON.stringify({ name: $('f-name').value || 'test', matches: matches, js: $('f-js').value }));
+    toast('Running on an open matching tab\u2026', '');
+  });
+  $('new').addEventListener('click', function () { openEditor(null); });
+  $('mcancel').addEventListener('click', closeEditor);
+  $('msave').addEventListener('click', saveEditor);
+  $('modal').addEventListener('mousedown', function (e) { if (e.target === $('modal')) closeEditor(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && $('modal').classList.contains('on')) closeEditor(); });
+  $('f-js').addEventListener('keydown', function (e) {
+    if (e.key !== 'Tab') return;
+    e.preventDefault();
+    var t = e.target, a = t.selectionStart;
+    t.value = t.value.slice(0, a) + '  ' + t.value.slice(t.selectionEnd);
+    t.selectionStart = t.selectionEnd = a + 2;
+  });
+  $('banbtn').addEventListener('click', function () {
+    var d = items.filter(function (s) { return s.pending; })[0];
+    if (d) openEditor(d);
+  });
+  function byId(id) { return items.filter(function (s) { return s.id === id; })[0]; }
+  $('list').addEventListener('click', function (e) {
+    var rs = e.target.closest('[data-rs]');
+    if (rs) { var rp = rs.dataset.rs.split('|'); send('usexclude:' + rp[0] + ':' + rp[1] + ':0'); return; }
+    var fx = e.target.closest('[data-fix]');
+    if (fx) { e.preventDefault(); fixPrompt(byId(fx.dataset.fix)); return; }
+    var cl = e.target.closest('[data-clr]');
+    if (cl) { e.preventDefault(); send('usclrerr:' + cl.dataset.clr); return; }
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.run) { send('usrun:' + b.dataset.run); toast('Running\u2026', ''); return; }
+    if (b.dataset.tg) { var s = byId(b.dataset.tg); if (s) send('ustoggle:' + s.id + ':' + (s.enabled ? 0 : 1)); }
+    else if (b.dataset.ed) { var s2 = byId(b.dataset.ed); if (s2) openEditor(s2); }
+    else if (b.dataset.dl) { var s3 = byId(b.dataset.dl); if (s3 && confirm('Delete "' + s3.name + '"?')) send('usdel:' + s3.id); }
+  });
+  $('tpls').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-add]'); if (!b) return;
+    var t = templates.filter(function (x) { return x.id === b.dataset.add; })[0]; if (!t) return;
+    send('ussave:' + JSON.stringify({ id: '', name: t.name, description: t.description, matches: t.matches, js: t.js, enabled: true, source: 'template', template: t.id }));
+  });
+  document.getElementById('c-scripts').addEventListener('click', function () {
+    $('scripts').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  document.addEventListener('brain-msg', function (e) {
+    var j = e.detail;
+    if (!j) return;
+    if (j.b === 90) { items = j.items || []; if (j.templates) templates = j.templates; draw(); }
+    else if (j.b === 92) { toast(j.text || '', j.ok ? 'ok' : 'bad'); }
+    else if (j.b === 91) {
+      if (j.ok) closeEditor(); else $('merr').textContent = j.err || 'Could not save.';
+    }
+  });
+  draw();
+  send('usget');
+  document.getElementById('c-flows').addEventListener('click', function () {
+    send('navigate:about:flows');
+  });
+</script>
+</body>
+</html>

@@ -128,6 +128,8 @@ public sealed class BrowserController : IAsyncDisposable
     /// <summary>User-approved reusable automations, exposed to agents as flow_* tools.</summary>
     public BrAIn.Mcp.FlowService Flows { get; private set; } = null!;
     public BrAIn.Mcp.Seatbelt Belt { get; private set; } = null!;
+    /// <summary>Auto-run site scripts (Personality page / userscript_* tools).</summary>
+    public UserScriptStore Scripts { get; private set; } = null!;
     public BrAIn.Mcp.Handoff Handoff { get; private set; } = null!;
     public BrAIn.Mcp.FlowRecorder Recorder { get; private set; } = null!;
     public Updater Updater { get; } = new();
@@ -327,6 +329,8 @@ public sealed class BrowserController : IAsyncDisposable
         Activity.Changed += ScheduleFlowsPush;
         Flows.Changed += ScheduleFlowsPush;
         Flows.PausedCheck = () => _agPaused;
+        Scripts = new UserScriptStore(_storeDir);
+        Scripts.Changed += ScheduleScriptsPush;
         Belt = new BrAIn.Mcp.Seatbelt(_storeDir);
         Belt.Changed += PushBelt;
         Handoff = new BrAIn.Mcp.Handoff();
@@ -1303,7 +1307,7 @@ public sealed class BrowserController : IAsyncDisposable
         // so an agent can drive a background tab without stealing the screen.
         if (!PerTab && Tabs.Active?.Id != tab.Id) Tabs.Activate(tab.Id);
         url = NormalizeUrl(url);
-        if (url is "about:newtab" or "about:help" or "about:shortcuts" or "about:history" or "about:import" or "about:passwords" or "about:flows")
+        if (url is "about:newtab" or "about:help" or "about:shortcuts" or "about:history" or "about:import" or "about:passwords" or "about:flows" or "about:personality")
             return await LoadInternalPageAsync(tab, url);
         if (PerTab) return await NavigatePerTabAsync(tab, url, ct);
         // materialize:false — a virtual new tab navigating away must not
@@ -1362,6 +1366,7 @@ public sealed class BrowserController : IAsyncDisposable
             "about:import" => (Assets.ImportHtml, "Import browser data"),
             "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
             "about:flows" => (BuildFlowsHtml(), "Flows & activity"),
+            "about:personality" => (BuildPersonalityHtml(), "Personality"),
             _ => (Assets.NewTabHtml, "New Tab"),
         };
         tab.LastTitle = title;
@@ -1388,6 +1393,7 @@ public sealed class BrowserController : IAsyncDisposable
             "about:import" => (Assets.ImportHtml, "Import browser data"),
             "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
             "about:flows" => (BuildFlowsHtml(), "Flows & activity"),
+            "about:personality" => (BuildPersonalityHtml(), "Personality"),
             _ => (Assets.NewTabHtml, "New Tab"),
         };
         SetTabUrl(tab, url);
@@ -2323,6 +2329,41 @@ public sealed class BrowserController : IAsyncDisposable
                         case "focuspage":
                             if (SplitOn) try { InvokeOnUi(() => Mac.WkBar.FocusPage(SplitWindow())); } catch { }
                             break;
+                        case "usget": PushScripts(tab); break;
+                        case "usran": UsNoteRun(arg); break;
+                        case "usrerr": UsNoteError(arg); break;
+                        case "usmute": UsMute(arg); break;
+                        case "usclrerr": UsClearErrors(arg); break;
+                        case "usexclude":
+                            {
+                                var ux = arg.Split(':');
+                                if (ux.Length == 3) Scripts.SetHostPaused(ux[0], ux[1], ux[2] == "1");
+                                break;
+                            }
+                        case "usrun":
+                            {
+                                var us0 = Scripts.Get(arg);
+                                if (us0 is not null) await UsRunFromPageAsync(tab, us0);
+                                break;
+                            }
+                        case "ustest":
+                            {
+                                try
+                                {
+                                    var ut = JsonSerializer.Deserialize<UserScript>(arg, UsJson);
+                                    if (ut is not null) { ut.Id = "test"; ut.Enabled = true; await UsRunFromPageAsync(tab, ut); }
+                                }
+                                catch { UsNotice(tab, false, "Could not read the script."); }
+                                break;
+                            }
+                        case "ussave": UsSave(tab, arg); break;
+                        case "usdel": Scripts.Delete(arg); break;
+                        case "ustoggle":
+                            {
+                                var up = arg.Split(':');
+                                if (up.Length == 2) Scripts.SetEnabled(up[0], up[1] == "1");
+                                break;
+                            }
                         case "flowget": PushFlowsState(tab); break;
                         case "flowsave": FlowUiSave(tab, arg); break;
                         case "flowdel": Flows.Delete(arg); PushFlowsState(tab); break;
@@ -2375,7 +2416,7 @@ public sealed class BrowserController : IAsyncDisposable
         var tabs = Tabs.All.Where(t => !t.IsClosed).Select(t => new
         {
             id = t.Id.ToString("N")[..8],
-            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:shortcuts" ? "Shortcuts" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl == "about:flows" ? "Flows & activity" : t.LastUrl),
+            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:shortcuts" ? "Shortcuts" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl == "about:flows" ? "Flows & activity" : t.LastUrl == "about:personality" ? "Personality" : t.LastUrl),
             url = t.LastUrl,
             icon = t.LastIcon,
             active = t.Id == activeId,
@@ -2425,6 +2466,7 @@ public sealed class BrowserController : IAsyncDisposable
             w = _winMax ? 1 : 0,
             dt = _dtOpen ? _dtTab : "",
             privActive = Tabs.Active?.IsPrivate == true,
+            us = UsBadge(Tabs.Active?.LastUrl),
             se = _engine.Id,
             rw = _rwOn, rwa = _rwAgent, rwk = _rwKeepMin, rwm = _rwMaxMb, rws = RwSkipList(),
             keys = _keyBinds,
@@ -3534,10 +3576,12 @@ public sealed class BrowserController : IAsyncDisposable
             {
                 if (!_noToolbar)
                     await driver.EvaluateAsync("window.__brainChrome && window.__brainChrome.mount()", false, hcts.Token);
+                await RunUserScriptsAsync(driver, hcts.Token);
                 return;
             }
             var script = PageLibSource;
             await driver.EvalScriptAsync(script, false, hcts.Token);
+            await RunUserScriptsAsync(driver, hcts.Token);
         }
         catch (Exception ex) { Log($"helper inject failed: {ex.Message}"); }
     }
@@ -3575,7 +3619,7 @@ public sealed class BrowserController : IAsyncDisposable
                   u: location.href, t: document.title,
                   n: !!window.__brainNewTab, h: !!window.__brainHelp, y: !!window.__brainHist,
                   p: !!window.__brainImport, w: !!window.__brainPw, f: !!window.__brainFlows,
-                  s: !!window.__brainShortcuts,
+                  s: !!window.__brainShortcuts, x: !!window.__brainPersonality,
                   i: (document.querySelector("link[rel~='icon']") || document.querySelector("link[rel='shortcut icon']") || {}).href ||
                      (/^https?:$/.test(location.protocol) ? location.origin + '/favicon.ico' : '')
                 })
@@ -3596,8 +3640,9 @@ public sealed class BrowserController : IAsyncDisposable
                 var isPw = root.TryGetProperty("w", out var ww) && ww.GetBoolean();
                 var isFlows = root.TryGetProperty("f", out var ff) && ff.GetBoolean();
                 var isSc = root.TryGetProperty("s", out var ss) && ss.GetBoolean();
-                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isSc ? "about:shortcuts" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : isFlows ? "about:flows" : root.GetProperty("u").GetString() ?? tab.LastUrl);
-                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isSc ? "Keyboard shortcuts" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : isFlows ? "Flows & activity" : root.GetProperty("t").GetString();
+                var isPers = root.TryGetProperty("x", out var xx) && xx.GetBoolean();
+                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isSc ? "about:shortcuts" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : isFlows ? "about:flows" : isPers ? "about:personality" : root.GetProperty("u").GetString() ?? tab.LastUrl);
+                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isSc ? "Keyboard shortcuts" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : isFlows ? "Flows & activity" : isPers ? "Personality" : root.GetProperty("t").GetString();
                 // u and i come from the same document — always reassign so a
                 // cross-site navigation can never keep the old site's icon.
                 var iRaw = root.GetProperty("i").GetString();
@@ -3666,6 +3711,233 @@ public sealed class BrowserController : IAsyncDisposable
         PushChromeStateAll();
     }
 
+
+    // ---------------- site scripts (about:personality) ----------------
+
+    private static readonly JsonSerializerOptions UsJson = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    private string ScriptsJson(bool withTemplates)
+    {
+        object[] items;
+        lock (_usStats)
+            items = Scripts.All().Select(sc =>
+            {
+                _usStats.TryGetValue(sc.Id, out var st);
+                return (object)new
+                {
+                    sc.Id, sc.Name, sc.Description, sc.Matches, sc.Exclude, sc.Js, sc.Enabled, sc.Pending, sc.Source, sc.Template,
+                    sc.Created, sc.Updated,
+                    Runs = st?.Runs ?? 0,
+                    LastRun = st?.Last ?? 0,
+                    Errors = (st?.Errors ?? []).TakeLast(5).Select(e => new { t = e.T, m = e.M, h = e.Host }).ToArray(),
+                };
+            }).ToArray();
+        return JsonSerializer.Serialize(new
+        {
+            b = 90,
+            items,
+            templates = withTemplates ? UserScriptStore.Templates : null,
+        }, UsJson);
+    }
+
+    // Per-script run/error bookkeeping. In memory only; page-reported, so treated as untrusted text.
+    private sealed class UsStat { public int Runs; public long Last; public List<UsErr> Errors = []; }
+    private sealed record UsErr(long T, string M, string Host);
+    private readonly Dictionary<string, UsStat> _usStats = new();
+    private int _usPushPending;
+
+    private void ScheduleScriptsPush()
+    {
+        if (Interlocked.Exchange(ref _usPushPending, 1) == 1) return;
+        _ = Task.Delay(300).ContinueWith(_ =>
+        {
+            Interlocked.Exchange(ref _usPushPending, 0);
+            PushScriptsToPersonality();
+            PushChromeStateAll();
+        }, TaskScheduler.Default);
+    }
+
+    private void UsNoteRun(string id)
+    {
+        if (Scripts.Get(id) is null) return;
+        lock (_usStats)
+        {
+            if (!_usStats.TryGetValue(id, out var st)) _usStats[id] = st = new UsStat();
+            st.Runs++;
+            st.Last = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
+        ScheduleScriptsPush();
+    }
+
+    private void UsNoteError(string arg)
+    {
+        var bar = arg.IndexOf('|');
+        if (bar <= 0) return;
+        var id = arg[..bar];
+        if (Scripts.Get(id) is null) return;
+        var msg = arg[(bar + 1)..].Replace("\r", "");
+        if (msg.Length > 400) msg = msg[..400];
+        string host = "";
+        try { host = new Uri(Tabs.Active?.LastUrl ?? "").Host; } catch { }
+        lock (_usStats)
+        {
+            if (!_usStats.TryGetValue(id, out var st)) _usStats[id] = st = new UsStat();
+            st.Errors.Add(new UsErr(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), msg, host));
+            if (st.Errors.Count > 10) st.Errors.RemoveAt(0);
+        }
+        ScheduleScriptsPush();
+    }
+
+    private void UsClearErrors(string id)
+    {
+        lock (_usStats) { if (_usStats.TryGetValue(id, out var st)) st.Errors.Clear(); }
+        ScheduleScriptsPush();
+    }
+
+    /// <summary>Recent errors and run count for a script, as text for the agent tools.</summary>
+    public string UserScriptReport(string id)
+    {
+        lock (_usStats)
+        {
+            if (!_usStats.TryGetValue(id, out var st)) return "Has not run since BrAIn started.";
+            var sb = new System.Text.StringBuilder($"Ran {st.Runs} time(s) since BrAIn started.");
+            if (st.Errors.Count == 0) sb.Append(" No errors.");
+            foreach (var e in st.Errors.TakeLast(5))
+                sb.Append($"\n[{DateTimeOffset.FromUnixTimeMilliseconds(e.T).LocalDateTime:HH:mm:ss}] {e.Host}: {e.M}");
+            return sb.ToString();
+        }
+    }
+
+    /// <summary>Badge for the toolbar: scripts that match the active tab, and whether each is paused here.</summary>
+    private object[] UsBadge(string? url)
+    {
+        if (string.IsNullOrEmpty(url) || !Scripts.AnyRunnable()) return [];
+        lock (_usStats)
+            return Scripts.Matching(url).Select(m =>
+            {
+                _usStats.TryGetValue(m.Script.Id, out var st);
+                return (object)new { i = m.Script.Id, n = m.Script.Name, p = m.Paused, e = st?.Errors.Count ?? 0 };
+            }).ToArray();
+    }
+
+    /// <summary>usmute:id:0|1 from the toolbar badge — pauses a script on the active tab's site only.</summary>
+    private void UsMute(string arg)
+    {
+        var p = arg.Split(':');
+        var t = Tabs.Active;
+        if (p.Length != 2 || t is null || !Uri.TryCreate(t.LastUrl, UriKind.Absolute, out var u)) return;
+        var pause = p[1] == "1";
+        if (!Scripts.SetHostPaused(p[0], u.Host, pause)) return;
+        if (!pause) _ = EnsurePageHelpersAsync(t); // resuming: apply to the page that is already open
+    }
+
+    private void UsNotice(BrowserTab tab, bool ok, string text, string id = "")
+        => PushJson(tab, JsonSerializer.Serialize(new { b = 92, id, ok, text }, UsJson));
+
+    /// <summary>Run now / Test from the Personality page: the script runs on an open tab it matches.</summary>
+    private async Task UsRunFromPageAsync(BrowserTab uiTab, UserScript s)
+    {
+        var target = Tabs.All
+            .Where(t => !t.IsClosed && t.LastUrl is { } u && Scripts.UrlMatches(s, u))
+            .OrderByDescending(t => t.Id == Tabs.Active?.Id).FirstOrDefault();
+        if (target is null)
+        {
+            UsNotice(uiTab, false, "No open tab matches this script's sites (" + string.Join(", ", s.Matches.Take(3)) + "). Open the site in a tab first.", s.Id);
+            return;
+        }
+        var (ok, text) = await RunScriptOnTabAsync(s, target);
+        UsNotice(uiTab, ok, text, s.Id);
+    }
+
+    /// <summary>Runs a script on a tab right now (even if off or a draft) and reports any errors it threw.</summary>
+    public async Task<(bool Ok, string Text)> RunScriptOnTabAsync(UserScript s, BrowserTab tab, CancellationToken ct = default)
+    {
+        try
+        {
+            if (!Uri.TryCreate(tab.LastUrl, UriKind.Absolute, out var u) || u.Scheme is not ("http" or "https"))
+                return (false, "Scripts only run on web pages (http/https).");
+            var driver = await DriverOrThrowAsync(tab, ct);
+            var since = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 50;
+            await driver.EvalScriptAsync(UserScriptStore.Wrap(s, true), false, ct);
+            await Task.Delay(700, ct);
+            var el = await driver.EvaluateAsync(
+                "JSON.stringify((window.__brainUsLog||[]).filter(function(x){return x.i===" + JsonSerializer.Serialize(s.Id) + "&&x.t>" + since + "}).slice(-3))", false, ct);
+            var raw = el?.ValueKind == JsonValueKind.String ? el.Value.GetString() : "[]";
+            var errs = JsonSerializer.Deserialize<List<JsonElement>>(raw ?? "[]") ?? [];
+            if (errs.Count == 0) return (true, $"Ran on {u.Host} — no errors.");
+            return (false, $"Ran on {u.Host}, but it threw: " +
+                string.Join(" | ", errs.Select(x => x.TryGetProperty("m", out var m) ? m.GetString() : "?")));
+        }
+        catch (Exception ex) { return (false, "Could not run: " + ex.Message); }
+    }
+
+    private void PushScripts(BrowserTab tab)
+    {
+        if (tab.IsClosed) return;
+        PushJson(tab, ScriptsJson(false));
+    }
+
+    private void PushScriptsToPersonality()
+    {
+        try
+        {
+            var t = Tabs.Active;
+            if (t is not null && !t.IsClosed && t.LastUrl == "about:personality") PushScripts(t);
+        }
+        catch { }
+    }
+
+    /// <summary>ussave:{json} from the Personality page — create, edit or install a template.</summary>
+    private void UsSave(BrowserTab tab, string arg)
+    {
+        string? err;
+        try
+        {
+            var s = JsonSerializer.Deserialize<UserScript>(arg, UsJson);
+            if (s is null) { err = "bad request"; }
+            else
+            {
+                // the page is the user's own hand: an edited agent script becomes the user's
+                // (agents may not modify those); templates keep their label
+                var prev = string.IsNullOrEmpty(s.Id) ? null : Scripts.Get(s.Id);
+                s.Source = (prev?.Source ?? s.Source) == "template" && (prev is not null || s.Template is not null) ? "template" : "user";
+                s.Pending = false;
+                s.Exclude = prev?.Exclude ?? s.Exclude;
+                err = Scripts.Save(s, out var savedUs);
+                if (err is null) UsClearErrors(savedUs.Id);
+            }
+        }
+        catch (Exception ex) { err = ex.Message; }
+        PushJson(tab, JsonSerializer.Serialize(new { b = 91, ok = err is null, err }, UsJson));
+    }
+
+    private string BuildPersonalityHtml()
+        => Assets.PersonalityHtml.Replace("__BRAIN_PERSONALITY_JSON__", ScriptsJson(true).Replace("<", "\\u003c"));
+
+    /// <summary>Runs every enabled, approved script whose patterns match the live document.
+    /// Each is guarded per document, so repeated calls are harmless.</summary>
+    private async Task RunUserScriptsAsync(IBrowserDriver driver, CancellationToken ct)
+    {
+        if (!Scripts.AnyRunnable()) return;
+        string? url = null;
+        try
+        {
+            var r = await driver.EvaluateAsync("location.href", false, ct);
+            if (r?.ValueKind == JsonValueKind.String) url = r.Value.GetString();
+        }
+        catch { }
+        if (string.IsNullOrEmpty(url)) return;
+        foreach (var s in Scripts.ForUrl(url))
+        {
+            try { await driver.EvalScriptAsync(UserScriptStore.Wrap(s), false, ct); }
+            catch (Exception ex) { Log($"userscript '{s.Name}' failed: {ex.Message}"); }
+        }
+    }
 
     // ---------------- flows & activity (about:flows) ----------------
 
@@ -4161,6 +4433,8 @@ public sealed class BrowserController : IAsyncDisposable
         if (url.Equals("passwords", StringComparison.OrdinalIgnoreCase) ||
             url.Equals("password", StringComparison.OrdinalIgnoreCase))
             return "about:passwords";
+        if (url.Equals("personality", StringComparison.OrdinalIgnoreCase))
+            return "about:personality";
         if (!url.Contains("://") && !url.StartsWith("about:") && !url.StartsWith("file:") &&
             !url.StartsWith("data:") && !url.StartsWith("javascript:"))
         {
@@ -4255,6 +4529,7 @@ internal static class Assets
     private static readonly Lazy<string> _hist = new(() => Themed("BrAIn.Assets.history.html"));
     private static readonly Lazy<string> _imp = new(() => Themed("BrAIn.Assets.import.html"));
     private static readonly Lazy<string> _pw = new(() => Themed("BrAIn.Assets.passwords.html"));
+    private static readonly Lazy<string> _pers = new(() => Themed("BrAIn.Assets.personality.html"));
     private static readonly Lazy<string> _flows = new(() => Themed("BrAIn.Assets.flows.html"));
     private static readonly Lazy<string> _combinedLib = new(() => BrainJs + "\n" + ChromeJs);
 
@@ -4267,6 +4542,7 @@ internal static class Assets
     public static string ShortcutsHtml => _sc.Value;
     public static string HistoryHtml => _hist.Value;
     public static string FlowsHtml => _flows.Value;
+    public static string PersonalityHtml => _pers.Value;
     public static string ImportHtml => _imp.Value;
     public static string PasswordsHtml => _pw.Value;
     public const int BrainJsVersion = 3;

@@ -87,6 +87,7 @@
         close: '<svg viewBox="0 0 16 16"><path d="m4.6 4.6 6.8 6.8m0-6.8-6.8 6.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
         lock: '<svg viewBox="0 0 16 16"><rect x="4" y="7" width="8" height="6.4" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6 7V5.6a2 2 0 0 1 4 0V7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>',
         warn: '<svg viewBox="0 0 16 16"><path d="M8 2.2 14.6 13.4H1.4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 6.4v3.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".9" fill="currentColor"/></svg>',
+        code: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5.4 5-3 3 3 3M10.6 5l3 3-3 3M9 3.4 7 12.6"/></svg>',
         sparkle: '<svg viewBox="0 0 16 16"><path d="M8 1.8 9.4 5.4 13 6.8 9.4 8.2 8 11.8 6.6 8.2 3 6.8l3.6-1.4z" fill="currentColor"/><path d="M12.6 10.2l.8 1.8 1.8.8-1.8.8-.8 1.8-.8-1.8-1.8-.8 1.8-.8z" fill="currentColor" opacity=".7"/></svg>',
         snd: '<svg viewBox="0 0 16 16"><path d="M2.5 6v4h2.6l3.4 2.8V3.2L5.1 6z" fill="currentColor"/><path d="M10.6 5.6a3.4 3.4 0 0 1 0 4.8M12.2 3.9a5.8 5.8 0 0 1 0 8.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
         mute: '<svg viewBox="0 0 16 16"><path d="M2.5 6v4h2.6l3.4 2.8V3.2L5.1 6z" fill="currentColor"/><path d="M10.8 6.2l3.4 3.6M14.2 6.2l-3.4 3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
@@ -1736,6 +1737,64 @@
         updateFindCount(sh);
     }
 
+    // ---------------- site scripts badge ----------------
+    // Toolbar button listing the auto-run scripts that match this page, with a
+    // per-site pause switch. {us:[{i,n,p,e}]} rides the b:9 state.
+    function paintUs(sh) {
+        if (!sh) return;
+        var b = sh.getElementById('usbtn'); if (!b) return;
+        var us = state.us || [];
+        var run = us.filter(function (x) { return !x.p; }).length;
+        var err = us.some(function (x) { return x.e > 0 && !x.p; });
+        b.classList.toggle('us-on', us.length > 0);
+        b.classList.toggle('us-off', us.length > 0 && run === 0);
+        b.classList.toggle('us-err', err);
+        var sig = us.length + ':' + run + ':' + err;
+        if (b._sig !== sig) { b._sig = sig; b.innerHTML = H(SVG.code + '<i class="usk">' + (run || us.length) + '</i>'); }
+        setTip(b, run ? run + ' site script' + (run === 1 ? '' : 's') + ' running here' + (err ? ' — with errors' : '') : 'Site scripts paused here', '');
+        var m = sh.getElementById('usmenu');
+        if (m && m.classList.contains('on')) { if (!us.length) m.classList.remove('on'); else fillUs(sh, m); }
+    }
+    function fillUs(sh, m) {
+        var us = state.us || [], html = '<div class="uh">Site scripts on this page</div>';
+        us.forEach(function (x) {
+            html += '<div class="ur' + (x.p ? ' p' : '') + '" data-u="' + esc(x.i) + '" data-p="' + (x.p ? 1 : 0) + '" title="' + (x.p ? 'Resume on this site' : 'Pause on this site') + '">' +
+                '<b>' + esc(x.n) + '</b>' + (x.e > 0 && !x.p ? '<span class="ue" title="This script threw errors">!</span>' : '') + '<i class="usw"></i></div>';
+        });
+        html += '<div class="ufoot"><span data-uopen="1">Manage scripts</span><span>Pausing applies on next load</span></div>';
+        m.innerHTML = H(html);
+    }
+    function toggleUs(sh) {
+        var m = sh.getElementById('usmenu'), b = sh.getElementById('usbtn');
+        if (!m || !b) return;
+        if (m.classList.contains('on')) { m.classList.remove('on'); return; }
+        fillUs(sh, m);
+        var br = b.getBoundingClientRect();
+        m.style.right = Math.max(8, innerWidth - br.right - 6) + 'px';
+        m.classList.add('on');
+        var off = function (e) {
+            if (pathIn(e, ['usmenu', 'usbtn'])) return;
+            m.classList.remove('on');
+            document.removeEventListener('mousedown', off, true);
+        };
+        setTimeout(function () { rawOn(document, 'mousedown', off, true); }, 0);
+    }
+    function wireUs(sh) {
+        var b = sh.getElementById('usbtn'), m = sh.getElementById('usmenu');
+        if (!b || !m) return;
+        ['mousedown', 'click'].forEach(function (ev) {
+            b.addEventListener(ev, function (e) { e.stopPropagation(); e.preventDefault(); });
+        });
+        b.addEventListener('click', function () { toggleUs(sh); });
+        m.addEventListener('mousedown', function (e) {
+            e.preventDefault(); e.stopPropagation();
+            var row = e.target.closest ? e.target.closest('.ur') : null;
+            var open = e.target.closest ? e.target.closest('[data-uopen]') : null;
+            if (open) { m.classList.remove('on'); send('navigate:about:personality'); return; }
+            if (row) send('usmute:' + row.getAttribute('data-u') + ':' + (row.getAttribute('data-p') === '1' ? 0 : 1));
+        });
+    }
+
     // ---------------- ⋮ browser menu ----------------
 
     // ⋮ menu layout: quick tiles, a zoom stepper, then grouped sections.
@@ -1814,9 +1873,49 @@
         items.push(['shotview', 'Screenshot (visible area)', '']);
         items.push(['viewsource', 'View source', 'Ctrl+U']);
         items.push(['devtools', 'Developer tools', 'F12']);
-        items.push(['shortcuts', 'Keyboard shortcuts', 'Ctrl+/']);
         items.push(['fullscreen', 'Fullscreen', 'F11 · Ctrl+Alt+F']);
         items.push(['topmost', 'Always on top', state.topmost ? '✓' : 'Ctrl+Alt+T']);
+        return items;
+    }
+
+    // Document-level listeners see clicks inside the shadow root retargeted to the
+    // host, so closest() on e.target never matches menu rows — walk the composed path.
+    function flyRowIn(e) {
+        var p = (e && e.composedPath) ? e.composedPath() : [];
+        for (var i = 0; i < p.length; i++) {
+            var c = p[i] && p[i].getAttribute && p[i].getAttribute('data-c');
+            if (c && c.indexOf('fly:') === 0) return true;
+        }
+        return false;
+    }
+    function pathIn(e, ids, attr) {
+        var p = (e && e.composedPath) ? e.composedPath() : [];
+        for (var i = 0; i < p.length; i++) {
+            var n = p[i];
+            if (!n || n.nodeType !== 1) continue;
+            if (ids && n.id && ids.indexOf(n.id) >= 0) return true;
+            if (attr && n.hasAttribute && n.hasAttribute(attr)) return true;
+        }
+        return false;
+    }
+
+    // Flyout groups behind the short top-level list. Library rows stay flat.
+    var FLY = [
+        ['tabs', 'Tab actions', 'Tabs'],
+        ['page', 'This page', 'This page'],
+        ['agent', 'AI agent', 'AI agent'],
+        ['settings', 'Settings', 'Settings'],
+        ['more', 'More tools', null],
+    ];
+    function menuSec(label) {
+        var r = menuSections().filter(function (s) { return s[0] === label; })[0];
+        return r ? r[1] : [];
+    }
+    function menuFly(k) {
+        if (k === 'more') return menuMore();
+        var f = FLY.filter(function (x) { return x[0] === k; })[0];
+        var items = menuSec(f[2]).slice();
+        if (k === 'settings') items.push(['shortcuts', 'Keyboard shortcuts', 'Ctrl+/']);
         return items;
     }
 
@@ -1834,14 +1933,16 @@
             '<em data-z="zoomreset" title="Reset · Ctrl+0">' + state.zoom + '%</em>' +
             '<b data-z="zoomin" title="Zoom in · Ctrl++">+</b></div>' +
             '<div class="mzf" data-c="fullscreen" title="Fullscreen · F11">⛶</div></div>';
-        menuSections().forEach(function (sec) {
-            html += '<div class="mlabel">' + sec[0] + '</div>';
-            sec[1].forEach(function (it) {
-                html += '<div class="mi" style="--i:' + (mi++) + '" data-c="' + it[0] + '"><span>' + it[1] + '</span><span class="sc">' + it[2] + '</span></div>';
-            });
+        html += '<div class="mi feat" style="--i:' + (mi++) + '" data-c="personality"><span class="fi">' + SVG.sparkle + '<b>Personality</b></span><span class="sc">NEW</span></div>';
+        html += '<div class="msep"></div>';
+        menuSec('Library').forEach(function (it) {
+            html += '<div class="mi" style="--i:' + (mi++) + '" data-c="' + it[0] + '"><span>' + it[1] + '</span><span class="sc">' + it[2] + '</span></div>';
         });
         html += '<div class="msep"></div>';
-        html += '<div class="mi" style="--i:' + (mi++) + '" data-c="more"><span>More tools</span><span class="sc">›</span></div>';
+        FLY.forEach(function (f) {
+            var badge = f[0] === 'settings' && (updBadge() === 'NEW') ? '<i class="mnew">NEW</i>' : '';
+            html += '<div class="mi" style="--i:' + (mi++) + '" data-c="fly:' + f[0] + '"><span>' + f[1] + badge + '</span><span class="sc">›</span></div>';
+        });
         html += '<div class="mfoot" style="--i:' + (mi++) + '"><span data-c="palette">Command palette <i>' + (IS_MAC ? '⌘K' : 'Ctrl+K') + '</i></span><span data-c="help">How to use <i>F1</i></span></div>';
         m.innerHTML = H(html);
         m.classList.add('on');
@@ -1850,7 +1951,7 @@
                 e.preventDefault(); e.stopPropagation();
                 var c = el.getAttribute('data-c');
                 if (c === 'se') { showSeFly(sh, m, el); return; }
-                if (c === 'more') { showMoreFly(sh, m, el); return; }
+                if (c.indexOf('fly:') === 0) { showFly(sh, m, el, menuFly(c.slice(4))); return; }
                 m.classList.remove('on');
                 var sm0 = sh.getElementById('smenu'); if (sm0) sm0.classList.remove('on');
                 menuCmd(sh, c);
@@ -1869,8 +1970,10 @@
             });
         });
         var off = function (e) {
-            var t = e && e.target;
-            if (t && t.closest && t.closest('#smenu')) return;
+            if (pathIn(e, ['smenu'])) return;
+            // fly-out rows and zoom buttons keep the menu open — closing it here
+            // and re-adding 'on' in their handlers replays the open animation (flicker)
+            if (pathIn(e, ['menu'], 'data-z') || flyRowIn(e)) return;
             m.classList.remove('on');
             var sm = sh.getElementById('smenu'); if (sm) sm.classList.remove('on');
             document.removeEventListener('mousedown', off, true);
@@ -1878,30 +1981,31 @@
         setTimeout(function () { rawOn(document, 'mousedown', off, true); }, 0);
     }
 
-    // "More tools" flyout — same panel as the search-engine flyout.
-    function showMoreFly(sh, m, row) {
+    // Flyout panel (Tab actions / This page / AI agent / Settings / More tools) —
+    // same slide-out panel as the search-engine flyout.
+    function showFly(sh, m, row, items) {
         var sm = sh.getElementById('smenu');
         if (!sm) return;
-        m.classList.add('on');
         var mr = m.getBoundingClientRect(), rr = row.getBoundingClientRect();
         var html = '';
-        menuMore().forEach(function (it, i) {
+        items.forEach(function (it, i) {
             html += '<div class="smi" style="--i:' + i + '" data-c="' + it[0] + '"><span style="flex:1">' + it[1] + '</span><span class="sc">' + it[2] + '</span></div>';
         });
         sm.innerHTML = H(html);
-        sm.style.top = Math.max(40, Math.min(rr.top - 5, innerHeight - 20 - 36 * menuMore().length)) + 'px';
+        sm.style.top = Math.max(40, Math.min(rr.top - 5, innerHeight - 20 - 36 * items.length)) + 'px';
         sm.style.right = (innerWidth - mr.left + 4) + 'px';
         sm.classList.add('on');
         sm.querySelectorAll('.smi').forEach(function (el) {
             el.addEventListener('mousedown', function (e) {
                 e.preventDefault(); e.stopPropagation();
+                var c = el.getAttribute('data-c');
+                if (c === 'se') { showSeFly(sh, m, el); return; }
                 sm.classList.remove('on'); m.classList.remove('on');
-                menuCmd(sh, el.getAttribute('data-c'));
+                menuCmd(sh, c);
             });
         });
         var off = function (e) {
-            var t = e.target;
-            if (t.closest && (t.closest('#smenu') || t.closest('#menu'))) return;
+            if (pathIn(e, ['smenu', 'menu'])) return;
             sm.classList.remove('on'); m.classList.remove('on');
             document.removeEventListener('mousedown', off, true);
         };
@@ -1933,8 +2037,7 @@
             });
         });
         var off = function (e) {
-            var t = e.target;
-            if (t.closest && (t.closest('#smenu') || t.closest('#menu'))) return;
+            if (pathIn(e, ['smenu', 'menu'])) return;
             sm.classList.remove('on'); m.classList.remove('on');
             document.removeEventListener('mousedown', off, true);
         };
@@ -1955,6 +2058,7 @@
         if (c === 'history') { send('navigate:about:history'); return; }
         if (c === 'pw') { send('navigate:about:passwords'); return; }
         if (c === 'flows') { send('navigate:about:flows'); return; }
+        if (c === 'personality') { send('navigate:about:personality'); return; }
         if (c === 'agent') { toggleAgent(); return; }
         if (c === 'belt') { toggleBelt(); return; }
         if (c === 'rec') { toggleRec(); return; }
@@ -2000,6 +2104,7 @@
             ['dupe', 'Duplicate tab', 'copy clone same tab', IS_MAC ? '\u21e7\u2318D' : 'Ctrl+Shift+D'],
             ['pin', a && a.pin ? 'Unpin tab' : 'Pin tab', 'pin keep sticky tab', IS_MAC ? '\u2303\u2325P' : 'Ctrl+Alt+P'],
             ['closeothers', 'Close other tabs', 'close all tabs except this one', IS_MAC ? '\u2303\u2325W' : 'Ctrl+Alt+W'],
+            ['personality', 'Personality', 'personality breaking features site api mcp hub swarm bodyguard goals labs', ''],
             ['history', 'Open history', 'browsing history visited', IS_MAC ? '\u2318H' : 'Ctrl+H'],
             ['import', 'Import browser data', 'bookmarks passwords chrome safari edge firefox', ''],
             ['pw', 'Passwords', 'saved logins credentials vault autofill signin', IS_MAC ? '\u21e7\u2318O' : 'Ctrl+Shift+O'],
@@ -2323,7 +2428,7 @@
     // Buttons right of the address bar: the built-in ones can be hidden and a
     // few shortcuts added. Stored host-side (prefs.json) so every page/window
     // agrees; {tbh: hidden built-ins, tbx: added shortcuts} ride the b:9 state.
-    var TB_BUILTIN = [['agbtn', 'AI agent'], ['pip', 'Picture-in-picture'], ['star', 'Bookmark this page'], ['rwb', 'Rewind'], ['dlbtn', 'Downloads']];
+    var TB_BUILTIN = [['agbtn', 'AI agent'], ['usbtn', 'Site scripts'], ['pip', 'Picture-in-picture'], ['star', 'Bookmark this page'], ['rwb', 'Rewind'], ['dlbtn', 'Downloads']];
     function tbIc(d) { return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + d + '</svg>'; }
     var TB_EXTRA = [
         { id: 'history',  n: 'History',          sc: 'Ctrl+H',       svg: tbIc('<circle cx="8" cy="8" r="5.6"/><path d="M8 4.6V8l2.3 1.5"/>') },
@@ -4733,7 +4838,7 @@
         } else {
             host.style.setProperty('height', '0', 'important');
             host.style.setProperty('pointer-events', 'none', 'important');
-            css.textContent = '.bar,#drops,#tmenu,#menu,#smenu,#dlp,#pal,#ttip,#agline,#prog,#askcard,#hocard{display:none!important}' +
+            css.textContent = '.bar,#drops,#tmenu,#menu,#smenu,#usmenu,#dlp,#pal,#ttip,#agline,#prog,#askcard,#hocard{display:none!important}' +
                 '#ntp{top:0!important}#fbar{top:6px!important}#pwsave,#askcard,#hocard{top:4px!important}#recpill,#reccard{top:8px!important}*{pointer-events:auto}';
         }
         sh.appendChild(css);
@@ -4741,7 +4846,7 @@
 
         var last = '';
         var raf = 0, lowTimer = 0;
-        var ids = ['drops', 'tmenu', 'menu', 'smenu', 'dlp', 'pal', 'ttip', 'askcard', 'hocard'];
+        var ids = ['drops', 'tmenu', 'menu', 'smenu', 'usmenu', 'dlp', 'pal', 'ttip', 'askcard', 'hocard'];
         var check = function () {
             raf = 0;
             var s = sh0(); if (!s) return;
@@ -5130,7 +5235,7 @@
             '.tb:hover{color:#fff}.tb:active{transform:scale(.84)}' +
             '.tb svg{width:15px;height:15px;display:block}' +
             '#pip,#star{display:none}' +
-            '.tools.h-agbtn #agbtn,.tools.h-pip #pip,.tools.h-star #star,.tools.h-rwb #rwb,.tools.h-dlbtn #dlbtn{display:none!important}' +
+            '.tools.h-agbtn #agbtn,.tools.h-usbtn #usbtn,.tools.h-pip #pip,.tools.h-star #star,.tools.h-rwb #rwb,.tools.h-dlbtn #dlbtn{display:none!important}' +
             '.tbhint{padding:0 14px 6px;color:#7c7c98;font-size:11.5px}' +
             '.tbrow{display:flex;align-items:center;gap:10px;margin:1px 6px;padding:7px 8px;border-radius:9px;cursor:pointer;color:#cfcfe6;font-size:12.5px;user-select:none}' +
             '.tbrow:hover{background:rgba(255,255,255,.06)}' +
@@ -5224,6 +5329,26 @@
             '#menu .mi{display:flex;justify-content:space-between;align-items:center;gap:22px}' +
             '#menu .sc{color:#63637e;font-size:11px;flex:none}' +
             // ---- agent indicator + pause ----
+            '#usbtn{display:none;position:relative}#usbtn.us-on{display:grid}' +
+            '#usbtn .usk{position:absolute;top:1px;right:0;min-width:13px;height:13px;padding:0 3px;border-radius:7px;background:hsl(var(--h) 100% 74%);color:#10102a;font:700 9px/13px system-ui,sans-serif;text-align:center}' +
+            '#usbtn.us-off .usk{background:#5f5f7c;color:#d6d6ea}' +
+            '#usbtn.us-err .usk{background:#ff8a94;color:#2a0a0e}' +
+            '#usmenu{position:fixed;top:44px;min-width:272px;max-width:340px;display:block;visibility:hidden;opacity:0;pointer-events:none;transform:translateY(-6px) scale(.97);' +
+            'transition:opacity .14s ease,transform .16s cubic-bezier(.16,1,.3,1),visibility 0s linear .16s;z-index:31;padding:6px;transform-origin:top right;' +
+            'background:rgba(22,22,34,.98);border:1px solid rgba(255,255,255,.1);border-radius:13px;' +
+            'box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);font:12px/1.4 system-ui,sans-serif}' +
+            '#usmenu.on{visibility:visible;opacity:1;pointer-events:auto;transform:none;transition:opacity .14s ease,transform .18s cubic-bezier(.16,1,.3,1),visibility 0s}' +
+            '#usmenu .uh{padding:6px 10px 5px;font-size:10px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:#5f5f7c}' +
+            '#usmenu .ur{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;color:#d8d8ec;cursor:pointer}' +
+            '#usmenu .ur:hover{background:rgba(255,255,255,.06)}' +
+            '#usmenu .ur b{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+            '#usmenu .ur.p b{color:#7c7c98;text-decoration:line-through}' +
+            '#usmenu .ue{flex:none;width:15px;height:15px;border-radius:50%;background:#ff8a94;color:#2a0a0e;font:700 10px/15px system-ui,sans-serif;text-align:center}' +
+            '#usmenu .usw{flex:none;width:28px;height:16px;border-radius:99px;background:rgba(255,255,255,.16);position:relative;transition:background .15s}' +
+            '#usmenu .usw::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .16s}' +
+            '#usmenu .ur:not(.p) .usw{background:hsl(var(--h) 80% 62%)}#usmenu .ur:not(.p) .usw::after{transform:translateX(12px)}' +
+            '#usmenu .ufoot{display:flex;justify-content:space-between;gap:8px;margin-top:3px;padding:7px 10px 4px;border-top:1px solid rgba(255,255,255,.07);color:#7c7c98;font-size:11px}' +
+            '#usmenu .ufoot span{cursor:pointer}#usmenu .ufoot span:hover{color:#fff}' +
             '#agbtn{display:none}#agbtn.ag-on{display:grid}' +
             '#agbtn svg{width:15px;height:15px}' +
             '#agbtn .agd{position:absolute;top:5px;right:6px;width:6px;height:6px;border-radius:50%;background:#5f5f7c;transition:background .2s}' +
@@ -5255,6 +5380,13 @@
             '.mzc em{font-style:normal;min-width:44px;text-align:center;color:#ececfa;font-weight:600;cursor:pointer;padding:3px 0;border-radius:6px}' +
             '.mzc em:hover{background:rgba(255,255,255,.07)}' +
             '.mzf{margin-left:2px;border-left:1px solid rgba(255,255,255,.08);border-radius:0 7px 7px 0;width:30px}' +
+            '#menu .mi.feat{margin:2px 0;padding:9px 12px;color:#fff;border:1px solid hsl(var(--h) 100% 78% / .28);' +
+            'background:linear-gradient(115deg,hsl(var(--h) 90% 62% / .34),hsl(calc(var(--h) - 72) 62% 50% / .26));box-shadow:inset 0 1px 0 rgba(255,255,255,.12)}' +
+            '#menu .mi.feat:hover{background:linear-gradient(115deg,hsl(var(--h) 90% 66% / .5),hsl(calc(var(--h) - 72) 62% 54% / .4))}' +
+            '#menu .feat .fi{display:flex;align-items:center;gap:9px}#menu .feat .fi svg{width:15px;height:15px;color:hsl(var(--h) 100% 86%)}' +
+            '#menu .feat .fi b{font-weight:700;letter-spacing:.2px}' +
+            '#menu .feat .sc{color:hsl(var(--h) 100% 88%);font-size:9.5px;font-weight:700;letter-spacing:.8px;padding:1px 6px;border-radius:5px;background:rgba(255,255,255,.14)}' +
+            '#menu .mnew{font-style:normal;margin-left:8px;font-size:9px;font-weight:700;letter-spacing:.6px;padding:1px 5px;border-radius:5px;background:#f2c14e;color:#1a1400}' +
             '.mlabel{padding:8px 11px 3px;font-size:10px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:#5f5f7c}' +
             '.mfoot{display:flex;justify-content:space-between;gap:8px;margin-top:2px;padding:6px 10px 3px;border-top:1px solid rgba(255,255,255,.07);font-size:11px;color:#7c7c98}' +
             '.mfoot span{cursor:pointer;padding:3px 6px;border-radius:6px;transition:background .1s,color .1s}' +
@@ -5264,7 +5396,7 @@
             // ---- search-engine flyout (⋮ → Search engine) ----
             '#smenu{position:fixed;min-width:196px;display:block;visibility:hidden;opacity:0;pointer-events:none;' +
             'transform:translateX(8px) scale(.96);transition:opacity .15s ease,transform .18s cubic-bezier(.4,0,1,1),visibility 0s linear .18s;z-index:32;padding:5px;' +
-            'background:rgba(22,22,34,.97);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);' +
+            'background:rgba(22,22,34,.98);' +
             'border:1px solid rgba(255,255,255,.1);border-radius:13px;transform-origin:top right;' +
             'box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);font:12px/1.4 system-ui,sans-serif;' +
             '}' +
@@ -5771,6 +5903,7 @@
             '<button class="tb orb" id="orb" data-tip="Command palette" data-sc="Ctrl+K">' + SVG.sparkle + '</button>' +
             '<span class="tsep"></span>' +
             '<button class="tb" id="agbtn" data-tip="Agent" data-sc="Ctrl+Shift+."></button>' +
+            '<button class="tb" id="usbtn" data-tip="Site scripts on this page"></button>' +
             '<button class="tb" id="pip" data-tip="Picture-in-picture" data-sc="Ctrl+Shift+P">' + SVG.pip + '</button>' +
             '<button class="tb" id="star" data-tip="Bookmark this page" data-sc="Ctrl+D">' + SVG.star + '</button>' +
             '<button class="tb" id="rwb" data-tip="Rewind — revisit this page as it was" data-sc="Ctrl+Shift+Y">' + SVG.rw + '<i class="rdot"></i></button>' +
@@ -5785,6 +5918,7 @@
             '</div>' +
             '<div id="status"></div><div id="ttip"></div>' +
             '<div id="tmenu"></div>' +
+            '<div id="usmenu"></div>' +
             '<div id="pmenu"></div>' +
             '<button id="pweye" type="button" title="Show password">' +
             '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' +
@@ -6269,6 +6403,7 @@
         });
         agB.addEventListener('click', toggleAgent);
         paintAgent(sh);
+        wireUs(sh);
 
         var dlB = sh.getElementById('dlbtn');
         ['mousedown', 'click'].forEach(function (ev) {
@@ -6541,6 +6676,7 @@
                         state.nat = !!j.nat;
                         state.w = !!j.w;
                         state.sess = j.sess || 0;
+                        state.us = Array.isArray(j.us) ? j.us : [];
                         if (j.ag) { state.ag = j.ag; if (j.ag.n > 0) agRunUntil = Math.max(agRunUntil, Date.now() + 2200); }
                         if (j.se) state.se = j.se;
                         if (Array.isArray(j.sel)) state.sel = j.sel;
@@ -6566,6 +6702,7 @@
                         if (drawNtp) syncNtp(sh);
                         if (drawBar) {
                             paintAgent(sh);
+                            paintUs(sh);
                             updateAddr(sh);
                             updateStar(sh);
                             var om = sh.getElementById('omni');
@@ -6628,9 +6765,15 @@
                         rwCapture(j.tag || 'agent', true); // host asks for a (usually agent-tagged) snapshot
                     } else if (j && j.b === 61) {
                         state.upd = j.upd;
-                        // Refresh an open menu so the row shows the new phase at once.
+                        // An open menu must not be rebuilt (that replays its open animation);
+                        // only the Settings row's NEW badge can change.
                         var um = sh.getElementById('menu');
-                        if (um && um.classList.contains('on')) { um.classList.remove('on'); showMenu(sh); }
+                        var us = um && um.classList.contains('on') && um.querySelector('[data-c="fly:settings"] > span');
+                        if (us) {
+                            var ub = us.querySelector('.mnew'), un = updBadge() === 'NEW';
+                            if (un && !ub) us.insertAdjacentHTML('beforeend', H('<i class="mnew">NEW</i>'));
+                            else if (!un && ub) ub.remove();
+                        }
                     }
                 } catch (e) { }
             });
