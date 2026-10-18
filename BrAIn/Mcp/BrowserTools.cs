@@ -80,14 +80,14 @@ public sealed class BrowserTools(BrowserController browser)
     {
         var t = ResolveTab(tab);
         await EnsureLibAsync(t, ct);
-        var el = await browser.EvaluateAsync($"window.__brain.snapshot({{}})", false, t, ct);
+        var el = await browser.EvaluateAsync($"window.__brain.snapshot({{maxNodes:{Math.Clamp(maxNodes, 10, 3000)}}})", false, t, ct);
         if (el is null) return "No snapshot (page empty?)";
         var url = el.Value.TryGetProperty("url", out var u) ? u.GetString() : t.LastUrl;
         var title = el.Value.TryGetProperty("title", out var ti) ? ti.GetString() : "";
         var count = el.Value.TryGetProperty("nodeCount", out var nc) ? nc.GetInt32() : 0;
         var trunc = el.Value.TryGetProperty("truncated", out var tr) && tr.GetBoolean();
         var tree = el.Value.TryGetProperty("tree", out var tr2) ? tr2.GetString() : "";
-        return $"Page: {title} <{url}> — {count} nodes{(trunc ? " (truncated)" : "")}\n{tree}";
+        return $"Page: {title} <{url}> — {count} nodes{(trunc ? " (truncated: more on the page; scroll, use browser_find, or raise maxNodes)" : "")}\n{tree}";
     }
 
     [McpServerTool(Name = "browser_text"), Description("Visible innerText of the page (or of a selector).")]
@@ -237,8 +237,40 @@ public sealed class BrowserTools(BrowserController browser)
             {
                 var cx = o.GetProperty("x").GetDouble() + w.GetDouble() / 2;
                 var cy = o.GetProperty("y").GetDouble() + h.GetDouble() / 2;
+                // The OS click can be dropped or land elsewhere without any error (missing input permission, window
+                // not frontmost, an overlay on top), so watch for it arriving and report what the page did.
+                var token = (await browser.EvaluateAsync("window.__brain.clickWatch(" + Js(element) + ")", false, t, ct))?.GetString() ?? "";
                 await driver.ClickAtAsync(cx, cy, MouseButton.Left, 1, ct);
-                return $"click {element}: ok (real input)";
+                await Task.Delay(350, ct);
+                JsonElement? after = null;
+                try { after = await browser.EvaluateAsync("window.__brain.clickResult()", false, t, ct); }
+                catch (OperationCanceledException) { throw; }
+                catch { /* the document went away: handled below */ }
+                var delivered = after is { ValueKind: JsonValueKind.Object } a && a.TryGetProperty("hit", out _);
+                if (!delivered)
+                {
+                    // A click that navigates destroys the document that was watching it. That is a success; clicking
+                    // again by ref would hit some other element of the new page.
+                    var sameDoc = false;
+                    try { sameDoc = (await browser.EvaluateAsync($"window.__brainClickDoc==={Js(token)}", false, t, ct))?.ValueKind == JsonValueKind.True; }
+                    catch (OperationCanceledException) { throw; }
+                    catch { }
+                    if (!sameDoc) return $"click {element}: ok (real input), the page navigated or reloaded. Take a new snapshot.";
+                    var syn = await browser.EvaluateTextAsync($"window.__brain.click({Js(element)})", t, ct);
+                    return $"click {element}: the OS click never reached the page, so a synthetic click was used instead: {syn}";
+                }
+                var res = after!.Value;
+                var landedOnTarget = res.GetProperty("hit").GetBoolean();
+                var changed = res.TryGetProperty("changed", out var ch) && ch.GetBoolean();
+                var note = changed ? "the page changed" : "no visible change on the page";
+                if (!landedOnTarget)
+                {
+                    var tag = res.TryGetProperty("tag", out var tg) ? tg.GetString() : "?";
+                    var name = res.TryGetProperty("name", out var nm) ? nm.GetString() : "";
+                    return $"click {element}: WARNING the click landed on <{tag}> \"{name}\" instead of the target (something may be covering it); {note}. Take a new snapshot before trying again.";
+                }
+                return changed ? $"click {element}: ok (real input), {note}"
+                               : $"click {element}: delivered (real input) but {note}. If you expected a change, snapshot again; the element may need a different action.";
             }
         }
         var r = await browser.EvaluateTextAsync($"window.__brain.click({Js(element)})", t, ct);
@@ -300,6 +332,9 @@ public sealed class BrowserTools(BrowserController browser)
         var t = ResolveTab(tab);
         await EnsureLibAsync(t, ct);
         var r = await browser.EvaluateTextAsync($"window.__brain.fill({Js(element)},{Js(text)})", t, ct);
+        // Say plainly when the field did not take the text, so the agent does not assume it worked.
+        if (r.Contains("\"set\":false", StringComparison.Ordinal))
+            return $"type into {element}: WARNING the text did not appear in the field. {r}";
         return $"type into {element}: {r}";
     }
 
@@ -311,6 +346,11 @@ public sealed class BrowserTools(BrowserController browser)
     {
         var t = ResolveTab(tab);
         var driver = await browser.DriverOrThrowAsync(t, ct);
+        await EnsureLibAsync(t, ct);
+        // Typing into nothing is silently lost; say so instead of claiming success.
+        var focus = await browser.EvaluateAsync("window.__brain.focusInfo()", false, t, ct);
+        if (focus is { ValueKind: JsonValueKind.Object } f && f.TryGetProperty("editable", out var ed) && ed.ValueKind == JsonValueKind.False)
+            return "FAILED: no text field is focused, so nothing was typed. Click the field first, or use browser_type with the field's element ref.";
         await driver.InsertTextAsync(text, ct);
         return "text inserted";
     }
@@ -400,7 +440,9 @@ public sealed class BrowserTools(BrowserController browser)
         CancellationToken ct = default)
     {
         var t = ResolveTab(tab);
-        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(Math.Max(timeoutMs, 500));
+        var timeout = Math.Max(timeoutMs, 500);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeout);
         while (DateTime.UtcNow < deadline)
         {
             ct.ThrowIfCancellationRequested();
@@ -416,12 +458,12 @@ public sealed class BrowserTools(BrowserController browser)
                 var expr = checks.Count == 1 ? checks[0] : "(" + string.Join("&&", checks) + ")";
                 var el = await browser.EvaluateAsync(expr, false, t, ct);
                 if (el?.ValueKind == JsonValueKind.True)
-                    return $"condition met (after {timeoutMs - (int)(deadline - DateTime.UtcNow).TotalMilliseconds}ms): {expr}";
+                    return $"condition met (after {sw.ElapsedMilliseconds}ms)";
             }
             catch { /* context lost during navigation — keep polling */ }
             await Task.Delay(200, ct);
         }
-        return $"timeout after {timeoutMs}ms waiting for: element={element} text={text} url={url} readyState={readyState}";
+        return $"timeout after {timeout}ms waiting for: element={element} text={text} url={url} readyState={readyState}";
     }
 
     // ============================================================= CAPTURE

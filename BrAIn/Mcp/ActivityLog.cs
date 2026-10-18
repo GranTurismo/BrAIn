@@ -191,12 +191,37 @@ internal static class ActivityRecorder
 {
     public static McpRequestFilter<CallToolRequestParams, CallToolResult> Create(
         BrowserController browser, ActivityLog log)
-        => next => async (ctx, ct) =>
-        {
-            var p = ctx.Params;
-            var tool = p?.Name ?? "";
-            if (p is null || tool.Length == 0 || tool is "browser_activity" or "browser_list_flows")
-                return await next(ctx, ct);
+        => next => (ctx, ct) => new ValueTask<CallToolResult>(
+            RunAsync(browser, log, ctx.Params?.Name ?? "", ctx.Params?.Arguments, t => next(ctx, t).AsTask(), ct));
+
+    /// <summary>
+    /// The guarded path every tool call takes — pause, handoff, seatbelt, locator capture and the
+    /// activity log. The MCP filter and the built-in Ollama agent both run through it.
+    /// </summary>
+    public static async Task<CallToolResult> RunAsync(
+        BrowserController browser, ActivityLog log, string tool,
+        IDictionary<string, JsonElement>? arguments, Func<CancellationToken, Task<CallToolResult>> next, CancellationToken callerCt)
+    {
+            // The user's hard cancel aborts whatever is running, for any client.
+            using var killLink = CancellationTokenSource.CreateLinkedTokenSource(callerCt, browser.AgentKillToken);
+            var ct = killLink.Token;
+
+            if (tool.Length == 0 || tool is "browser_activity" or "browser_list_flows")
+                return await next(ct);
+
+            // Hard cancel: nothing runs, reads included, until the user resumes the agent.
+            if (browser.AgentCancelled)
+            {
+                const string cmsg = "CANCELLED: the user cancelled this AI agent in BrAIn. Stop the task entirely. Do not call any more tools and do not retry; tell the user the task was cancelled.";
+                browser.AgentBlocked(tool);
+                log.Add(new ActivityEntry
+                {
+                    Id = Guid.NewGuid().ToString("N")[..8],
+                    T = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Tool = tool, Ok = false, Res = cmsg,
+                });
+                return new CallToolResult { IsError = true, Content = [new TextContentBlock { Text = cmsg }] };
+            }
 
             // User pause: refuse anything that acts on the browser (reads stay allowed).
             if (browser.AgentPaused && (!ActivityLog.ReadOnlyTools.Contains(tool) || tool == "browser_run_flow"))
@@ -217,8 +242,8 @@ internal static class ActivityRecorder
             try
             {
             var args = new JsonObject();
-            if (p.Arguments is not null)
-                foreach (var kv in p.Arguments)
+            if (arguments is not null)
+                foreach (var kv in arguments)
                     args[kv.Key] = JsonNode.Parse(kv.Value.GetRawText());
 
             // Resolve the stable locator BEFORE the call: a click can navigate
@@ -302,7 +327,7 @@ internal static class ActivityRecorder
             string? error = null;
             try
             {
-                result = await next(ctx, ct);
+                result = await next(ct);
                 return result;
             }
             catch (Exception ex)
@@ -340,7 +365,7 @@ internal static class ActivityRecorder
             }
             }
             finally { browser.AgentEnd(); }
-        };
+    }
 
     /// <summary>Asks the page what the click/Enter would hit (brain.js risk*). Null on old scripts or failure.</summary>
     private static async Task<BeltFacts?> ProbeAsync(BrowserController browser, BrowserTab? tab, string tool, JsonObject args, CancellationToken ct)

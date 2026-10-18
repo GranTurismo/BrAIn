@@ -83,6 +83,14 @@ public sealed class Handoff
         };
     }
 
+    /// <summary>Answers every open request "can't do it" (the user cancelled the agent).</summary>
+    public void CancelAll()
+    {
+        List<Pending> all;
+        lock (_lock) all = _pending.ToList();
+        foreach (var p in all) p.Answer.TrySetResult("cant");
+    }
+
     /// <summary>Called from the UI as "id:done" or "id:cant". Unknown or stale ids are ignored.</summary>
     public void Answer(string idAndChoice)
     {

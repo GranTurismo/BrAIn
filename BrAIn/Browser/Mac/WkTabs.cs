@@ -149,7 +149,7 @@ internal static partial class WkTabs
     {
         var b = ObjC.SendRect(content, ObjC.Sel("bounds"));
         var bar = WkBar.BarHeight;
-        return new MacWindow.CGRect { X = 0, Y = 0, W = Math.Max(1, b.W), H = Math.Max(1, b.H - bar) };
+        return new MacWindow.CGRect { X = 0, Y = 0, W = Math.Max(1, b.W - WkBar.SideWidth(b.W)), H = Math.Max(1, b.H - bar) };
     }
 
     /// <summary>Creates a hidden web view for a tab and adds it under the toolbar.</summary>

@@ -75,12 +75,12 @@ internal static partial class WkBar
         catch { }
     }
 
-    private static IntPtr NewHandler()
+    private static IntPtr NewHandler(string className = "BrAInBarHandler", MsgImp? imp = null)
     {
-        var cls = objc_allocateClassPair(ObjC.GetClass("NSObject"), "BrAInBarHandler", 0);
+        var cls = objc_allocateClassPair(ObjC.GetClass("NSObject"), className, 0);
         if (cls == IntPtr.Zero) return IntPtr.Zero;
         ClassAddMethod(cls, ObjC.Sel("userContentController:didReceiveScriptMessage:"),
-            Marshal.GetFunctionPointerForDelegate(_msgImp), "v@:@@");
+            Marshal.GetFunctionPointerForDelegate(imp ?? _msgImp), "v@:@@");
         var proto = GetProtocol("WKScriptMessageHandler");
         if (proto != IntPtr.Zero) ClassAddProtocol(cls, proto);
         objc_registerClassPair(cls);
@@ -146,8 +146,13 @@ internal static partial class WkBar
         var b = ObjC.SendRect(content, ObjC.Sel("bounds"));
         if (b.W <= 0 || b.H <= BarHeight) return;
 
-        // pages: everything below the strip (no-op resizes are skipped — each one re-lays-out a page)
-        WkTabs.ApplyFrame(new MacWindow.CGRect { X = 0, Y = 0, W = b.W, H = b.H - BarHeight });
+        // pages: everything below the strip, minus the side panel when it is open
+        // (no-op resizes are skipped — each one re-lays-out a page)
+        var sideW = SideWidth(b.W);
+        WkTabs.ApplyFrame(new MacWindow.CGRect { X = 0, Y = 0, W = b.W - sideW, H = b.H - BarHeight });
+        if (_side != IntPtr.Zero)
+            ObjC.SendRectArg(_side, ObjC.Sel("setFrame:"),
+                new MacWindow.CGRect { X = b.W - sideW, Y = 0, W = sideW, H = b.H - BarHeight });
 
         var full = _mode == "full";
         double barH = BarHeight;
@@ -179,5 +184,88 @@ internal static partial class WkBar
         if (WkTabs.Active != IntPtr.Zero) { WkTabs.FocusActive(nsWindow); return; }
         if (_page != IntPtr.Zero)
             ObjC.Send(nsWindow, ObjC.Sel("makeFirstResponder:"), _page);
+    }
+
+    // ------------------------------------------------------------------ side panel
+
+    internal const double SidePanelWidth = 400;
+    private static IntPtr _side;
+    private static bool _sideOpen;
+    private static readonly MsgImp _sideImp = OnSideMsg;
+
+    /// <summary>Receives every "brain:..." command string the side panel posts.</summary>
+    internal static Action<string>? OnSideMessage;
+
+    internal static bool SideExists => _side != IntPtr.Zero;
+    internal static bool SideOpen => _sideOpen;
+
+    /// <summary>Width the page area gives up to the panel (0 while it is closed or the window is tiny).</summary>
+    internal static double SideWidth(double windowWidth)
+        => _sideOpen && _side != IntPtr.Zero && windowWidth > SidePanelWidth + 320 ? SidePanelWidth : 0;
+
+    private static void OnSideMsg(IntPtr self, IntPtr sel, IntPtr controller, IntPtr message)
+    {
+        try
+        {
+            var body = ObjC.Send(message, ObjC.Sel("body"));
+            if (body == IntPtr.Zero || !ObjC.IsKindOf(body, "NSString")) return;
+            var s = ObjC.NsStringToString(body);
+            if (!string.IsNullOrEmpty(s)) OnSideMessage?.Invoke(s);
+        }
+        catch { }
+    }
+
+    /// <summary>Creates the side panel (hidden) to the right of the page area and loads <paramref name="html"/> into it.</summary>
+    internal static bool CreateSide(IntPtr nsWindow, string script, string html)
+    {
+        if (_side != IntPtr.Zero) return true;
+        if (_bar == IntPtr.Zero || nsWindow == IntPtr.Zero) return false;
+        var content = ObjC.Send(nsWindow, ObjC.Sel("contentView"));
+        if (content == IntPtr.Zero) return false;
+
+        var cfg = ObjC.Send(ObjC.Send(ObjC.GetClass("WKWebViewConfiguration"), ObjC.Sel("alloc")), ObjC.Sel("init"));
+        var ucc = ObjC.Send(ObjC.Send(ObjC.GetClass("WKUserContentController"), ObjC.Sel("alloc")), ObjC.Sel("init"));
+        var handler = NewHandler("BrAInSideHandler", _sideImp);
+        if (cfg == IntPtr.Zero || ucc == IntPtr.Zero || handler == IntPtr.Zero) return false;
+        ObjC.Send(ucc, ObjC.Sel("addScriptMessageHandler:name:"), handler, ObjC.NsString("brain"));
+        ObjC.Send(cfg, ObjC.Sel("setUserContentController:"), ucc);
+        var us = ObjC.SendStrIntBool(
+            ObjC.Send(ObjC.GetClass("WKUserScript"), ObjC.Sel("alloc")),
+            ObjC.Sel("initWithSource:injectionTime:forMainFrameOnly:"),
+            ObjC.NsString(script), 0, 1);
+        if (us != IntPtr.Zero) ObjC.Send(ucc, ObjC.Sel("addUserScript:"), us);
+
+        var b = ObjC.SendRect(content, ObjC.Sel("bounds"));
+        var frame = new MacWindow.CGRect { X = Math.Max(0, b.W - SidePanelWidth), Y = 0, W = SidePanelWidth, H = Math.Max(1, b.H - BarHeight) };
+        var wv = SendRectObj(ObjC.Send(ObjC.GetClass("WKWebView"), ObjC.Sel("alloc")),
+            ObjC.Sel("initWithFrame:configuration:"), frame, cfg);
+        if (wv == IntPtr.Zero) return false;
+        ObjC.SendNInt(wv, ObjC.Sel("setAutoresizingMask:"), 17); // stick to the right edge, follow window height
+        ObjC.SendNInt(wv, ObjC.Sel("setHidden:"), 1);
+        // below the bar view so the bar's popovers still paint over the panel
+        SendViewPosView(content, ObjC.Sel("addSubview:positioned:relativeTo:"), wv, -1 /* NSWindowBelow */, _bar);
+        _side = wv;
+
+        var baseUrl = ObjC.Send(ObjC.GetClass("NSURL"), ObjC.Sel("URLWithString:"), ObjC.NsString("https://brain-side.invalid/"));
+        ObjC.Send(wv, ObjC.Sel("loadHTMLString:baseURL:"), ObjC.NsString(html), baseUrl);
+        return true;
+    }
+
+    /// <summary>Shows or hides the panel and re-lays-out the page area. Returns the new state.</summary>
+    internal static bool SetSideOpen(IntPtr nsWindow, bool open)
+    {
+        if (_side == IntPtr.Zero) return false;
+        _sideOpen = open;
+        ObjC.SendNInt(_side, ObjC.Sel("setHidden:"), open ? 0 : 1);
+        Layout(nsWindow);
+        if (open) ObjC.Send(nsWindow, ObjC.Sel("makeFirstResponder:"), _side);
+        else FocusPage(nsWindow);
+        return _sideOpen;
+    }
+
+    internal static void EvalSide(string js)
+    {
+        if (_side == IntPtr.Zero) return;
+        ObjC.Send(_side, ObjC.Sel("evaluateJavaScript:completionHandler:"), ObjC.NsString(js), IntPtr.Zero);
     }
 }

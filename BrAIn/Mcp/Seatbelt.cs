@@ -187,6 +187,14 @@ public sealed class Seatbelt
     /// <summary>While a question is open, other actions wait their turn instead of racing it.</summary>
     public const string BusyText = "WAIT: BrAIn is asking the user to approve another action. Do not retry yet; wait for the user's answer.";
 
+    /// <summary>Declines every open question at once (the user cancelled the agent).</summary>
+    public void DenyAll()
+    {
+        List<Pending> all;
+        lock (_lock) all = _pending.ToList();
+        foreach (var p in all) p.Answer.TrySetResult("deny");
+    }
+
     /// <summary>Called from the UI. Unknown or stale ids are ignored.</summary>
     public void Answer(string idAndChoice)
     {

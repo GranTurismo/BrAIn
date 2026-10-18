@@ -17,15 +17,16 @@ internal static class MessageTrust
         "histclear", "histdel", "histget",
         "importgo", "importscan",
         "keyset", "keyreset",
+        "olclear", "olget", "olsend", "olset", "olstop",
         "pwdel", "pwget", "pwreveal",
         "usget", "ussave", "usdel", "ustoggle", "usrun", "ustest", "usexclude", "usclrerr",
     };
 
-    private static readonly HashSet<string> BarOnly = new(StringComparer.Ordinal) { "askok", "beltmode", "handoff", "histq", "updateapply" };
+    private static readonly HashSet<string> BarOnly = new(StringComparer.Ordinal) { "askok", "beltmode", "agcancel", "handoff", "histq", "olside", "updateapply" };
 
     private static readonly HashSet<string> InternalUrls = new(StringComparer.Ordinal)
     {
-        "about:newtab", "about:help", "about:shortcuts", "about:history", "about:import", "about:passwords", "about:flows", "about:personality",
+        "about:newtab", "about:help", "about:shortcuts", "about:history", "about:import", "about:passwords", "about:flows", "about:personality", "about:ollama",
     };
 
     public static bool IsInternalUrl(string? url)

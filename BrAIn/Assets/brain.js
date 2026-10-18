@@ -3,10 +3,21 @@
  * Windows, or on-demand eval on macOS). Exposes window.__brain.
  * Element refs are data-brain-ref attributes assigned during snapshots. */
 (function () {
-    if (window.__brain && window.__brain.v === 3) return;
+    if (window.__brain && window.__brain.v === 5) return;
 
     var REF = 'data-brain-ref';
-    var refCounter = 0;
+    // Continue after the highest ref already on the page, so re-injecting this script never hands out a ref twice.
+    var refCounter = (function () {
+        var max = 0;
+        try {
+            var held = document.querySelectorAll('[data-brain-ref]');
+            for (var i = 0; i < held.length; i++) {
+                var n = parseInt(String(held[i].getAttribute('data-brain-ref')).slice(1), 10);
+                if (n > max) max = n;
+            }
+        } catch (e) { }
+        return max;
+    })();
 
     // ---------------- element refs ----------------
 
@@ -114,6 +125,15 @@
         if (el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1') return true;
         if (el.isContentEditable) return true;
         if (el.getAttribute('draggable') === 'true') return true;
+        // Clickable divs/spans with no role or tabindex (the React default): the pointer cursor gives them away.
+        if (/^(div|span|li|img|svg|p|td|i)$/.test(tag)) {
+            try {
+                if (getComputedStyle(el).cursor === 'pointer') {
+                    var par = el.parentElement;
+                    if (!par || getComputedStyle(par).cursor !== 'pointer') return true;
+                }
+            } catch (e) { }
+        }
         return false;
     }
 
@@ -123,16 +143,19 @@
 
     function snapshot(opts) {
         opts = opts || {};
+        var limit = Math.max(1, Math.min(parseInt(opts.maxNodes, 10) || MAX_SNAPSHOT_NODES, 3000));
         var lines = [];
         var count = 0;
+        var seen = new Set();
 
         function walk(node, depth) {
-            if (count >= MAX_SNAPSHOT_NODES) return;
-            if (!(node instanceof Element)) return;
+            if (count >= limit) return;
+            if (!(node instanceof Element) || seen.has(node)) return;
             if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'NOSCRIPT' ||
                 node.tagName === 'META' || node.tagName === 'LINK' || node.tagName === 'TEMPLATE' ||
                 node.id === '__brain-toolbar-root' || node.id === '__brain-chrome-host') return;
             if (!isVisible(node)) return;
+            seen.add(node);
 
             var role = roleOf(node);
             var interactive = isInteractive(node, role);
@@ -172,12 +195,17 @@
             }
         }
 
+        // Open dialogs/modals first: sites append them at the very end of <body>, where a size limit would cut them off.
+        try {
+            var dlgs = document.querySelectorAll('[role=dialog],[role=alertdialog],dialog[open],[aria-modal=true]');
+            for (var d = 0; d < dlgs.length; d++) walk(dlgs[d], 0);
+        } catch (e) { }
         walk(document.documentElement, 0);
         return {
             url: location.href,
             title: document.title,
             nodeCount: count,
-            truncated: count >= MAX_SNAPSHOT_NODES,
+            truncated: count >= limit,
             tree: lines.join('\n'),
         };
     }
@@ -250,7 +278,7 @@
     function queryAll(sel) {
         var out = [];
         var els;
-        if (sel.startsWith('ref=') || /^e\d+$/.test(sel)) {
+        if (/^(ref[=:]|text:|role:|xpath:)/.test(sel) || /^e\d+$/.test(sel)) {
             var one = resolve(sel);
             els = one ? [one] : [];
         } else {
@@ -275,47 +303,68 @@
 
     // ---------------- events ----------------
 
-    function fireMouse(el, type, x, y, btn) {
+    function fireMouse(el, type, x, y, btn, detail) {
         var r = el.getBoundingClientRect();
         x = x !== undefined ? x : r.left + r.width / 2;
         y = y !== undefined ? y : r.top + r.height / 2;
         var e = new MouseEvent(type, {
-            bubbles: true, cancelable: true, view: window,
-            clientX: x, clientY: y, button: btn || 0, buttons: type === 'mouseup' ? 0 : 1,
+            bubbles: true, cancelable: true, view: window, detail: detail || 0,
+            clientX: x, clientY: y, button: btn || 0, buttons: /^(mouseup|click|dblclick|auxclick|contextmenu|mouseover|mousemove|mouseenter)$/.test(type) ? 0 : (btn === 2 ? 2 : btn === 1 ? 4 : 1),
         });
         el.dispatchEvent(e);
     }
 
-    function clickAt(x, y, button, count) {
+    // Pointer events too: menus and widgets built on them (Radix, Material...) ignore mouse-only input.
+    function firePointer(el, type, x, y, btn) {
+        if (typeof PointerEvent !== 'function') return;
+        el.dispatchEvent(new PointerEvent(type, {
+            bubbles: true, cancelable: true, view: window, pointerType: 'mouse', isPrimary: true, pointerId: 1,
+            clientX: x, clientY: y, button: btn || 0, buttons: type === 'pointerup' ? 0 : 1,
+        }));
+    }
+
+    function clickAt(x, y, button, count, target) {
         var btnNum = button === 'right' ? 2 : button === 'middle' ? 1 : 0;
-        var el = document.elementFromPoint(x, y) || document.body;
+        var el = target || document.elementFromPoint(x, y) || document.body;
         var n = count || 1;
+        firePointer(el, 'pointerover', x, y, btnNum);
         fireMouse(el, 'mouseover', x, y, btnNum);
         fireMouse(el, 'mousemove', x, y, btnNum);
         for (var i = 0; i < n; i++) {
-            fireMouse(el, 'mousedown', x, y, btnNum);
-            fireMouse(el, 'mouseup', x, y, btnNum);
-            fireMouse(el, 'click', x, y, btnNum);
-            if (n === 2) fireMouse(el, 'dblclick', x, y, btnNum);
+            firePointer(el, 'pointerdown', x, y, btnNum);
+            fireMouse(el, 'mousedown', x, y, btnNum, i + 1);
+            if (button !== 'right') try { el.focus && el.focus(); } catch (e) { }
+            firePointer(el, 'pointerup', x, y, btnNum);
+            fireMouse(el, 'mouseup', x, y, btnNum, i + 1);
+            if (btnNum === 2) fireMouse(el, 'contextmenu', x, y, btnNum, i + 1);
+            else if (btnNum === 1) fireMouse(el, 'auxclick', x, y, btnNum, i + 1);
+            else fireMouse(el, 'click', x, y, btnNum, i + 1);
         }
-        if (button !== 'right') try { el.focus && el.focus(); } catch (e) { }
+        if (n === 2 && btnNum === 0) fireMouse(el, 'dblclick', x, y, btnNum, 2);
         return describe(el);
+    }
+
+    // Click the element itself (not whatever is on top of it), and say if something else is covering it.
+    function clickElement(el, count) {
+        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+        var r = el.getBoundingClientRect();
+        var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        var top = document.elementFromPoint(cx, cy);
+        var out = clickAt(cx, cy, 'left', count, el);
+        if (top && !(el.contains(top) || top.contains(el))) out.coveredBy = tag(top) + (accName(top) ? ' "' + accName(top) + '"' : '');
+        return out;
     }
 
     function click(sel) {
         var el = resolve(sel);
         if (!el) return { ok: false, error: 'element not found: ' + sel };
-        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-        var r = el.getBoundingClientRect();
-        return clickAt(r.left + r.width / 2, r.top + r.height / 2, 'left', 1);
+        return clickElement(el, 1);
     }
 
     function dblclick(sel) {
         var el = resolve(sel);
         if (!el) return { ok: false, error: 'element not found: ' + sel };
-        el.scrollIntoView({ block: 'center', behavior: 'instant' });
-        var r = el.getBoundingClientRect();
-        return clickAt(r.left + r.width / 2, r.top + r.height / 2, 'left', 2);
+        return clickElement(el, 2);
     }
 
     function hover(selOrX, y) {
@@ -323,8 +372,12 @@
         if (!el) return { ok: false, error: 'element not found' };
         el.scrollIntoView({ block: 'center', behavior: 'instant' });
         var r = el.getBoundingClientRect();
-        fireMouse(el, 'mouseover', r.left + r.width / 2, r.top + r.height / 2, 0);
-        fireMouse(el, 'mousemove', r.left + r.width / 2, r.top + r.height / 2, 0);
+        var hx = r.left + r.width / 2, hy = r.top + r.height / 2;
+        firePointer(el, 'pointerover', hx, hy, 0);
+        firePointer(el, 'pointerenter', hx, hy, 0);
+        fireMouse(el, 'mouseover', hx, hy, 0);
+        fireMouse(el, 'mouseenter', hx, hy, 0);
+        fireMouse(el, 'mousemove', hx, hy, 0);
         return { ok: true };
     }
 
@@ -338,25 +391,79 @@
         else el.value = value;
     }
 
+    // The thing that takes the typing: a wrapper (div role=textbox, a labelled group...) holds the real editable.
+    function editableFor(el) {
+        var t = tag(el);
+        if (t === 'input' || t === 'textarea' || t === 'select' || el.isContentEditable) return el;
+        var inner = el.querySelector('textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]), [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]');
+        if (inner) return inner;
+        var up = el.closest && el.closest('[contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]');
+        return up || null;
+    }
+
+    function readValue(el) {
+        return el.isContentEditable ? (el.innerText || '') : ('value' in el ? String(el.value || '') : '');
+    }
+
+    function sameText(got, want) {
+        var n = function (x) { return String(x).replace(/\s+/g, ' ').trim(); };
+        got = n(got); want = n(want);
+        return got === want || (want.length > 40 && got.indexOf(want.slice(0, 40)) >= 0);
+    }
+
     function fill(sel, value) {
         var el = resolve(sel);
         if (!el) return { ok: false, error: 'element not found: ' + sel };
         el.scrollIntoView({ block: 'center', behavior: 'instant' });
-        el.focus();
-        var tg = tag(el);
-        if (tg === 'select') return selectOptionRaw(el, [].concat(value));
-        if (el.isContentEditable) {
-            el.innerText = value;
-        } else {
-            setNativeValue(el, value);
+        if (tag(el) === 'select') { el.focus(); return selectOptionRaw(el, [].concat(value)); }
+        var target = editableFor(el);
+        if (!target) return { ok: false, error: 'not editable: <' + tag(el) + '>. Pick the text field itself (snapshot again), or click it and use browser_type_text.' };
+        if (tag(target) === 'select') { target.focus(); return selectOptionRaw(target, [].concat(value)); }
+        target.focus();
+        var want = String(value), ce = target.isContentEditable;
+
+        // 1) Behave like typing: select what is there, then insert. Editors built on beforeinput/input events
+        //    (React inputs, Lexical, Draft.js, ProseMirror) only accept text that arrives this way.
+        try {
+            if (ce) {
+                var r = document.createRange(); r.selectNodeContents(target);
+                var sl = getSelection(); sl.removeAllRanges(); sl.addRange(r);
+            } else if (target.select) target.select();
+            document.execCommand('insertText', false, want);
+        } catch (e) { }
+        var got = readValue(target);
+
+        // 2) Otherwise set it directly and announce the change.
+        if (!sameText(got, want)) {
+            try { if (ce) target.textContent = want; else setNativeValue(target, want); } catch (e) { }
+            try { target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: want })); }
+            catch (e) { target.dispatchEvent(new Event('input', { bubbles: true })); }
+            target.dispatchEvent(new Event('change', { bubbles: true }));
+            got = readValue(target);
         }
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return { ok: true, ref: assignRef(el) };
+        var out = { ok: true, ref: assignRef(target), set: sameText(got, want), value: got.slice(0, 120) };
+        if (!out.set) out.warning = 'the field does not show the text (it shows "' + got.slice(0, 60) + '"); the page may be rejecting scripted input';
+        return out;
+    }
+
+    // The focused element, looking through shadow roots.
+    function deepActive() {
+        var el = document.activeElement;
+        while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+        return el;
+    }
+
+    function focusInfo() {
+        var el = deepActive();
+        if (!el || el === document.body || el === document.documentElement) return { editable: false, tag: 'body' };
+        var t = tag(el);
+        var ed = !!el.isContentEditable || t === 'textarea' ||
+            (t === 'input' && !/^(button|submit|reset|checkbox|radio|file|image|range|color)$/i.test(el.type || 'text'));
+        return { editable: ed, tag: t, name: accName(el) };
     }
 
     function insertText(text) {
-        var el = document.activeElement;
+        var el = deepActive();
         if (!el || el === document.body) return { ok: false, error: 'no focused element' };
         var ok = false;
         try { ok = document.execCommand('insertText', false, text); } catch (e) { }
@@ -389,27 +496,49 @@
         PageDown: { code: 'PageDown', keyCode: 34 },
         ' ': { code: 'Space', keyCode: 32 },
     };
+    for (var fk = 1; fk <= 12; fk++) KEYMAP['F' + fk] = { code: 'F' + fk, keyCode: 111 + fk };
+    var KEY_ALIAS = { Space: ' ', Esc: 'Escape', Return: 'Enter', Del: 'Delete', Up: 'ArrowUp', Down: 'ArrowDown', Left: 'ArrowLeft', Right: 'ArrowRight' };
 
     function pressKey(key, modMask) {
-        var el = document.activeElement || document.body;
-        var info = KEYMAP[key] || { code: 'Key' + key.toUpperCase(), keyCode: key.toUpperCase().charCodeAt(0) };
+        key = KEY_ALIAS[key] || key;
+        var el = deepActive() || document.body;
+        var info = KEYMAP[key] ||
+            (key.length === 1
+                ? { code: /[a-z]/i.test(key) ? 'Key' + key.toUpperCase() : /\d/.test(key) ? 'Digit' + key : '', keyCode: key.toUpperCase().charCodeAt(0) }
+                : { code: key, keyCode: 0 });
         var mods = modMask || 0;
         var opts = {
             key: key, code: info.code, keyCode: info.keyCode, which: info.keyCode,
             bubbles: true, cancelable: true,
             altKey: !!(mods & 1), ctrlKey: !!(mods & 2), metaKey: !!(mods & 4), shiftKey: !!(mods & 8),
         };
-        el.dispatchEvent(new KeyboardEvent('keydown', opts));
-        el.dispatchEvent(new KeyboardEvent('keypress', opts));
+        var proceed = el.dispatchEvent(new KeyboardEvent('keydown', opts));
+        if (proceed && (key.length === 1 || key === 'Enter')) el.dispatchEvent(new KeyboardEvent('keypress', opts));
         el.dispatchEvent(new KeyboardEvent('keyup', opts));
-        // Synthetic events don't trigger browser default actions; emulate the
-        // important ones for automation.
-        if (key === 'Enter') {
-            var form = el.closest && el.closest('form');
-            if (form && form.requestSubmit) form.requestSubmit();
-            else if (tag(el) === 'a' && el.href) el.click();
-        }
-        if (key === 'Tab') moveFocus(mods & 8 ? -1 : 1);
+        // The page took the key (a chat box that sends on Enter, a shortcut): do not also run the browser default.
+        if (!proceed) return { ok: true, handledByPage: true };
+
+        // Synthetic key events do not trigger the browser's own behaviour, so do the important ones by hand.
+        var t = el.tagName ? tag(el) : '';
+        var editable = !!el.isContentEditable || t === 'textarea' || (t === 'input' && !/^(button|submit|reset|checkbox|radio|file|image|range|color)$/i.test(el.type || 'text'));
+        var cmd = (mods & 6) !== 0; // ctrl or meta
+        try {
+            if (key === 'Enter' && !cmd) {
+                if (t === 'textarea') document.execCommand('insertText', false, '\n');
+                else if (el.isContentEditable) document.execCommand('insertParagraph');
+                else if (t === 'button' || t === 'summary' || t === 'a' || el.getAttribute('role') === 'button') el.click();
+                else {
+                    var form = el.closest && el.closest('form');
+                    if (form && form.requestSubmit) form.requestSubmit();
+                }
+            } else if (key === ' ' && !cmd && !editable) {
+                if (t === 'button' || t === 'summary' || (t === 'input' && /^(checkbox|radio|button|submit)$/i.test(el.type || ''))
+                    || /^(button|checkbox|switch|radio|menuitem)$/.test(el.getAttribute('role') || '')) el.click();
+            } else if (key === 'Backspace' && editable) document.execCommand('delete');
+            else if (key === 'Delete' && editable) document.execCommand('forwardDelete');
+            else if (key === 'Tab') moveFocus(mods & 8 ? -1 : 1);
+            else if (cmd && (key === 'a' || key === 'A') && editable) document.execCommand('selectAll');
+        } catch (e) { }
         return { ok: true };
     }
 
@@ -424,27 +553,58 @@
     function setChecked(sel, checked) {
         var el = resolve(sel);
         if (!el) return { ok: false, error: 'element not found: ' + sel };
-        if (el.checked !== checked) {
-            el.checked = checked;
-            el.dispatchEvent(new Event('click', { bubbles: true }));
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
+        // A label or wrapper stands for the control inside / behind it.
+        var box = el;
+        var isBox = function (x) { return x.type === 'checkbox' || x.type === 'radio' || /^(checkbox|switch|radio|menuitemcheckbox|menuitemradio)$/.test(x.getAttribute && x.getAttribute('role') || ''); };
+        if (!isBox(box)) {
+            var inner = el.control || (el.querySelector && el.querySelector('input[type=checkbox],input[type=radio],[role=checkbox],[role=switch],[role=radio]'));
+            if (inner) box = inner;
         }
-        return { ok: true, checked: el.checked };
+        var read = function () {
+            return (box.type === 'checkbox' || box.type === 'radio') ? !!box.checked : box.getAttribute('aria-checked') === 'true';
+        };
+        var want = !!checked;
+        if (read() !== want) {
+            box.scrollIntoView({ block: 'center', behavior: 'instant' });
+            box.click(); // a real click toggles the control and fires input/change the way pages expect
+            if (read() !== want && 'checked' in box) {
+                box.checked = want;
+                box.dispatchEvent(new Event('input', { bubbles: true }));
+                box.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+        var now = read();
+        return now === want ? { ok: true, checked: now } : { ok: false, checked: now, error: 'could not change it (radio buttons cannot be unchecked; the page may block it)' };
     }
 
     function selectOptionRaw(el, values) {
         var want = values.map(String);
+        var norm = function (x) { return String(x).trim().toLowerCase(); };
+        var find = function (eq) {
+            var hits = [];
+            for (var i = 0; i < el.options.length; i++) {
+                var o = el.options[i];
+                if (want.some(function (w) { return eq(o.value, w) || eq(o.text, w) || eq(o.label, w); })) hits.push(i);
+            }
+            return hits;
+        };
+        var hits = find(function (a, b) { return a === b; });
+        if (!hits.length) hits = find(function (a, b) { return norm(a) === norm(b); });
+        if (!hits.length) {
+            var opts = [];
+            for (var k = 0; k < el.options.length && k < 40; k++) opts.push(el.options[k].text.trim());
+            return { ok: false, error: 'no option matches ' + JSON.stringify(want), options: opts };
+        }
+        if (!el.multiple) hits = hits.slice(0, 1);
         var matched = [];
-        for (var i = 0; i < el.options.length; i++) {
-            var o = el.options[i];
-            var hit = want.indexOf(o.value) >= 0 || want.indexOf(o.text) >= 0 || want.indexOf(o.label) >= 0;
-            o.selected = hit;
-            if (hit) matched.push(o.value);
+        for (var j = 0; j < el.options.length; j++) {
+            var sel = hits.indexOf(j) >= 0;
+            el.options[j].selected = sel;
+            if (sel) matched.push(el.options[j].value);
         }
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
-        return { ok: matched.length > 0, selected: matched };
+        return { ok: true, selected: matched };
     }
 
     function selectOption(sel, values) {
@@ -472,15 +632,39 @@
         return { ok: true, rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
     }
 
+    // Single-page apps often scroll an inner panel, not the window: find the one under the middle of the screen.
+    function scrollerAtCenter() {
+        var el = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+        while (el && el !== document.body && el !== document.documentElement) {
+            var st = getComputedStyle(el);
+            if (/(auto|scroll)/.test(st.overflowY) && el.scrollHeight > el.clientHeight + 4) return el;
+            el = el.parentElement;
+        }
+        return null;
+    }
+
     function scrollPage(direction, amount) {
         amount = amount || 600;
+        var BIG = 10000000;
         var map = {
             up: [0, -amount], down: [0, amount], left: [-amount, 0], right: [amount, 0],
-            top: [0, -document.body.scrollHeight], bottom: [0, document.body.scrollHeight],
+            top: [0, -BIG], bottom: [0, BIG],
         };
         var d = map[direction] || map.down;
+        var bx = scrollX, by = scrollY;
         window.scrollBy({ left: d[0], top: d[1], behavior: 'instant' });
-        return { ok: true, scrollY: scrollY, scrollX: scrollX, maxY: document.body.scrollHeight - innerHeight };
+        var root = document.scrollingElement || document.documentElement;
+        if (scrollX === bx && scrollY === by) {
+            var sc = scrollerAtCenter();
+            if (sc) {
+                sc.scrollBy({ left: d[0], top: d[1], behavior: 'instant' });
+                return {
+                    ok: true, container: tag(sc) + (sc.id ? '#' + sc.id : ''), scrollTop: Math.round(sc.scrollTop),
+                    maxY: Math.round(sc.scrollHeight - sc.clientHeight),
+                };
+            }
+        }
+        return { ok: true, scrollY: scrollY, scrollX: scrollX, maxY: Math.max(0, Math.round(root.scrollHeight - innerHeight)) };
     }
 
     // ---------------- extraction ----------------
@@ -509,6 +693,37 @@
     }
 
     function describeSel(sel) { return describe(resolve(sel)); }
+
+    // ---------------- click verification (used by browser_click) ----------------
+    var clickProbe = null;
+    function pageSig() { return location.href + '|' + document.getElementsByTagName('*').length; }
+    // Arms a one-shot capture listener for the real OS click that is about to be posted at `sel`.
+    function clickWatch(sel) {
+        clickWatchOff();
+        var el = resolve(sel);
+        clickProbe = { sig: pageSig(), h: null, got: null };
+        window.__brainClickDoc = clickProbe.token = 'c' + Math.random().toString(36).slice(2);
+        clickProbe.h = function (e) {
+            var t = e.target;
+            clickProbe.got = {
+                tag: t && t.tagName,
+                name: ((t && t.getAttribute && t.getAttribute('aria-label')) || (t && t.innerText) || '').slice(0, 40),
+                hit: !!(el && t && (el === t || el.contains(t) || t.contains(el))),
+            };
+        };
+        window.addEventListener('mousedown', clickProbe.h, true);
+        return clickProbe.token;
+    }
+    function clickWatchOff() {
+        if (clickProbe && clickProbe.h) window.removeEventListener('mousedown', clickProbe.h, true);
+    }
+    // What the click did: null if no mousedown arrived, else {hit, tag, name, changed}.
+    function clickResult() {
+        var p = clickProbe; clickWatchOff(); clickProbe = null;
+        if (!p || !p.got) return null;
+        p.got.changed = pageSig() !== p.sig;
+        return p.got;
+    }
 
     function rect(sel) {
         var el = resolve(sel);
@@ -1650,8 +1865,8 @@
     }
 
     window.__brain = {
-        v: 3,
-        snapshot: snapshot, resolve: resolve, queryAll: queryAll,
+        v: 5,
+        snapshot: snapshot, resolve: resolve, queryAll: queryAll, clickWatch: clickWatch, clickResult: clickResult, focusInfo: focusInfo,
         click: click, clickAt: clickAt, dblclick: dblclick, hover: hover,
         fill: fill, insertText: insertText, pressKey: pressKey,
         setChecked: setChecked, selectOption: selectOption,

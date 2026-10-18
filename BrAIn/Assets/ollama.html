@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ollama — BrAIn</title>
+<script>
+  // Served via LoadRawString — flags itself so the host maps the tab to
+  // about:ollama instead of the literal about:blank that location.href reports.
+  window.__brainOllama = 1;
+  // Docked in the browser's side panel (no BrAIn chrome above it) rather than shown as a tab.
+  if (window.__BRAIN_SIDE) document.documentElement.className = 'side';
+  window.__brainOllamaData = __BRAIN_OLLAMA_JSON__;
+</script>
+<style>
+/*@THEME*/
+  body { padding: 84px 24px 24px; height: 100vh; overflow: hidden; }
+  .wrap { max-width: 900px; height: 100%; display: flex; flex-direction: column; gap: 14px; }
+  .head { display: flex; align-items: center; gap: 14px; flex: none; }
+  .head .logo { font-size: 26px; }
+  .pill { font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; padding: 4px 10px; border-radius: 99px;
+    border: 1px solid var(--line); color: var(--mut); background: var(--glass); }
+  .pill.ok { color: #6fe0c6; border-color: rgba(111,224,198,.35); }
+  .pill.bad { color: #ff9aa3; border-color: rgba(255,154,163,.35); }
+  .cfg { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 12px 14px; flex: none;
+    background: var(--glass); border: 1px solid var(--line); border-radius: 14px; }
+  .cfg label { font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--dim); }
+  input, select, textarea { font: 13px var(--font); color: var(--ink); background: rgba(0,0,0,.28); border: 1px solid var(--line);
+    border-radius: 9px; padding: 8px 10px; outline: none; }
+  input:focus, select:focus, textarea:focus { border-color: hsl(var(--h) 100% 74% / .5); }
+  #url { width: 230px; } #model { min-width: 190px; } #ctx { width: 84px; }
+  button { font: 600 13px var(--font); color: #fff; border: 0; border-radius: 9px; padding: 8px 14px; cursor: pointer;
+    background: hsl(var(--h) 70% 55% / .75); }
+  button:hover { background: hsl(var(--h) 70% 60% / .9); }
+  button.ghost { background: var(--glass-hi); color: var(--mut); }
+  button.ghost:hover { color: #fff; }
+  button.danger { background: rgba(255,90,110,.85); }
+  button.danger:hover { background: rgba(255,90,110,1); }
+  button:disabled { opacity: .45; cursor: default; }
+  .hint { font-size: 12px; color: var(--mut); line-height: 1.55; }
+  .hint code { font-family: var(--mono); color: var(--ac2); }
+
+  #log { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px;
+    background: rgba(0,0,0,.2); border: 1px solid var(--line); border-radius: 16px; }
+  .m { max-width: 86%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+  .m.user { align-self: flex-end; background: hsl(var(--h) 70% 55% / .28); border: 1px solid hsl(var(--h) 100% 74% / .3); }
+  .m.assistant { align-self: flex-start; background: var(--glass-hi); border: 1px solid var(--line); }
+  .m.error { align-self: flex-start; color: #ff9aa3; background: rgba(255,90,110,.08); border: 1px solid rgba(255,154,163,.3); }
+  .m.note { align-self: center; color: var(--mut); font-size: 12px; padding: 2px 8px; }
+  .tool { align-self: flex-start; max-width: 92%; font: 12px var(--mono); color: var(--mut); padding: 6px 10px;
+    border-left: 2px solid hsl(var(--h) 100% 74% / .4); background: var(--glass); border-radius: 0 8px 8px 0; white-space: pre-wrap; word-break: break-word; }
+  .tool b { color: var(--ac); font-weight: 600; }
+  .tool.fail { border-left-color: #ff9aa3; }
+  .tool .res { display: block; margin-top: 3px; color: var(--dim); }
+  .think { align-self: flex-start; max-width: 86%; font-size: 12.5px; line-height: 1.55; color: var(--dim); font-style: italic;
+    padding: 6px 10px; border-left: 2px solid var(--line); white-space: pre-wrap; word-break: break-word; }
+  .think::before { content: 'Thinking'; display: block; font-style: normal; font-size: 10px; font-weight: 700; letter-spacing: .9px;
+    text-transform: uppercase; margin-bottom: 2px; }
+  .think.done { max-height: 3.4em; overflow: hidden; cursor: pointer; }
+  .think.done.open { max-height: none; }
+  .m.live::after { content: '\258D'; margin-left: 2px; color: var(--ac); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .empty { margin: auto; text-align: center; color: var(--dim); font-size: 14px; line-height: 1.8; }
+
+  html.side body { padding: 12px; }
+  html.side .wrap { max-width: none; gap: 10px; }
+  html.side .head .logo { font-size: 18px; }
+  html.side .m { max-width: 94%; font-size: 13px; }
+  html.side #url, html.side #model { width: 100%; min-width: 0; flex: 1 1 100%; }
+  html.side #ctx { flex: 1; }
+  #close { display: none; padding: 6px 10px; }
+  html.side #close { display: block; }
+  .bar { display: flex; gap: 10px; flex: none; align-items: flex-end; }
+  #msg { flex: 1; resize: none; height: 46px; max-height: 160px; font-size: 14px; padding: 12px 14px; border-radius: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div class="logo">OLLAMA</div>
+    <span class="pill" id="status">checking…</span>
+    <span style="flex:1"></span>
+    <button class="ghost" id="clear">New chat</button>
+    <button class="ghost" id="close" title="Close panel">&#10005;</button>
+  </div>
+
+  <div class="cfg">
+    <label for="url">Server</label><input id="url" spellcheck="false" />
+    <label for="model">Model</label><select id="model"></select>
+    <label for="ctx" title="Context window in tokens. Page snapshots are large: 16384 or more works best.">Context</label><input id="ctx" type="number" min="2048" step="1024" />
+    <button class="ghost" id="refresh">Refresh</button>
+  </div>
+  <div class="hint" id="help" style="display:none"></div>
+
+  <div id="log"><div class="empty" id="empty">Ask the model to do something in the browser.<br>It uses the same tools as any MCP client, including the seatbelt and the Agent pause button.</div></div>
+
+  <div class="bar">
+    <textarea id="msg" placeholder="Ask the agent… (Enter or ⌘/Ctrl+Enter to send, Shift+Enter for a new line)" rows="1"></textarea>
+    <button id="send">Send</button>
+    <button id="stop" class="danger" style="display:none" title="Stop the agent, abort the current action and discard this task">Cancel</button>
+  </div>
+</div>
+<script>
+  function send(cmd) {
+    try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
+  }
+  function $(id) { return document.getElementById(id); }
+
+  var D = window.__brainOllamaData || {};
+  var running = false;
+  $('url').value = D.url || 'http://localhost:11434';
+  $('ctx').value = D.numCtx || 16384;
+  fillModels([], D.model || '');
+
+  function fillModels(list, current) {
+    var sel = $('model'); sel.textContent = '';
+    var names = list.slice();
+    if (current && names.indexOf(current) < 0) names.unshift(current);
+    if (!names.length) { var o = document.createElement('option'); o.value = ''; o.textContent = '(no models)'; sel.appendChild(o); return; }
+    names.forEach(function (n) {
+      var o = document.createElement('option'); o.value = n; o.textContent = n; if (n === current) o.selected = true; sel.appendChild(o);
+    });
+    if (!current) sel.value = names[0];
+  }
+
+  function saveCfg() {
+    send('olset:' + JSON.stringify({ url: $('url').value, model: $('model').value, numCtx: parseInt($('ctx').value, 10) || 16384 }));
+  }
+  $('url').addEventListener('change', saveCfg);
+  $('model').addEventListener('change', saveCfg);
+  $('ctx').addEventListener('change', saveCfg);
+  $('refresh').addEventListener('click', saveCfg);
+  $('close').addEventListener('click', function () { send('olside'); });
+  $('clear').addEventListener('click', function () { $('log').textContent = ''; log.empty(); send('olclear'); });
+
+  var log = {
+    empty: function () { var e = $('empty'); if (!e) return; $('log').appendChild(e); },
+    add: function (cls, text) {
+      var e = $('empty'); if (e && e.parentNode) e.parentNode.removeChild(e);
+      var d = document.createElement('div'); d.className = cls; d.textContent = text;
+      var box = $('log'); box.appendChild(d); box.scrollTop = box.scrollHeight; return d;
+    }
+  };
+
+  function setRunning(r) {
+    running = r;
+    $('send').style.display = r ? 'none' : '';
+    $('stop').style.display = r ? '' : 'none';
+  }
+
+  function submit() {
+    var t = $('msg').value.trim();
+    if (!t || running) return;
+    if (!$('model').value) { log.add('m error', 'Pick a model first (is Ollama running?).'); return; }
+    saveCfg();
+    $('msg').value = ''; $('msg').style.height = '46px';
+    send('olsend:' + t);
+  }
+  $('send').addEventListener('click', submit);
+  $('stop').addEventListener('click', function () { send('olstop'); });
+  $('msg').addEventListener('keydown', function (e) {
+    // Enter or Cmd+Enter (macOS) / Ctrl+Enter (Windows) sends; Shift+Enter inserts a newline.
+    if (e.key === 'Enter' && (!e.shiftKey || e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+  });
+  $('msg').addEventListener('input', function () {
+    this.style.height = '46px'; this.style.height = Math.min(160, this.scrollHeight) + 'px';
+  });
+  // The browser chrome listens for shortcuts on the document — typing in fields must not trigger them.
+  document.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) e.stopPropagation();
+  }, true);
+
+  var lastTool = null, curThink = null, curAnswer = null;
+  function endTurn() {
+    if (curThink) curThink.classList.add('done');
+    if (curAnswer) curAnswer.classList.remove('live');
+    curThink = curAnswer = null;
+  }
+  function stream(kind, text) {
+    var box = $('log'), pinned = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+    if (kind === 'think') {
+      if (!curThink) {
+        curThink = log.add('think', '');
+        curThink.addEventListener('click', function () { this.classList.toggle('open'); });
+      }
+      curThink.textContent += text;
+    } else {
+      if (curThink) curThink.classList.add('done');
+      if (!curAnswer) curAnswer = log.add('m assistant live', '');
+      curAnswer.textContent += text;
+    }
+    if (pinned) box.scrollTop = box.scrollHeight;
+  }
+  document.addEventListener('brain-msg', function (e) {
+    var j = e.detail; if (!j) return;
+    if (j.b === 96) {
+      var st = $('status'), help = $('help');
+      if (j.ok) {
+        connected = true; st.textContent = 'connected'; st.className = 'pill ok'; help.style.display = j.models.length ? 'none' : '';
+        if (!j.models.length) help.innerHTML = 'Connected, but no models are installed. Run <code>ollama pull qwen3</code> (or any tool-capable model).';
+      } else {
+        connected = false; st.textContent = 'offline'; st.className = 'pill bad'; help.style.display = '';
+        help.textContent = j.err || 'Cannot reach Ollama.';
+      }
+      if (document.activeElement !== $('url')) $('url').value = j.url;
+      if (document.activeElement !== $('ctx')) $('ctx').value = j.numCtx;
+      fillModels(j.models || [], j.model || '');
+      setRunning(!!j.running);
+    } else if (j.b === 95) {
+      switch (j.ev) {
+        case 'state': if (j.text !== 'running') endTurn(); setRunning(j.text === 'running'); break;
+        case 'user': log.add('m user', j.text); break;
+        case 'assistant': log.add('m assistant', j.text); break;
+        case 'think': stream('think', j.text); break;
+        case 'delta': stream('delta', j.text); break;
+        case 'turn_end': endTurn(); break;
+        case 'note': log.add('m note', j.text); break;
+        case 'error': log.add('m error', j.text); break;
+        case 'tool':
+          endTurn();
+          lastTool = log.add('tool', '');
+          var b = document.createElement('b'); b.textContent = j.text;
+          lastTool.appendChild(b); lastTool.appendChild(document.createTextNode(' ' + (j.extra || '')));
+          break;
+        case 'result':
+          if (lastTool) {
+            if (!j.ok) lastTool.className = 'tool fail';
+            var r = document.createElement('span'); r.className = 'res'; r.textContent = j.extra || '';
+            lastTool.appendChild(r);
+            $('log').scrollTop = $('log').scrollHeight;
+          }
+          break;
+      }
+    }
+  });
+
+  send('olget');
+  // Keep looking until the server answers (Ollama may start after the page opens), and re-check on focus.
+  var connected = false;
+  setInterval(function () { if (!connected && !running) send('olget'); }, 3000);
+  window.addEventListener('focus', function () { if (!running) send('olget'); });
+</script>
+</body>
+</html>

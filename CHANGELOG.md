@@ -2,6 +2,28 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.2.0 — 2026-10-18
+
+### Added
+- **Ollama agent** (⋮ → Ollama agent, or `ollama` in the address bar) — chat with a local Ollama model that drives the browser, no external MCP client needed.
+  - Auto-detects the server (`localhost:11434`, `$OLLAMA_HOST`) and lists installed models; context size is configurable.
+  - **Streams** the answer and, for thinking models (qwen3, gemma4, deepseek-r1…), the model's thinking.
+  - **Side panel (macOS)** — docks to the right of the page so you can watch the page while it works; elsewhere it opens as a tab.
+  - Runs through the same guards as any MCP client: Agent pause, "your turn" handoffs, seatbelt approvals and the activity log.
+  - Enter or ⌘/Ctrl+Enter sends; Shift+Enter adds a new line.
+- **Cancel AI agent** — a hard stop (Cancel button in the Ollama panel, or the command palette): aborts the current action, discards the task, declines open approvals, and refuses every further tool call from any agent until you resume.
+
+### Fixed
+- `browser_click`: reports whether the click reached the page and whether the page changed; falls back to a scripted click when the OS click is dropped; no longer clicks twice when a click navigates.
+- `browser_type`: finds the real field inside wrappers, works with rich editors (Facebook, Lexical, Draft.js…), and reports when the text did not appear.
+- `browser_snapshot`: honours `maxNodes`, lists open dialogs first, and includes clickable elements that have no role.
+- `browser_press_key`: Enter in a text area adds a line instead of submitting; Backspace/Delete work; F1–F12; pages that handle Enter themselves are no longer double-triggered.
+- `browser_set_checked`, `browser_select_option`, `browser_scroll` (inner scroll panels), `browser_find` (`text:` / `role:` selectors), `browser_wait_for` timing, and `browser_type_text` failing silently with nothing focused.
+- Element refs could repeat after the page script was re-injected, sending clicks to the wrong element.
+
+### Notes
+- macOS build is ad-hoc signed (Apple Silicon only); right-click → Open on first launch.
+
 ## 1.1.0 — 2026-10-17
 
 ### Added

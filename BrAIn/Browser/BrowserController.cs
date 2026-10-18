@@ -128,6 +128,8 @@ public sealed class BrowserController : IAsyncDisposable
     /// <summary>User-approved reusable automations, exposed to agents as flow_* tools.</summary>
     public BrAIn.Mcp.FlowService Flows { get; private set; } = null!;
     public BrAIn.Mcp.Seatbelt Belt { get; private set; } = null!;
+    /// <summary>Built-in agent for a local Ollama server (about:ollama).</summary>
+    public BrAIn.Mcp.OllamaAgent Ollama { get; private set; } = null!;
     /// <summary>Auto-run site scripts (Personality page / userscript_* tools).</summary>
     public UserScriptStore Scripts { get; private set; } = null!;
     public BrAIn.Mcp.Handoff Handoff { get; private set; } = null!;
@@ -333,6 +335,7 @@ public sealed class BrowserController : IAsyncDisposable
         Scripts.Changed += ScheduleScriptsPush;
         Belt = new BrAIn.Mcp.Seatbelt(_storeDir);
         Belt.Changed += PushBelt;
+        Ollama = new BrAIn.Mcp.OllamaAgent(this, _storeDir, PushOllama);
         Handoff = new BrAIn.Mcp.Handoff();
         Handoff.Changed += PushHandoff;
         Updater.Changed += () => { Log("update: " + Updater); PushUpdate(); };
@@ -1307,7 +1310,7 @@ public sealed class BrowserController : IAsyncDisposable
         // so an agent can drive a background tab without stealing the screen.
         if (!PerTab && Tabs.Active?.Id != tab.Id) Tabs.Activate(tab.Id);
         url = NormalizeUrl(url);
-        if (url is "about:newtab" or "about:help" or "about:shortcuts" or "about:history" or "about:import" or "about:passwords" or "about:flows" or "about:personality")
+        if (url is "about:newtab" or "about:help" or "about:shortcuts" or "about:history" or "about:import" or "about:passwords" or "about:flows" or "about:personality" or "about:ollama")
             return await LoadInternalPageAsync(tab, url);
         if (PerTab) return await NavigatePerTabAsync(tab, url, ct);
         // materialize:false — a virtual new tab navigating away must not
@@ -1367,6 +1370,7 @@ public sealed class BrowserController : IAsyncDisposable
             "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
             "about:flows" => (BuildFlowsHtml(), "Flows & activity"),
             "about:personality" => (BuildPersonalityHtml(), "Personality"),
+            "about:ollama" => (BuildOllamaHtml(), "Ollama"),
             _ => (Assets.NewTabHtml, "New Tab"),
         };
         tab.LastTitle = title;
@@ -1394,6 +1398,7 @@ public sealed class BrowserController : IAsyncDisposable
             "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
             "about:flows" => (BuildFlowsHtml(), "Flows & activity"),
             "about:personality" => (BuildPersonalityHtml(), "Personality"),
+            "about:ollama" => (BuildOllamaHtml(), "Ollama"),
             _ => (Assets.NewTabHtml, "New Tab"),
         };
         SetTabUrl(tab, url);
@@ -2364,6 +2369,12 @@ public sealed class BrowserController : IAsyncDisposable
                                 if (up.Length == 2) Scripts.SetEnabled(up[0], up[1] == "1");
                                 break;
                             }
+                        case "olside": OllamaSideToggle(tab); break;
+                        case "olget": await PushOllamaStateAsync(); break;
+                        case "olset": OllamaUiSet(arg); await PushOllamaStateAsync(); break;
+                        case "olsend": AgentResume(); _ = Ollama.SendAsync(arg); break;
+                        case "olstop": case "agcancel": AgentCancelAll(); break;
+                        case "olclear": Ollama.Clear(); await PushOllamaStateAsync(); break;
                         case "flowget": PushFlowsState(tab); break;
                         case "flowsave": FlowUiSave(tab, arg); break;
                         case "flowdel": Flows.Delete(arg); PushFlowsState(tab); break;
@@ -2416,7 +2427,7 @@ public sealed class BrowserController : IAsyncDisposable
         var tabs = Tabs.All.Where(t => !t.IsClosed).Select(t => new
         {
             id = t.Id.ToString("N")[..8],
-            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:shortcuts" ? "Shortcuts" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl == "about:flows" ? "Flows & activity" : t.LastUrl == "about:personality" ? "Personality" : t.LastUrl),
+            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:shortcuts" ? "Shortcuts" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl == "about:flows" ? "Flows & activity" : t.LastUrl == "about:personality" ? "Personality" : t.LastUrl == "about:ollama" ? "Ollama" : t.LastUrl),
             url = t.LastUrl,
             icon = t.LastIcon,
             active = t.Id == activeId,
@@ -2566,10 +2577,43 @@ public sealed class BrowserController : IAsyncDisposable
 
     public void SetAgentPaused(bool paused)
     {
+        if (!paused) _agCancelled = false; // resuming (Agent button) also lifts a hard cancel
         if (_agPaused == paused) return;
         _agPaused = paused;
         Interlocked.Exchange(ref _agBlocked, 0);
         PushAgent();
+    }
+
+    /// <summary>
+    /// Hard stop, stronger than pause: cancels the built-in agent's task (aborting its model request and any
+    /// tool still running, and discarding the turn) and refuses every open approval or handoff question.
+    /// External MCP clients can't be cancelled from here; the pause button still gates those.
+    /// </summary>
+    public void AgentCancelAll()
+    {
+        _agCancelled = true;
+        SetAgentPaused(true);
+        // Abort every tool call in flight (external MCP clients included) and arm a fresh token for later calls.
+        var old = Interlocked.Exchange(ref _agKill, new CancellationTokenSource());
+        try { old.Cancel(); } catch { }
+        Ollama.Stop();
+        Belt.DenyAll();
+        Handoff.CancelAll();
+        PushAgent();
+        Log("agent cancelled by user");
+    }
+
+    /// <summary>True from a hard cancel until the user resumes the agent (Agent button) or starts a new Ollama task.</summary>
+    public bool AgentCancelled => _agCancelled;
+    private volatile bool _agCancelled;
+    private CancellationTokenSource _agKill = new();
+    internal CancellationToken AgentKillToken => _agKill.Token;
+
+    /// <summary>The user is explicitly handing the agent work again: lift pause and cancel.</summary>
+    private void AgentResume()
+    {
+        _agCancelled = false;
+        SetAgentPaused(false);
     }
 
     /// <summary>Small {b:40} push — the full chrome state also carries "ag" for page swaps.</summary>
@@ -3619,7 +3663,7 @@ public sealed class BrowserController : IAsyncDisposable
                   u: location.href, t: document.title,
                   n: !!window.__brainNewTab, h: !!window.__brainHelp, y: !!window.__brainHist,
                   p: !!window.__brainImport, w: !!window.__brainPw, f: !!window.__brainFlows,
-                  s: !!window.__brainShortcuts, x: !!window.__brainPersonality,
+                  s: !!window.__brainShortcuts, x: !!window.__brainPersonality, o: !!window.__brainOllama,
                   i: (document.querySelector("link[rel~='icon']") || document.querySelector("link[rel='shortcut icon']") || {}).href ||
                      (/^https?:$/.test(location.protocol) ? location.origin + '/favicon.ico' : '')
                 })
@@ -3641,8 +3685,9 @@ public sealed class BrowserController : IAsyncDisposable
                 var isFlows = root.TryGetProperty("f", out var ff) && ff.GetBoolean();
                 var isSc = root.TryGetProperty("s", out var ss) && ss.GetBoolean();
                 var isPers = root.TryGetProperty("x", out var xx) && xx.GetBoolean();
-                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isSc ? "about:shortcuts" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : isFlows ? "about:flows" : isPers ? "about:personality" : root.GetProperty("u").GetString() ?? tab.LastUrl);
-                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isSc ? "Keyboard shortcuts" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : isFlows ? "Flows & activity" : isPers ? "Personality" : root.GetProperty("t").GetString();
+                var isOll = root.TryGetProperty("o", out var oo) && oo.GetBoolean();
+                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isSc ? "about:shortcuts" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : isFlows ? "about:flows" : isPers ? "about:personality" : isOll ? "about:ollama" : root.GetProperty("u").GetString() ?? tab.LastUrl);
+                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isSc ? "Keyboard shortcuts" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : isFlows ? "Flows & activity" : isPers ? "Personality" : isOll ? "Ollama" : root.GetProperty("t").GetString();
                 // u and i come from the same document — always reassign so a
                 // cross-site navigation can never keep the old site's icon.
                 var iRaw = root.GetProperty("i").GetString();
@@ -3915,6 +3960,81 @@ public sealed class BrowserController : IAsyncDisposable
         catch (Exception ex) { err = ex.Message; }
         PushJson(tab, JsonSerializer.Serialize(new { b = 91, ok = err is null, err }, UsJson));
     }
+
+    // ---------------- Ollama agent (about:ollama) ----------------
+
+    /// <summary>Fans an agent event out to every tab showing the Ollama page.</summary>
+    private void PushOllama(object ev)
+    {
+        var json = JsonSerializer.Serialize(ev, UsJson);
+        foreach (var t in Tabs.All)
+            if (!t.IsClosed && t.LastUrl == "about:ollama") PushJson(t, json);
+        if (Mac.WkBar.SideExists)
+            try { InvokeOnUi(() => Mac.WkBar.EvalSide("window.__brainSidePush&&window.__brainSidePush(" + json + ")")); } catch { }
+    }
+
+    /// <summary>
+    /// Opens/closes the Ollama chat as a panel docked to the right of the page (macOS split mode), so the
+    /// page stays visible while the agent works. Elsewhere it opens as a tab.
+    /// </summary>
+    private void OllamaSideToggle(BrowserTab tab)
+    {
+        if (!SplitOn) { _ = NewTabAsync("about:ollama"); return; }
+        var reopened = false;
+        try
+        {
+            InvokeOnUi(() =>
+            {
+                var win = SplitWindow();
+                if (win == IntPtr.Zero) return;
+                if (!Mac.WkBar.SideExists)
+                {
+                    const string shim =
+                        "window.__BRAIN_SIDE=true;" +
+                        "window.external={sendMessage:function(m){try{window.webkit.messageHandlers.brain.postMessage(String(m));}catch(e){}}};" +
+                        "window.__brainSidePush=function(o){document.dispatchEvent(new CustomEvent('brain-msg',{detail:o}));};\n";
+                    Mac.WkBar.OnSideMessage = msg => HandleWebMessage(Tabs.Active ?? tab, msg, fromBar: true);
+                    if (!Mac.WkBar.CreateSide(win, shim, BuildOllamaHtml())) return;
+                }
+                else reopened = true;
+                Mac.WkBar.SetSideOpen(win, !Mac.WkBar.SideOpen);
+            });
+        }
+        catch (Exception ex) { Log("ollama side panel failed: " + ex.Message); }
+        // A fresh panel asks for its state itself when it loads; a re-shown one needs a push.
+        if (reopened && Mac.WkBar.SideOpen) _ = PushOllamaStateAsync();
+    }
+
+    private async Task PushOllamaStateAsync()
+    {
+        var (ok, models, err) = await Ollama.ProbeAsync();
+        PushOllama(new
+        {
+            b = 96, ok, models, err,
+            url = Ollama.Current.Url, model = Ollama.Current.Model, numCtx = Ollama.Current.NumCtx,
+            running = Ollama.Running,
+        });
+    }
+
+    /// <summary>olset:{"url":..,"model":..,"numCtx":..} from the Ollama page.</summary>
+    private void OllamaUiSet(string arg)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(arg);
+            var r = doc.RootElement;
+            string? Str(string k) => r.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            int? num = r.TryGetProperty("numCtx", out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt32() : null;
+            Ollama.SetConfig(Str("url"), Str("model"), num);
+        }
+        catch (Exception ex) { Log($"ollama: bad settings: {ex.Message}"); }
+    }
+
+    private string BuildOllamaHtml()
+        => Assets.OllamaHtml.Replace("__BRAIN_OLLAMA_JSON__", JsonSerializer.Serialize(new
+        {
+            url = Ollama.Current.Url, model = Ollama.Current.Model, numCtx = Ollama.Current.NumCtx,
+        }, UsJson).Replace("<", "\\u003c"));
 
     private string BuildPersonalityHtml()
         => Assets.PersonalityHtml.Replace("__BRAIN_PERSONALITY_JSON__", ScriptsJson(true).Replace("<", "\\u003c"));
@@ -4435,6 +4555,8 @@ public sealed class BrowserController : IAsyncDisposable
             return "about:passwords";
         if (url.Equals("personality", StringComparison.OrdinalIgnoreCase))
             return "about:personality";
+        if (url.Equals("ollama", StringComparison.OrdinalIgnoreCase))
+            return "about:ollama";
         if (!url.Contains("://") && !url.StartsWith("about:") && !url.StartsWith("file:") &&
             !url.StartsWith("data:") && !url.StartsWith("javascript:"))
         {
@@ -4530,6 +4652,7 @@ internal static class Assets
     private static readonly Lazy<string> _imp = new(() => Themed("BrAIn.Assets.import.html"));
     private static readonly Lazy<string> _pw = new(() => Themed("BrAIn.Assets.passwords.html"));
     private static readonly Lazy<string> _pers = new(() => Themed("BrAIn.Assets.personality.html"));
+    private static readonly Lazy<string> _ollama = new(() => Themed("BrAIn.Assets.ollama.html"));
     private static readonly Lazy<string> _flows = new(() => Themed("BrAIn.Assets.flows.html"));
     private static readonly Lazy<string> _combinedLib = new(() => BrainJs + "\n" + ChromeJs);
 
@@ -4543,7 +4666,8 @@ internal static class Assets
     public static string HistoryHtml => _hist.Value;
     public static string FlowsHtml => _flows.Value;
     public static string PersonalityHtml => _pers.Value;
+    public static string OllamaHtml => _ollama.Value;
     public static string ImportHtml => _imp.Value;
     public static string PasswordsHtml => _pw.Value;
-    public const int BrainJsVersion = 3;
+    public const int BrainJsVersion = 5;
 }

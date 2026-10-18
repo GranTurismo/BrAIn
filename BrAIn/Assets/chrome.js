@@ -1934,6 +1934,7 @@
             '<b data-z="zoomin" title="Zoom in · Ctrl++">+</b></div>' +
             '<div class="mzf" data-c="fullscreen" title="Fullscreen · F11">⛶</div></div>';
         html += '<div class="mi feat" style="--i:' + (mi++) + '" data-c="personality"><span class="fi">' + SVG.sparkle + '<b>Personality</b></span><span class="sc">NEW</span></div>';
+        html += '<div class="mi" style="--i:' + (mi++) + '" data-c="ollama"><span>Ollama agent</span><span class="sc">LOCAL</span></div>';
         html += '<div class="msep"></div>';
         menuSec('Library').forEach(function (it) {
             html += '<div class="mi" style="--i:' + (mi++) + '" data-c="' + it[0] + '"><span>' + it[1] + '</span><span class="sc">' + it[2] + '</span></div>';
@@ -2059,6 +2060,8 @@
         if (c === 'pw') { send('navigate:about:passwords'); return; }
         if (c === 'flows') { send('navigate:about:flows'); return; }
         if (c === 'personality') { send('navigate:about:personality'); return; }
+        if (c === 'ollama') { send('olside'); return; }
+        if (c === 'agcancel') { send('agcancel'); return; }
         if (c === 'agent') { toggleAgent(); return; }
         if (c === 'belt') { toggleBelt(); return; }
         if (c === 'rec') { toggleRec(); return; }
@@ -2105,6 +2108,8 @@
             ['pin', a && a.pin ? 'Unpin tab' : 'Pin tab', 'pin keep sticky tab', IS_MAC ? '\u2303\u2325P' : 'Ctrl+Alt+P'],
             ['closeothers', 'Close other tabs', 'close all tabs except this one', IS_MAC ? '\u2303\u2325W' : 'Ctrl+Alt+W'],
             ['personality', 'Personality', 'personality breaking features site api mcp hub swarm bodyguard goals labs', ''],
+            ['agcancel', 'Cancel AI agent (stop and discard)', 'cancel stop kill abort ai agent task reject', ''],
+            ['ollama', 'Ollama agent', 'ollama local llm ai agent chat model', ''],
             ['history', 'Open history', 'browsing history visited', IS_MAC ? '\u2318H' : 'Ctrl+H'],
             ['import', 'Import browser data', 'bookmarks passwords chrome safari edge firefox', ''],
             ['pw', 'Passwords', 'saved logins credentials vault autofill signin', IS_MAC ? '\u21e7\u2318O' : 'Ctrl+Shift+O'],
