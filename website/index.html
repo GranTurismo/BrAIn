@@ -33,17 +33,17 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "BrAIn",
-  "description": "A real desktop browser with an MCP server built into the same process — every page inspectable, every action verifiable, every moment rewindable. Features Rewind page time-travel, in-window DevTools, a password vault, remappable shortcuts and a one-keystroke agent kill switch.",
+  "description": "A real desktop browser with an MCP server built into the same process — every page inspectable, every action verifiable, every moment rewindable. Features Rewind page time-travel, in-window DevTools, a password vault, remappable shortcuts, site scripts, a built-in local Ollama agent and a one-keystroke agent kill switch.",
   "applicationCategory": "BrowserApplication",
   "operatingSystem": "macOS, Windows",
-  "softwareVersion": "1.0.2",
+  "softwareVersion": "1.2.0",
   "url": "https://brain.gtgroup.dev/",
   "downloadUrl": [
-    "https://brain.gtgroup.dev/downloads/BrAIn-1.0.2-macOS-arm64.dmg",
-    "https://brain.gtgroup.dev/downloads/BrAIn-Setup-1.0.2-x64.exe"
+    "https://brain.gtgroup.dev/downloads/BrAIn-1.2.0-macOS-arm64.dmg",
+    "https://brain.gtgroup.dev/downloads/BrAIn-Setup-1.2.0-x64.exe"
   ],
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-  "featureList": "Embedded MCP server, Rewind page time-travel, per-tab live views, agent pause/kill switch, in-window DevTools, password vault, remappable shortcuts, Chrome import",
+  "featureList": "Embedded MCP server, built-in Ollama agent, Rewind page time-travel, per-tab live views, agent pause/cancel kill switch, site scripts, in-window DevTools, password vault, remappable shortcuts, Chrome import",
   "screenshot": "https://brain.gtgroup.dev/assets/og.png",
   "sameAs": "https://github.com/GranTurismo/BrAIn"
 }
@@ -56,7 +56,7 @@
     { "@type": "Question", "name": "How is BrAIn different from Playwright MCP or an MCP browser extension?", "acceptedAnswer": { "@type": "Answer", "text": "Those drive a browser from the outside — a debug connection, a throwaway profile or an extension sandbox. BrAIn is the MCP server: your real profile and sessions, no setup, and the agent can use things that exist only inside the browser (Rewind, the activity log, flows, the pause switch, the listener registry)." } },
     { "@type": "Question", "name": "What about CAPTCHAs and logins?", "acceptedAnswer": { "@type": "Answer", "text": "BrAIn doesn't try to defeat them. browser_ask_human brings the tab to the front, shows you a card, waits while you do the step, then the agent carries on. Passwords are never typed by the agent — the vault needs your OS authentication." } },
     { "@type": "Question", "name": "Is Rewind recording everything I do?", "acceptedAnswer": { "@type": "Answer", "text": "No. It is off by default and asks before it starts. When on, it keeps compressed DOM snapshots in memory only (never on disk), skips private tabs, login pages and sites you exclude, drops a tab's history when the tab closes, and enforces age and size budgets." } },
-    { "@type": "Question", "name": "Does BrAIn send data anywhere?", "acceptedAnswer": { "@type": "Answer", "text": "There is no telemetry, analytics or update-check code in the app. It talks to the sites you visit and to your MCP client over stdio." } },
+    { "@type": "Question", "name": "Does BrAIn send data anywhere?", "acceptedAnswer": { "@type": "Answer", "text": "There is no telemetry or analytics. The only call BrAIn makes on its own is the self-updater asking GitHub for the latest release (and downloading it, SHA-256 verified, when you accept). Otherwise it talks to the sites you visit, to your MCP client over stdio, and to a local Ollama server if you use the built-in agent." } },
     { "@type": "Question", "name": "Why is the RAM so low on macOS — and will Windows match it?", "acceptedAnswer": { "@type": "Answer", "text": "On macOS each tab is a WKWebView; WebKit shares a process pool and throttles background pages hard. Windows uses WebView2, which is Chromium: expect Chromium-class memory per live tab." } },
     { "@type": "Question", "name": "Why does my OS warn me about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The builds are not code-signed yet. Verify the SHA-256 on this page, then: on macOS right-click the app → Open; on Windows choose More info → Run anyway in SmartScreen." } },
     { "@type": "Question", "name": "Can I use it as my daily browser?", "acceptedAnswer": { "@type": "Answer", "text": "It has the daily-driver basics — tabs, bookmarks, history, autocomplete, downloads, private tabs, password vault, import, PiP, find, zoom, print, session restore. It does not have an extension store or sync." } }
@@ -93,7 +93,7 @@
 <header class="hero" id="top">
   <div class="wrap cols">
     <div>
-      <span class="chip rv"><i></i><span>v<span data-version>1.0.2</span> · macOS &amp; Windows</span></span>
+      <span class="chip rv"><i></i><span>v<span data-version>1.2.0</span> · macOS &amp; Windows</span></span>
       <h1 class="rv" style="--d:.05s">The browser your AI can actually <span class="grad rot" id="rot">use</span><span class="rot"><span class="cursor"></span></span></h1>
       <p class="lead rv" style="--d:.12s">BrAIn is a real desktop browser with an <b style="color:var(--ink)">MCP server built into the same process</b>. Your agent sees the real DOM, acts on the real page — and you can rewind it, pause it and audit every step.</p>
       <p class="triplet rv" style="--d:.16s">Every page <a href="#features">inspectable</a><span>·</span>every action <a href="#agent">verifiable</a><span>·</span>every moment <a href="#rewind">rewindable</a></p>
@@ -243,10 +243,22 @@
         <h3>Bring your stuff</h3>
         <p>Import bookmarks, history and passwords from Chrome and friends — the wizard pulls them straight from local profiles.</p>
       </div>
+      <div class="card b-k spot rv">
+        <div class="icon"><svg viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6"/></svg></div>
+        <h3>Ollama agent, built in</h3>
+        <p>No MCP client needed: chat with a local Ollama model that drives the browser. It streams the answer and the model's thinking, and docks as a side panel on macOS so you can watch the page while it works.</p>
+        <div class="mini"><div class="pill-row"><span class="pill">local models</span><span class="pill">same guards</span><span class="pill">Cancel = hard stop</span></div></div>
+      </div>
+      <div class="card b-l spot rv" style="--d:.05s">
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6"/></svg></div>
+        <h3>Site scripts</h3>
+        <p>JavaScript that runs whenever a matching site loads. One-click tweaks for cookie banners, pop-ups, sticky bars, autoplay and dark mode, or let an agent write one. Agent scripts are drafts and never run until you approve them.</p>
+        <div class="mini"><div class="pill-row"><span class="pill">URL patterns</span><span class="pill">per-site pause</span><span class="pill">error → fix prompt</span></div></div>
+      </div>
       <div class="card b-full spot rv" style="--d:.14s">
         <h3>…and it’s a real browser</h3>
         <p>Everything the promo doesn’t need to brag about, done properly:</p>
-        <div class="mini"><div class="pill-row"><span class="pill">Tabs — drag, mute, reopen</span><span class="pill">Omnibox autocomplete</span><span class="pill">⌘K command palette</span><span class="pill">Private tabs</span><span class="pill">Bookmarks &amp; history</span><span class="pill">Session restore</span><span class="pill">Find · zoom · print/PDF</span><span class="pill">Downloads decisions log</span><span class="pill">Picture-in-picture</span><span class="pill">Link-hover status</span><span class="pill">Password vault · OS auth</span><span class="pill">Aurora chrome</span></div></div>
+        <div class="mini"><div class="pill-row"><span class="pill">Tabs — drag, mute, reopen</span><span class="pill">Omnibox autocomplete</span><span class="pill">⌘K command palette</span><span class="pill">Private tabs</span><span class="pill">Bookmarks &amp; history</span><span class="pill">Session restore</span><span class="pill">Find · zoom · print/PDF</span><span class="pill">Downloads decisions log</span><span class="pill">Picture-in-picture</span><span class="pill">Link-hover status</span><span class="pill">Password vault · OS auth</span><span class="pill">Customizable toolbar</span><span class="pill">Personality page</span><span class="pill">Aurora chrome</span></div></div>
       </div>
     </div>
   </div>
@@ -304,6 +316,7 @@
         <li><span><b>One keystroke pauses all action tools.</b> They return <code>BLOCKED</code> and tell the agent to wait; read-only tools keep working.</span></li>
         <li><span><b>A live Agent indicator</b> pulses while a tool runs, with a count of blocked attempts.</span></li>
         <li><span><b>Hand-offs for human-only steps.</b> Logins, 2FA and CAPTCHAs: <code>browser_ask_human</code> brings the tab forward and waits for you.</span></li>
+        <li><span><b>A hard stop when you need one.</b> <i>Cancel AI agent</i> aborts the current action, discards the task, declines open approvals and refuses every tool call until you resume.</span></li>
         <li><span><b>Sensitive moments need OS auth</b> — the password vault never opens for an agent on its own.</span></li>
       </ul>
       <p class="note rv">Try it: press <b>Pause agent</b> while the session is running.</p>
@@ -421,7 +434,7 @@
 <!-- ============ DOWNLOAD ============ -->
 <section id="download">
   <div class="wrap">
-    <div class="head rv" style="text-align:center;max-width:760px;margin-inline:auto"><span class="eyebrow">Download</span><h2>Get <span class="grad">BrAIn</span> <span style="color:var(--mut);font-weight:500;font-size:.5em;vertical-align:middle">v<span data-version>1.0.2</span></span></h2>
+    <div class="head rv" style="text-align:center;max-width:760px;margin-inline:auto"><span class="eyebrow">Download</span><h2>Get <span class="grad">BrAIn</span> <span style="color:var(--mut);font-weight:500;font-size:.5em;vertical-align:middle">v<span data-version>1.2.0</span></span></h2>
       <p class="lead" style="margin-inline:auto">Free. Installers are hosted right here, with SHA-256 checksums you can verify in your browser before you run anything.</p></div>
     <div class="dl-grid" id="dlGrid"></div>
 
@@ -441,7 +454,7 @@
       <details><summary>How is this different from Playwright MCP or an MCP browser extension?</summary><div class="ans"><p>Those drive a browser from the outside — a debug connection, a throwaway profile or an extension sandbox. BrAIn <i>is</i> the MCP server: your real profile and sessions, no setup, and the agent can use things that exist only inside the browser (Rewind, the activity log, flows, the pause switch, the listener registry).</p><p>The trade-off: BrAIn only automates itself. If your workflow spans other desktop apps, a computer-use agent can still do that — and can control BrAIn too.</p></div></details>
       <details><summary>What about CAPTCHAs and logins?</summary><div class="ans"><p>BrAIn doesn't try to defeat them. <code>browser_ask_human</code> brings the tab to the front, shows you a card, waits while you do the step, then the agent carries on. Passwords are never typed by the agent from memory — the vault needs your OS authentication.</p></div></details>
       <details><summary>Is Rewind recording everything I do?</summary><div class="ans"><p>No. It is off by default and asks before it starts. When on, it keeps compressed DOM snapshots in memory only (never on disk), skips private tabs, login pages and sites you exclude, drops a tab's history when the tab closes, and enforces age and size budgets. The agent can only read it if you separately allow that.</p></div></details>
-      <details><summary>Does BrAIn send data anywhere?</summary><div class="ans"><p>There is no telemetry, analytics or update-check code in the app. It talks to the sites you visit and to your MCP client over stdio. Whatever your AI client does with tool results is governed by that client.</p></div></details>
+      <details><summary>Does BrAIn send data anywhere?</summary><div class="ans"><p>There is no telemetry or analytics. The only call BrAIn makes on its own is the self-updater asking GitHub for the latest release (and downloading it, SHA-256 verified, when you accept). Otherwise it talks to the sites you visit, to your MCP client over stdio, and to a local Ollama server if you use the built-in agent. Whatever your AI client does with tool results is governed by that client.</p></div></details>
       <details><summary>Why is the RAM so low on macOS — and will Windows match it?</summary><div class="ans"><p>On macOS each tab is a WKWebView; WebKit shares a process pool and throttles background pages hard. Windows uses WebView2, which is Chromium: expect Chromium-class memory per live tab, though it shares one browser process and our views avoid Chrome's extra helpers. I haven't measured Windows yet, so I won't quote a number.</p></div></details>
       <details><summary>Why does my OS warn me about the installer?</summary><div class="ans"><p>The builds are not code-signed yet (that needs a paid certificate on each platform). Verify the SHA-256 on this page, then: on macOS right-click the app → Open (or <code>xattr -dr com.apple.quarantine /Applications/BrAIn.app</code>); on Windows choose <b>More info → Run anyway</b> in SmartScreen.</p></div></details>
       <details><summary>Can I use it as my daily browser?</summary><div class="ans"><p>It has the daily-driver basics — tabs, bookmarks, history, autocomplete, downloads, private tabs, password vault, import, PiP, find, zoom, print, session restore. It does not have an extension store or sync. Try it for a week and tell us what's missing.</p></div></details>
@@ -455,7 +468,7 @@
       <div><a class="logo" href="#top"><img src="assets/favicon.png" alt="" width="30" height="30">BrAIn</a><p style="margin:14px 0 0;max-width:340px">The browser that remembers — and the first one your AI can actually use.</p></div>
       <div style="display:flex;gap:48px;flex-wrap:wrap">
         <div><b style="color:var(--ink)">Product</b><br><a href="#features">Features</a><br><a href="#rewind">Rewind</a><br><a href="#speed">Benchmarks</a><br><a href="#download">Download</a></div>
-        <div><b style="color:var(--ink)">Project</b><br><a href="https://github.com/GranTurismo/BrAIn" rel="noopener">GitHub</a><br><a href="https://github.com/GranTurismo/BrAIn/issues" rel="noopener">Report an issue</a><br><a href="downloads/SHA256SUMS.txt">SHA256SUMS</a></div>
+        <div><b style="color:var(--ink)">Project</b><br><a href="https://github.com/GranTurismo/BrAIn" rel="noopener">GitHub</a><br><a href="https://github.com/GranTurismo/BrAIn/blob/main/CHANGELOG.md" rel="noopener">Changelog</a><br><a href="https://github.com/GranTurismo/BrAIn/issues" rel="noopener">Report an issue</a><br><a href="downloads/SHA256SUMS.txt">SHA256SUMS</a></div>
       </div>
     </div>
     <div class="big" aria-hidden="true">BrAIn</div>

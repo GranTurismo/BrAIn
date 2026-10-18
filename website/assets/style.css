@@ -290,6 +290,7 @@ body.past-hero .scroll-hint { opacity: 0; }
 .bento p { color: var(--mut); margin: 10px 0 0; font-size: 15.5px; }
 .b-a { grid-column: span 4; } .b-b { grid-column: span 2; } .b-c { grid-column: span 2; } .b-d { grid-column: span 2; } .b-e { grid-column: span 2; }
 .b-f { grid-column: span 3; } .b-g { grid-column: span 3; } .b-h { grid-column: span 2; } .b-i { grid-column: span 2; } .b-j { grid-column: span 2; }
+.b-k, .b-l { grid-column: span 3; }
 .b-full { grid-column: span 6; }
 .icon { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center; margin-bottom: 18px; background: linear-gradient(135deg, hsl(var(--h) 80% 60% / .3), rgba(111, 224, 198, .18)); border: 1px solid var(--line); }
 .icon svg { width: 22px; height: 22px; stroke: #e6e1ff; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
