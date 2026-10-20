@@ -2,9 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- WebAuthn/passkeys: without this WKWebView never offers the platform
-	     passkey sheet (navigator.credentials.get throws instead). -->
-	<key>com.apple.web-browser.public-key-credential</key>
+	<!-- Passkeys / WebAuthn for ANY site (Google, GitHub…). Restricted: Apple must grant it
+	     to the App ID ai.brain.browser (request form: developer.apple.com/contact/request/web-browser-public-key-credential),
+	     and the signed app must embed a provisioning profile carrying it — see scripts/mac-permissions.sh.
+	     Without both, launchd refuses to start the app, so this file is only applied when
+	     BRAIN_SIGN_IDENTITY is set. -->
+	<key>com.apple.developer.web-browser.public-key-credential</key>
+	<true/>
+	<key>com.apple.application-identifier</key>
+	<string>C58ABB3474.ai.brain.browser</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>C58ABB3474</string>
+	<!-- .NET runtime under the hardened runtime (needed for Developer ID / notarization). -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>
 </dict>
 </plist>

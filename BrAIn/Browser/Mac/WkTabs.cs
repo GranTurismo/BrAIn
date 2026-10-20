@@ -210,6 +210,9 @@ internal static partial class WkTabs
         // set their own dark background in theme.css.
         var yes = ObjC.Send(ObjC.GetClass("NSNumber"), ObjC.Sel("numberWithBool:"), (IntPtr)1);
         ObjC.Send(wv, ObjC.Sel("setValue:forKey:"), yes, ObjC.NsString("drawsBackground"));
+        // Two-finger trackpad swipe left/right steps back/forward through history (the macOS
+        // "Swipe between pages" gesture, with the native page-peel animation).
+        ObjC.SendNInt(wv, ObjC.Sel("setAllowsBackForwardNavigationGestures:"), 1);
         // Web content always sees a light system appearance, so sites don't flip to their
         // dark style (prefers-color-scheme) just because macOS is in dark mode.
         var aqua = ObjC.Send(ObjC.GetClass("NSAppearance"), ObjC.Sel("appearanceNamed:"), ObjC.NsString("NSAppearanceNameAqua"));

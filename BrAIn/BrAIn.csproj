@@ -13,7 +13,7 @@
     <AssemblyName>BrAIn</AssemblyName>
     <!-- The updater compares this against the latest GitHub release tag — bump it
          together with scripts/make-dist.sh's version argument. -->
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <!-- macOS bundle settings are applied when publishing for osx-* RIDs -->

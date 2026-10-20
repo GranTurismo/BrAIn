@@ -2,6 +2,19 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.2.1 — 2026-10-20
+
+### Fixed
+- **YouTube showed "Sign in" after typing `youtube.com`** — the redirected first load could come back signed out (a refresh fixed it). A typed bare domain now goes straight to `www.` when your history shows the site lives there.
+- Automated clicks, typing and scrolling could leave pages such as Google Play Console shifted sideways with no way to scroll back.
+- Clicking **Skip** on YouTube ads uses a real input click, as YouTube ignores script-made ones.
+- The address bar opens empty and focused on a new tab; the tab-audio indicator and the popover position in split mode are fixed.
+
+### Added
+- Two-finger trackpad swipe left/right goes back/forward (macOS).
+- Passkey entitlements for Developer-ID builds (`BRAIN_SIGN_IDENTITY`, see `scripts/mac-permissions.sh`); the default ad-hoc build is unchanged.
+- **Linux (experimental)** — a `linux-x64` archive that opens pages and navigates; in-page automation is not available there yet.
+
 ## 1.2.0 — 2026-10-18
 
 ### Added

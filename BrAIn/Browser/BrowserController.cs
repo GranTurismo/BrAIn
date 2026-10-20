@@ -2335,6 +2335,7 @@ public sealed class BrowserController : IAsyncDisposable
                             if (SplitOn) try { InvokeOnUi(() => Mac.WkBar.FocusPage(SplitWindow())); } catch { }
                             break;
                         case "usget": PushScripts(tab); break;
+                        case "ytskip": await YtSkipAsync(tab); break;
                         case "usran": UsNoteRun(arg); break;
                         case "usrerr": UsNoteError(arg); break;
                         case "usmute": UsMute(arg); break;
@@ -4059,6 +4060,48 @@ public sealed class BrowserController : IAsyncDisposable
         }
     }
 
+    private long _ytSkipAt;
+    private const string YtSkipFind =
+        "(function(){var b=document.querySelector('.ytp-skip-ad-button,.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-ad-skip-button-container button');" +
+        "if(!b)return '';var r=b.getBoundingClientRect();" +
+        "if(r.width<4||r.height<4||r.bottom<0||r.top>innerHeight)return '';" +
+        "var x=Math.round(r.left+r.width/2),y=Math.round(r.top+r.height/2),e=document.elementFromPoint(x,y);" +
+        "return e&&(e===b||b.contains(e))?x+','+y:''})()";
+
+    /// <summary>YouTube ignores script-made (untrusted) clicks on its Skip button, so the cleanup
+    /// script asks for a real input click. Nothing but the Skip button's own centre is ever clicked,
+    /// and only on youtube.com in the shown tab, so a page can't use this to click elsewhere.</summary>
+    private async Task YtSkipAsync(BrowserTab tab)
+    {
+        if (tab.IsClosed || Tabs.Active?.Id != tab.Id) return;
+        if (!Uri.TryCreate(tab.LastUrl, UriKind.Absolute, out var u) || u.Scheme != "https"
+            || !(u.Host == "youtube.com" || u.Host.EndsWith(".youtube.com", StringComparison.Ordinal))) return;
+        var now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _ytSkipAt) < 700) return;
+        var driver = await DriverOrThrowAsync(tab, default);
+        var r = await driver.EvaluateAsync(YtSkipFind, false, default);
+        var xy = r?.ValueKind == JsonValueKind.String ? r.Value.GetString()?.Split(',') : null;
+        if (xy is not { Length: 2 } || !double.TryParse(xy[0], out var x) || !double.TryParse(xy[1], out var y)) return;
+        Interlocked.Exchange(ref _ytSkipAt, now);
+        var view = tab.NativeView;
+        if (IsMac && view != IntPtr.Zero)
+        {
+            // hover, press, release — with human-ish gaps, as a real click would arrive
+            void Ev(int type) => InvokeOnUi(() =>
+            {
+                var win = Mac.MacWindow.WindowByNumber(tab.MacWindowNumber);
+                if (win != IntPtr.Zero) Mac.MacInput.SendMouseEvent(win, view, x, y, type);
+            });
+            Ev(5);
+            await Task.Delay(70);
+            Ev(1);
+            await Task.Delay(60);
+            Ev(2);
+        }
+        else
+            await driver.ClickAtAsync(x, y, MouseButton.Left, 1, default);
+    }
+
     // ---------------- flows & activity (about:flows) ----------------
 
     private static readonly JsonSerializerOptions FlowUiJson = new()
@@ -4562,12 +4605,26 @@ public sealed class BrowserController : IAsyncDisposable
         {
             // Looks like a search or bare domain
             if (url.Contains('.') && !url.Contains(' '))
-                url = "https://" + url;
+                url = PreferVisitedWww("https://" + url);
             else
                 url = _engine.Query + Uri.EscapeDataString(url);
         }
         if (url == "about:newtab") return url; // caller renders start page
         return url;
+    }
+
+    /// <summary>A typed "youtube.com" is redirected to www.youtube.com by the site, and in a
+    /// WKWebView that redirected first load can come back signed out (a refresh fixes it).
+    /// When history shows the site really lives on www., go there directly.</summary>
+    private string PreferVisitedWww(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || u.HostNameType != UriHostNameType.Dns ||
+            u.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) || u.Host.Count(c => c == '.') != 1)
+            return url;
+        var www = "https://www." + u.Host + "/";
+        lock (_history)
+            if (!_history.Any(h => h.Url.StartsWith(www, StringComparison.OrdinalIgnoreCase))) return url;
+        return new UriBuilder(u) { Host = "www." + u.Host }.Uri.ToString();
     }
 
     private static int FindFreePort()

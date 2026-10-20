@@ -344,9 +344,21 @@
         return describe(el);
     }
 
+    // Bring el into view without leaving the page shifted sideways. scrollIntoView also scrolls
+    // overflow:hidden ancestors (app shells like Play Console), which the user can't scroll back.
+    function reveal(el) {
+        var saved = [];
+        for (var p = el.parentElement; p; p = p.parentElement) {
+            var ox = getComputedStyle(p).overflowX;
+            if (ox === 'hidden' || ox === 'clip') saved.push([p, p.scrollLeft]);
+        }
+        el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+        saved.forEach(function (a) { if (a[0].scrollLeft !== a[1]) a[0].scrollLeft = a[1]; });
+    }
+
     // Click the element itself (not whatever is on top of it), and say if something else is covering it.
     function clickElement(el, count) {
-        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+        reveal(el);
         var r = el.getBoundingClientRect();
         var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
         var top = document.elementFromPoint(cx, cy);
@@ -370,7 +382,7 @@
     function hover(selOrX, y) {
         var el = (typeof selOrX === 'number') ? document.elementFromPoint(selOrX, y) : resolve(selOrX);
         if (!el) return { ok: false, error: 'element not found' };
-        el.scrollIntoView({ block: 'center', behavior: 'instant' });
+        reveal(el);
         var r = el.getBoundingClientRect();
         var hx = r.left + r.width / 2, hy = r.top + r.height / 2;
         firePointer(el, 'pointerover', hx, hy, 0);
@@ -414,7 +426,7 @@
     function fill(sel, value) {
         var el = resolve(sel);
         if (!el) return { ok: false, error: 'element not found: ' + sel };
-        el.scrollIntoView({ block: 'center', behavior: 'instant' });
+        reveal(el);
         if (tag(el) === 'select') { el.focus(); return selectOptionRaw(el, [].concat(value)); }
         var target = editableFor(el);
         if (!target) return { ok: false, error: 'not editable: <' + tag(el) + '>. Pick the text field itself (snapshot again), or click it and use browser_type_text.' };
@@ -565,7 +577,7 @@
         };
         var want = !!checked;
         if (read() !== want) {
-            box.scrollIntoView({ block: 'center', behavior: 'instant' });
+            reveal(box);
             box.click(); // a real click toggles the control and fires input/change the way pages expect
             if (read() !== want && 'checked' in box) {
                 box.checked = want;
@@ -627,7 +639,7 @@
     function scrollTo(sel) {
         var el = resolve(sel);
         if (!el) return { ok: false, error: 'element not found: ' + sel };
-        el.scrollIntoView({ block: 'center', behavior: 'instant' });
+        reveal(el);
         var r = el.getBoundingClientRect();
         return { ok: true, rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
     }
@@ -728,7 +740,7 @@
     function rect(sel) {
         var el = resolve(sel);
         if (!el) return null;
-        el.scrollIntoView({ block: 'center', behavior: 'instant' });
+        reveal(el);
         var r = el.getBoundingClientRect();
         return { x: r.x, y: r.y, w: r.width, h: r.height, dpr: devicePixelRatio };
     }

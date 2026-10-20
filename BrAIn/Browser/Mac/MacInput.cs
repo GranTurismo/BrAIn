@@ -81,4 +81,19 @@ internal static partial class MacInput
             Post(up, pos, button, 2);
         }
     }
+
+    /// <summary>One mouse event delivered straight to the window as an NSEvent (no CGEvent): WebKit
+    /// sees a genuine, trusted user event, but the OS pointer doesn't move, no Accessibility
+    /// permission is needed and it works whatever is stacked above the window. type: 5 = moved,
+    /// 1 = left down, 2 = left up. Main thread only.</summary>
+    public static void SendMouseEvent(IntPtr nsWindow, IntPtr view, double x, double y, int type)
+    {
+        var wp = ObjC.SendPointFromView(view, ObjC.Sel("convertPoint:toView:"),
+            new MacWindow.CGPoint { X = x, Y = y }, IntPtr.Zero);
+        var now = ObjC.SendDouble(ObjC.Send(ObjC.GetClass("NSProcessInfo"), ObjC.Sel("processInfo")), ObjC.Sel("systemUptime"));
+        var ev = ObjC.SendMouseEvent(ObjC.GetClass("NSEvent"), ObjC.Sel(
+            "mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:"),
+            type, wp, 0, now, (nint)MacWindow.WindowNumber(nsWindow), IntPtr.Zero, 0, type == 5 ? 0 : 1, type == 1 ? 1f : 0f);
+        if (ev != IntPtr.Zero) ObjC.Send(nsWindow, ObjC.Sel("sendEvent:"), ev);
+    }
 }

@@ -321,7 +321,7 @@ public sealed class UserScriptStore
             "Inverts the page colors while keeping images and video natural.",
             "moon", ["*"], TplDark),
         new("youtube", "YouTube cleanup",
-            "Hides Shorts shelves and menu entries, and clicks \"Skip\" as soon as a skippable ad offers it.",
+            "Hides Shorts shelves and menu entries, and clicks \"Skip\" (with a real click) the moment a skippable ad offers it.",
             "play", ["youtube.com"], TplYoutube),
     ];
 
@@ -470,9 +470,19 @@ st.textContent =
   'ytd-guide-entry-renderer:has(a[title="Shorts"]),ytd-mini-guide-entry-renderer[aria-label="Shorts"],' +
   'ytd-video-renderer:has(a[href^="/shorts/"]),ytd-grid-video-renderer:has(a[href^="/shorts/"]){display:none!important}';
 (document.head || document.documentElement).appendChild(st);
-setInterval(function () {
-  var b = document.querySelector('.ytp-skip-ad-button,.ytp-ad-skip-button,.ytp-ad-skip-button-modern');
-  if (b && b.offsetParent) b.click();
-}, 800);
+function skipAd() {
+  var b = document.querySelector('.ytp-skip-ad-button,.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-ad-skip-button-container button');
+  // YouTube ignores script-made clicks on Skip, so ask BrAIn for a real input click
+  if (b && b.getClientRects().length) say('ytskip');
+}
+// React the moment the button is added/shown (throttled to one check per frame),
+// with a fast poll as the fallback for attribute-only changes and background tabs.
+var queued = false;
+new MutationObserver(function () {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(function () { queued = false; skipAd(); });
+}).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+setInterval(skipAd, 250);
 """;
 }

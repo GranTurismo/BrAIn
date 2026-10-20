@@ -651,7 +651,7 @@
         for (var i = 0; i < state.tabs.length; i++) {
             var t0 = state.tabs[i];
             sig += t0.id + ',' + (t0.active ? 1 : 0) + ',' + (t0.title || '') + ',' + (t0.icon || '') +
-                ',' + (t0.mute ? 1 : 0) + (t0.aud ? 1 : 0) + ';';
+                ',' + (t0.mute ? 1 : 0) + (t0.aud ? 1 : 0) + (t0.rx ? 1 : 0) + ';';
         }
         if (sig === lastSig) { updateNav(sh); updateProg(sh); return; }
         lastSig = sig;
@@ -741,7 +741,9 @@
         m.innerHTML = H(html);
         m.style.display = 'block';
         m.style.left = Math.min(x, window.innerWidth - 190) + 'px';
-        m.style.top = Math.min(y, window.innerHeight - 200) + 'px';
+        // Split mode: the bar view is only bar-high until the host grows it for this
+        // popover, so innerHeight is too small to clamp against yet.
+        m.style.top = Math.max(0, SPLIT && ROLE === 'bar' ? y : Math.min(y, window.innerHeight - 200)) + 'px';
         m.querySelectorAll('.mi').forEach(function (el) {
             el.addEventListener('mousedown', function (e) {
                 e.preventDefault(); e.stopPropagation();
@@ -1027,7 +1029,7 @@
         ghostAt = -1; ghostBlock = null;
         addr.style.display = 'none';
         inp.style.display = 'block';
-        inp.value = curUrl() === 'about:blank' ? '' : curUrl();
+        inp.value = (state.ov || curUrl() === 'about:blank' || curUrl() === 'about:newtab') ? '' : curUrl();
         inp.focus();
         inp.select();
         dropIdx = -1;
@@ -4274,9 +4276,10 @@
         var q = sh.getElementById('ntpq');
         if (on) {
             ntpTick(sh);
-            // split mode: the page view must own keyboard focus for typing to land
-            if (SPLIT && ROLE === 'page') send('focuspage');
-            if (q) { q.value = ''; try { q.focus({ preventScroll: true }); } catch (e) { } }
+            // Land the caret in the address bar, ready to type a URL (split
+            // mode relays this to the bar view, which owns keyboard focus).
+            if (q) q.value = '';
+            startEditing(sh);
         } else if (q) {
             try { q.blur(); } catch (e) { }
         }
