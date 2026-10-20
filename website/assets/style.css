@@ -436,7 +436,7 @@ table.t td.na { color: var(--dim); }
 .steps { counter-reset: s; list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; font-size: 14px; color: var(--mut); }
 .steps li { counter-increment: s; display: flex; gap: 12px; }
 .steps li::before { content: counter(s); flex: none; width: 24px; height: 24px; border-radius: 8px; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #e6e1ff; background: var(--glass-hi); border: 1px solid var(--line); }
-.status { margin-top: 26px; padding: 20px 24px; border-radius: 16px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; font-size: 14px; color: var(--mut); }
+.status { margin-top: 26px; padding: 20px 24px; border-radius: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 20px; font-size: 14px; color: var(--mut); }
 .status b { display: block; color: var(--ink); margin-bottom: 4px; }
 .status .k { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
 
