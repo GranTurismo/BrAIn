@@ -246,6 +246,9 @@ public abstract class DriverBase : IBrowserDriver
         return Task.CompletedTask;
     }
 
+    public virtual Task<string> EmulateAsync(Emulation e, CancellationToken ct)
+        => Task.FromResult("emulation is not supported by this driver");
+
     // ---------------- helpers ----------------
 
     protected Task EnsureLibAsync(CancellationToken ct) => Controller.EnsurePageHelpersAsync(Tab);

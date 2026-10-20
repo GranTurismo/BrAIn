@@ -2,6 +2,14 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.3.0 — 2026-10-20
+
+### Added
+- **MCP tools for your browser data and chrome** — `browser_bookmark` (add / remove / toggle / check / list, by URL or for the open page), `browser_history` (list / search / delete / clear), `browser_downloads` (list / wait / cancel / reveal / clear), `browser_tab` (pin, mute, duplicate, move, reopen closed tab), `browser_clipboard`, `browser_find_in_page`, `browser_save_page`, `browser_emulate` and `browser_import`.
+  - Clipboard contents are never written to the activity log.
+  - `browser_import` brings in bookmarks and history only; cookies and saved passwords stay a manual step on `about:import`, and saved passwords are not reachable through MCP at all.
+  - Downloaded files can be revealed but never opened by an agent.
+
 ## 1.2.1 — 2026-10-20
 
 ### Fixed

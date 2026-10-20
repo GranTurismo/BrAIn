@@ -93,6 +93,7 @@ public static class Program
             .AddMcpServer()
             .WithStdioServerTransport()
             .WithTools<BrowserTools>()
+            .WithTools<ProfileTools>()
             .WithTools<FlowTools>()
             .WithTools<UserScriptTools>()
             // Record every tool call (primitives and flow_* alike) in calls.jsonl.

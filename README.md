@@ -97,6 +97,10 @@ To open on a specific page at startup, add `"args": ["https://example.com"]`.
 | Capture | `browser_screenshot` (PNG, optional element clip / full page), `browser_pdf` (Windows) |
 | Windows/tabs | `browser_tabs`, `browser_new_tab`, `browser_switch_tab`, `browser_close_tab`, `browser_window_resize`, `browser_window_state`, `browser_set_viewport`, `browser_zoom` |
 | Diagnostics | `browser_evaluate`, `browser_console_log`, `browser_network_requests`, `browser_cookies` |
+| Browser data | `browser_bookmark` (add / remove / toggle / check / list), `browser_history` (list / search / delete / clear), `browser_downloads` (list / wait / cancel / reveal / clear), `browser_import` (bookmarks + history from other browsers) |
+| Tab chrome | `browser_tab` (pin / mute / duplicate / move / reopen closed) |
+| Clipboard, find, save | `browser_clipboard` (read / write), `browser_find_in_page` (Ctrl+F style), `browser_save_page` (DOM to .html) |
+| Emulation | `browser_emulate` (user agent, light/dark, offline, geolocation; Windows full, macOS user agent + colour scheme) |
 | Page history | `browser_rewind` (list / read / search the tab's past states — opt-in, see Rewind below) |
 | Site scripts | `userscript_create`, `userscript_install_template`, `userscript_run`, `userscript_errors`, `userscript_get`, `userscript_list`, `userscript_templates`, `userscript_update`, `userscript_delete` (see Site scripts below) |
 

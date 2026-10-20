@@ -14,7 +14,7 @@ namespace BrAIn.Browser;
 /// window.external.sendMessage return channel, and log buffers.
 /// The MCP tool layer talks only to this class.
 /// </summary>
-public sealed class BrowserController : IAsyncDisposable
+public sealed partial class BrowserController : IAsyncDisposable
 {
     public const string AppName = "BrAIn";
 

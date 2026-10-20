@@ -455,6 +455,49 @@ public sealed class WebKitDriver : DriverBase
         return Task.FromResult(Controller.InvokeOnUi(() => WkCookieStore.SetCookies(wv, cookies)));
     }
 
+    // ---------------- emulation ----------------
+    // WKWebView can swap its user agent and (through the view's NSAppearance)
+    // the prefers-color-scheme it reports. It has no offline or geolocation
+    // override, so those are reported back as unsupported rather than faked.
+
+    private string? _origUa;
+    private bool _origUaKnown;
+
+    public override Task<string> EmulateAsync(Emulation e, CancellationToken ct)
+    {
+        var wv = _webview;
+        if (wv == IntPtr.Zero) return Task.FromResult("no view to emulate on yet; navigate first");
+        var done = new List<string>();
+        var skipped = new List<string>();
+        Controller.InvokeOnUi(() =>
+        {
+            if (!Alive(wv)) return;
+            if (!_origUaKnown)
+            {
+                _origUa = ObjC.NsStringToString(ObjC.Send(wv, ObjC.Sel("customUserAgent")));
+                _origUaKnown = true;
+            }
+            if (e.Reset || e.UserAgent is { Length: > 0 })
+            {
+                var ua = e.UserAgent is { Length: > 0 } ? e.UserAgent : _origUa;
+                ObjC.Send(wv, ObjC.Sel("setCustomUserAgent:"), ua is null ? IntPtr.Zero : ObjC.NsString(ua));
+                done.Add(e.UserAgent is { Length: > 0 } ? "user agent" : "user agent reset");
+            }
+            var scheme = e.Reset && e.ColorScheme is null ? "light" : e.ColorScheme;
+            if (scheme is "light" or "dark")
+            {
+                var ap = ObjC.Send(ObjC.GetClass("NSAppearance"), ObjC.Sel("appearanceNamed:"),
+                    ObjC.NsString(scheme == "dark" ? "NSAppearanceNameDarkAqua" : "NSAppearanceNameAqua"));
+                if (ap != IntPtr.Zero) { ObjC.Send(wv, ObjC.Sel("setAppearance:"), ap); done.Add($"{scheme} colour scheme"); }
+            }
+        });
+        if (e.Offline is not null) skipped.Add("offline");
+        if (e.Latitude is not null || e.Longitude is not null) skipped.Add("geolocation");
+        var msg = done.Count == 0 ? "nothing applied" : "applied: " + string.Join(", ", done);
+        if (skipped.Count > 0) msg += "; not supported on WebKit: " + string.Join(", ", skipped);
+        return Task.FromResult(msg + " (takes effect on the next navigation/reload)");
+    }
+
     private bool Alive(IntPtr wv) => !_prebound || WkTabs.Has(wv);
 
     public override async Task<NavigateResult> NavigateAsync(string url, CancellationToken ct)

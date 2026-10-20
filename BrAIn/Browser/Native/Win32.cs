@@ -224,6 +224,46 @@ internal static class Win32
         finally { CloseClipboard(); }
     }
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GlobalFree(IntPtr hMem);
+
+    /// <summary>Replaces the clipboard with Unicode text. Used by the
+    /// browser_clipboard MCP tool.</summary>
+    internal static bool SetClipboardText(string text)
+    {
+        const uint CfUnicodeText = 13, GmemMoveable = 0x2;
+        var bytes = (text.Length + 1) * 2;
+        var h = GlobalAlloc(GmemMoveable, (UIntPtr)bytes);
+        if (h == IntPtr.Zero) return false;
+        var p = GlobalLock(h);
+        if (p == IntPtr.Zero) { GlobalFree(h); return false; }
+        try
+        {
+            Marshal.Copy((text + "\0").ToCharArray(), 0, p, text.Length + 1);
+        }
+        finally { GlobalUnlock(h); }
+        if (!OpenClipboard(IntPtr.Zero)) { GlobalFree(h); return false; }
+        try
+        {
+            EmptyClipboard();
+            // On success the system owns the handle; free it only on failure.
+            if (SetClipboardData(CfUnicodeText, h) != IntPtr.Zero) return true;
+            GlobalFree(h);
+            return false;
+        }
+        finally { CloseClipboard(); }
+    }
+
     // ---------------- consent prompt (password-vault unlock) ----------------
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

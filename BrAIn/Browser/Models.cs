@@ -32,6 +32,15 @@ public sealed record CookieInfo(
 /// the about:history page. Time is unix seconds; Visits counts every load.</summary>
 public sealed record HistoryEntry(string Url, string? Title, string? Icon, long Time, int Visits);
 
+/// <summary>What browser_emulate asks of a driver. Null members are left as they are; Reset undoes every override first.</summary>
+public sealed record Emulation(
+    string? UserAgent = null,
+    string? ColorScheme = null,   // "light" | "dark"
+    bool? Offline = null,
+    double? Latitude = null,
+    double? Longitude = null,
+    bool Reset = false);
+
 public sealed record NavigateResult(bool Ok, string Url, string? Title, string? Error)
 {
     public static NavigateResult Success(string url, string? title) => new(true, url, title, null);

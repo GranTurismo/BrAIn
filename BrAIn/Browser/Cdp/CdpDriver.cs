@@ -700,6 +700,48 @@ public sealed class CdpDriver : DriverBase
         Controller.SetWindowSize(Tab, width, height);
     }
 
+    // ---------------- emulation ----------------
+
+    public override async Task<string> EmulateAsync(Emulation e, CancellationToken ct)
+    {
+        var s = _session ?? throw new InvalidOperationException("CDP session not ready");
+        var done = new List<string>();
+        if (e.Reset)
+        {
+            await s.SendAsync("Emulation.setUserAgentOverride", new { userAgent = "" }, ct);
+            // the page lib pins prefers-color-scheme to light at start-up; reset goes back to that
+            await s.SendAsync("Emulation.setEmulatedMedia",
+                new { features = new[] { new { name = "prefers-color-scheme", value = "light" } } }, ct);
+            await s.SendAsync("Network.emulateNetworkConditions",
+                new { offline = false, latency = 0, downloadThroughput = -1, uploadThroughput = -1 }, ct);
+            await s.SendAsync("Emulation.clearGeolocationOverride", null, ct);
+            done.Add("reset");
+        }
+        if (e.UserAgent is { Length: > 0 } ua)
+        {
+            await s.SendAsync("Emulation.setUserAgentOverride", new { userAgent = ua }, ct);
+            done.Add("user agent");
+        }
+        if (e.ColorScheme is { Length: > 0 } cs)
+        {
+            await s.SendAsync("Emulation.setEmulatedMedia",
+                new { features = new[] { new { name = "prefers-color-scheme", value = cs } } }, ct);
+            done.Add($"{cs} colour scheme");
+        }
+        if (e.Offline is { } off)
+        {
+            await s.SendAsync("Network.emulateNetworkConditions",
+                new { offline = off, latency = 0, downloadThroughput = -1, uploadThroughput = -1 }, ct);
+            done.Add(off ? "offline" : "online");
+        }
+        if (e.Latitude is { } lat && e.Longitude is { } lon)
+        {
+            await s.SendAsync("Emulation.setGeolocationOverride", new { latitude = lat, longitude = lon, accuracy = 10 }, ct);
+            done.Add($"geolocation {lat},{lon}");
+        }
+        return done.Count == 0 ? "nothing to change" : "applied: " + string.Join(", ", done);
+    }
+
     /// <summary>Page.printToPDF → saves to disk.</summary>
     public async Task<string> PrintToPdfAsync(string outputPath, CancellationToken ct)
     {

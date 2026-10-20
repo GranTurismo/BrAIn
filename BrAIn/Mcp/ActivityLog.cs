@@ -141,6 +141,7 @@ public sealed class ActivityLog
         "browser_describe", "browser_listeners", "browser_rewind", "browser_screenshot", "browser_console_log",
         "browser_network_requests", "browser_tabs", "browser_cookies", "browser_activity",
         "browser_list_flows", "browser_save_flow", "browser_run_flow", "browser_ask_human",
+        "browser_find_in_page",
     };
 
     /// <summary>Tools whose "element" argument should be resolved to a stable locator when logged.</summary>
@@ -277,6 +278,8 @@ internal static class ActivityRecorder
             { args["text"] = ActivityLog.MaskText; masked = true; }
             if (tool == "browser_cookies" && args.ContainsKey("value"))
             { args["value"] = ActivityLog.MaskText; masked = true; }
+            if (tool == "browser_clipboard" && args.ContainsKey("text"))
+            { args["text"] = ActivityLog.MaskText; masked = true; }
             if (tool == "browser_evaluate" && args["script"]?.GetValue<string>() is { } sc)
                 args["script"] = ActivityLog.Clip(sc, 2000);
 
@@ -356,7 +359,8 @@ internal static class ActivityRecorder
                     Ok = ok,
                     Ms = (int)sw.ElapsedMilliseconds,
                     Url = url,
-                    Res = tool == "browser_cookies" ? "(cookie data not logged)" : text,
+                    Res = tool == "browser_cookies" ? "(cookie data not logged)"
+                        : tool == "browser_clipboard" ? "(clipboard data not logged)" : text,
                     Masked = masked,
                     Flow = tool.StartsWith("flow_", StringComparison.Ordinal) || tool == "browser_run_flow",
                 });

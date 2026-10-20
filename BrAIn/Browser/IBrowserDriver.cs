@@ -96,4 +96,8 @@ public interface IBrowserDriver : IAsyncDisposable
     void SetPageMuted(bool muted);
 
     Task SetViewportAsync(int width, int height, double deviceScaleFactor, bool mobile, CancellationToken ct);
+
+    /// <summary>Apply user-agent / colour-scheme / offline / geolocation overrides to this tab.
+    /// Returns a one-line report of what was applied and what this engine cannot do.</summary>
+    Task<string> EmulateAsync(Emulation e, CancellationToken ct);
 }
