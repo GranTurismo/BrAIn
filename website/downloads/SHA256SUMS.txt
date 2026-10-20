@@ -1,2 +1,2 @@
-e3a6175c0332dfc02a65fe04b2867d4f3156aae184af02c0250566003dcc35bd  BrAIn-1.2.0-macOS-arm64.dmg
-2c9b01c1ccf8a1d773f2b90cbdf58742dd9345645fe08da47d535150208aebae  BrAIn-Setup-1.2.0-x64.exe
+303c9fc2628e35e863a13f9bc2f1bd8e795e6eec1bdfab8e6afa60e985a6ceb5  BrAIn-1.3.0-macOS-arm64.dmg
+edf44bf91c5f31c91e668a3c4c835fbc884b2a44ef736f9a94820ac4e059b1fb  BrAIn-Setup-1.3.0-x64.exe
