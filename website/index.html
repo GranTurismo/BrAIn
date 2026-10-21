@@ -36,12 +36,8 @@
   "description": "A real desktop browser with an MCP server built into the same process — every page inspectable, every action verifiable, every moment rewindable. Features Rewind page time-travel, in-window DevTools, a password vault, remappable shortcuts, site scripts, a built-in local Ollama agent and a one-keystroke agent kill switch.",
   "applicationCategory": "BrowserApplication",
   "operatingSystem": "macOS, Windows",
-  "softwareVersion": "1.3.0",
   "url": "https://brain.gtgroup.dev/",
-  "downloadUrl": [
-    "https://brain.gtgroup.dev/downloads/BrAIn-1.3.0-macOS-arm64.dmg",
-    "https://brain.gtgroup.dev/downloads/BrAIn-Setup-1.3.0-x64.exe"
-  ],
+  "downloadUrl": "https://github.com/GranTurismo/BrAIn/releases/latest",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
   "featureList": "Embedded MCP server, 60+ MCP tools including bookmarks, history and downloads, built-in Ollama agent, Rewind page time-travel, per-tab live views, agent pause/cancel kill switch, site scripts, in-window DevTools, password vault, remappable shortcuts, Chrome import",
   "screenshot": "https://brain.gtgroup.dev/assets/og.png",
@@ -93,7 +89,7 @@
 <header class="hero" id="top">
   <div class="wrap cols">
     <div>
-      <span class="chip rv"><i></i><span>v<span data-version>1.3.0</span> · macOS &amp; Windows</span></span>
+      <span class="chip rv"><i></i><span><span data-version>latest</span> · macOS &amp; Windows</span></span>
       <h1 class="rv" style="--d:.05s">The browser your AI can actually <span class="grad rot" id="rot">use</span><span class="rot"><span class="cursor"></span></span></h1>
       <p class="lead rv" style="--d:.12s">BrAIn is a real desktop browser with an <b style="color:var(--ink)">MCP server built into the same process</b>. Your agent sees the real DOM, acts on the real page — and you can rewind it, pause it and audit every step.</p>
       <p class="triplet rv" style="--d:.16s">Every page <a href="#features">inspectable</a><span>·</span>every action <a href="#agent">verifiable</a><span>·</span>every moment <a href="#rewind">rewindable</a></p>
@@ -440,8 +436,8 @@
 <!-- ============ DOWNLOAD ============ -->
 <section id="download">
   <div class="wrap">
-    <div class="head rv" style="text-align:center;max-width:760px;margin-inline:auto"><span class="eyebrow">Download</span><h2>Get <span class="grad">BrAIn</span> <span style="color:var(--mut);font-weight:500;font-size:.5em;vertical-align:middle">v<span data-version>1.3.0</span></span></h2>
-      <p class="lead" style="margin-inline:auto">Free. Installers are hosted right here, with SHA-256 checksums you can verify in your browser before you run anything.</p></div>
+    <div class="head rv" style="text-align:center;max-width:760px;margin-inline:auto"><span class="eyebrow">Download</span><h2>Get <span class="grad">BrAIn</span> <span style="color:var(--mut);font-weight:500;font-size:.5em;vertical-align:middle"><span data-version>latest</span></span></h2>
+      <p class="lead" style="margin-inline:auto">Free. Always the latest release, straight from GitHub, with SHA-256 checksums to verify before you run anything.</p></div>
     <div class="dl-grid" id="dlGrid"></div>
 
     <div class="status card rv">
@@ -475,14 +471,13 @@
       <div><a class="logo" href="#top"><img src="assets/favicon.png" alt="" width="30" height="30">BrAIn</a><p style="margin:14px 0 0;max-width:340px">The browser that remembers — and the first one your AI can actually use.</p></div>
       <div style="display:flex;gap:48px;flex-wrap:wrap">
         <div><b style="color:var(--ink)">Product</b><br><a href="#features">Features</a><br><a href="#rewind">Rewind</a><br><a href="#speed">Benchmarks</a><br><a href="#download">Download</a></div>
-        <div><b style="color:var(--ink)">Project</b><br><a href="https://github.com/GranTurismo/BrAIn" rel="noopener">GitHub</a><br><a href="https://github.com/GranTurismo/BrAIn/blob/main/CHANGELOG.md" rel="noopener">Changelog</a><br><a href="https://github.com/GranTurismo/BrAIn/issues" rel="noopener">Report an issue</a><br><a href="downloads/SHA256SUMS.txt">SHA256SUMS</a></div>
+        <div><b style="color:var(--ink)">Project</b><br><a href="https://github.com/GranTurismo/BrAIn" rel="noopener">GitHub</a><br><a href="https://github.com/GranTurismo/BrAIn/blob/main/CHANGELOG.md" rel="noopener">Changelog</a><br><a href="https://github.com/GranTurismo/BrAIn/issues" rel="noopener">Report an issue</a><br><a href="https://github.com/GranTurismo/BrAIn/releases" rel="noopener">Releases</a></div>
       </div>
     </div>
     <div class="big" aria-hidden="true">BrAIn</div>
   </div>
 </footer>
 <div id="toast" role="status"></div>
-<script src="downloads/downloads.js"></script>
-<script src="assets/app.js"></script>
+<script src="assets/app.js?v=2"></script>
 </body>
 </html>

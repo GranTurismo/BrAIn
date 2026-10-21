@@ -512,66 +512,83 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
   set(cur);
 })();
 
-/* ------------------------------------------------------------------ download + checksum verification */
+/* ------------------------------------------------------------------ download (live from the latest GitHub release) */
 (async function downloads() {
   const grid = $('#dlGrid'); if (!grid) return;
-  let m = window.BRAIN_DOWNLOADS;
-  if (!m) { try { m = await (await fetch('downloads/downloads.json', { cache: 'no-store' })).json(); } catch {} }
-  if (!m || !m.downloads || !m.downloads.length) { grid.innerHTML = '<div class="card dl" style="grid-column:1/-1">Installers are missing from this build of the site. Run <code>scripts/build-site.sh</code>.</div>'; return; }
-  $$('[data-version]').forEach(el => el.textContent = m.version);
-  const ua = navigator.userAgent, plat = /Windows/.test(ua) ? 'win' : /Mac/.test(ua) && !/iPhone|iPad/.test(ua) ? 'mac' : '';
+  const REPO = 'GranTurismo/BrAIn', LATEST = `https://github.com/${REPO}/releases/latest`, CACHE_KEY = 'brain.release', CACHE_MS = 10 * 60 * 1000;
+
+  // GitHub's unauthenticated API allows 60 requests/hour/IP, so cache for a few minutes and fall back to a stale copy.
+  const readCache = () => { try { return JSON.parse(sessionStorage.getItem(CACHE_KEY)); } catch { return null; } };
+  async function latestRelease() {
+    const cached = readCache();
+    if (cached && Date.now() - cached.t < CACHE_MS) return cached.data;
+    try {
+      const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), data })); } catch {}
+      return data;
+    } catch { return cached ? cached.data : null; }
+  }
+
+  // Map release assets to platform cards by file name, so a new release needs no site change.
+  const KINDS = [
+    { re: /\.dmg$/i, os: 'mac', name: 'macOS', label: a => /x64|intel/i.test(a) ? 'macOS · Intel' : 'macOS · Apple Silicon' },
+    { re: /\.exe$/i, os: 'win', name: 'Windows', label: () => 'Windows 10/11 · x64' },
+    { re: /\.tar\.gz$/i, os: 'linux', name: 'Linux', label: () => 'Linux · x64 (experimental)' },
+  ];
+  const parse = rel => (rel.assets || []).map(a => {
+    const k = KINDS.find(k => k.re.test(a.name)); if (!k) return null;
+    return { os: k.os, name: k.name, label: k.label(a.name), file: a.name, bytes: a.size, url: a.browser_download_url, sha256: (a.digest || '').replace(/^sha256:/, '') };
+  }).filter(Boolean);
+
+  const rel = await latestRelease(), items = rel ? parse(rel) : [];
+  if (!items.length) {
+    grid.innerHTML = `<div class="card dl" style="grid-column:1/-1">Couldn’t load the latest release right now. <a href="${LATEST}">Get BrAIn from GitHub Releases →</a></div>`;
+    $$('[data-dl-cta], #heroDl').forEach(a => a.setAttribute('href', LATEST));
+    return;
+  }
+  const version = String(rel.tag_name || '').replace(/^v/, '');
+  $$('[data-version]').forEach(el => el.textContent = 'v' + version);
+
+  const ua = navigator.userAgent;
+  const plat = /Windows/.test(ua) ? 'win' : /Android/.test(ua) ? '' : /Linux/.test(ua) ? 'linux' : /Mac/.test(ua) && !/iPhone|iPad/.test(ua) ? 'mac' : '';
   const mb = b => (b / 1048576).toFixed(1) + ' MB';
   const ICON = {
     mac: '<svg viewBox="0 0 24 24"><path d="M16.4 1.4c0 1.1-.5 2.2-1.2 3-.8.9-2.1 1.5-3.2 1.4-.1-1.1.4-2.3 1.1-3 .8-.9 2.2-1.5 3.3-1.4zM20.5 17.1c-.6 1.3-.8 1.8-1.5 2.9-1 1.5-2.4 3.5-4.2 3.5-1.5 0-2-1-4.1-1s-2.5 1-4.1 1c-1.7 0-3.1-1.7-4.1-3.3C-.2 15.9-.5 10.7 1.2 8.1 2.4 6.2 4.3 5.1 6.1 5.1c1.8 0 2.9 1 4.4 1 1.5 0 2.3-1 4.4-1 1.6 0 3.3.9 4.5 2.4-4 2.2-3.3 7.8.1 9.6z"/></svg>',
     win: '<svg viewBox="0 0 24 24"><path d="M3 5.5l7.4-1v7H3zM11.6 4.35L21 3v8.5h-9.4zM3 12.5h7.4v7L3 18.5zM11.6 12.5H21V21l-9.4-1.3z"/></svg>',
+    linux: '<svg viewBox="0 0 24 24"><path d="M12 2C9.2 2 8 4.4 8 7.2c0 1.5-.4 2.4-1.2 3.6C5.6 12.600 5 14.300 5 16c0 1.100.3 1.900.9 2.500-.4.700-1.200 1.100-1.900 1.400-.5.200-.4.800.1.900 1.300.300 2.800.100 3.900-.6.900.4 2 .6 4 .6s3.100-.2 4-.6c1.100.7 2.600.9 3.900.6.500-.1.600-.7.100-.9-.7-.3-1.500-.7-1.900-1.400.6-.6.900-1.400.9-2.500 0-1.700-.6-3.400-1.800-5.200C16.400 9.600 16 8.700 16 7.200 16 4.400 14.800 2 12 2zm-1.500 5.300c.5 0 .9.500.9 1.100s-.4 1.100-.9 1.100-.9-.5-.9-1.100.4-1.100.9-1.100zm3 0c.5 0 .9.500.9 1.100s-.4 1.100-.9 1.100-.9-.5-.9-1.100.4-1.100.9-1.100z"/></svg>',
   };
   const STEPS = {
     mac: ['Open the DMG and drag <b>BrAIn</b> to Applications.', 'First launch: right-click the app → <b>Open</b> (it isn’t notarized yet) — or run <code>xattr -dr com.apple.quarantine /Applications/BrAIn.app</code>.', 'Press <kbd>⌘</kbd> <kbd>/</kbd> for every shortcut; point your MCP client at the binary.'],
     win: ['Run the installer. If SmartScreen appears: <b>More info → Run anyway</b> (not code-signed yet).', 'It installs the WebView2 runtime if your PC lacks it, adds Start Menu entries, and includes a <b>tab self-test</b> shortcut.', 'Point your MCP client at <code>C:\\Program Files\\BrAIn\\BrAIn.exe</code>.'],
+    linux: ['Extract the archive: <code>tar xzf BrAIn-*-linux-x64.tar.gz</code> (needs GTK3 and WebKitGTK).', 'Experimental: it opens pages and navigates; in-page automation (MCP tools) isn’t available on Linux yet.'],
   };
-  const VERIFY = { mac: 'shasum -a 256 ~/Downloads/', win: 'Get-FileHash -Algorithm SHA256 $HOME\\Downloads\\' };
-  const order = [...m.downloads].sort((a, b) => (b.os === plat) - (a.os === plat));
+  const VERIFY = { mac: 'shasum -a 256 ~/Downloads/', win: 'Get-FileHash -Algorithm SHA256 $HOME\\Downloads\\', linux: 'sha256sum ~/Downloads/' };
+  const rank = d => (d.os === plat ? -10 : 0) + ['mac', 'win', 'linux'].indexOf(d.os);
+  const order = items.sort((a, b) => rank(a) - rank(b));
   grid.innerHTML = order.map(d => {
-    const ext = d.file.split('.').pop(), rec = d.os === plat;
+    const ext = (d.file.match(/\.(tar\.gz|[^.]+)$/) || [, ''])[1], rec = d.os === plat;
     return `<article class="card dl rv spot${rec ? ' rec' : ''}" data-os="${d.os}">
-      <div class="os"><div class="ico">${ICON[d.os]}</div><div><h3>${d.os === 'mac' ? 'macOS' : 'Windows'}</h3><div class="sub2">${esc(d.label)}</div></div><span class="badge">YOUR PC</span></div>
-      <div class="facts"><div><b>${m.version}</b><span>version</span></div><div><b>${mb(d.bytes)}</b><span>download</span></div><div><b>.${ext}</b><span>format</span></div></div>
-      <a class="btn primary" href="downloads/${encodeURI(d.file)}" download data-dl>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>Download for ${d.os === 'mac' ? 'macOS' : 'Windows'}</a>
-      <div class="hash"><span>SHA-256</span><code title="${d.sha256}">${d.sha256}</code><button data-copy="${d.sha256}">Copy</button></div>
-      <button class="btn sm" data-verify="${d.file}" data-hash="${d.sha256}" data-bytes="${d.bytes}">Verify this download in my browser</button>
-      <div class="vbar"><i></i></div><div class="verify" aria-live="polite"></div>
+      <div class="os"><div class="ico">${ICON[d.os]}</div><div><h3>${d.name}</h3><div class="sub2">${esc(d.label)}</div></div><span class="badge">YOUR PC</span></div>
+      <div class="facts"><div><b>${esc(version)}</b><span>version</span></div><div><b>${mb(d.bytes)}</b><span>download</span></div><div><b>.${esc(ext)}</b><span>format</span></div></div>
+      <a class="btn primary" href="${esc(d.url)}" data-dl>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>Download for ${d.name}</a>
+      ${d.sha256 ? `<div class="hash"><span>SHA-256</span><code title="${d.sha256}">${d.sha256}</code><button data-copy="${d.sha256}">Copy</button></div>` : ''}
       <ol class="steps">${STEPS[d.os].map(s => `<li><span>${s}</span></li>`).join('')}</ol>
-      <details><summary style="cursor:pointer;color:var(--mut);font-size:13.5px">Verify from the command line</summary><div class="code" style="margin-top:10px;font-size:12px">${VERIFY[d.os]}${esc(d.file)}\n<span class="c"># expected</span>\n${d.sha256}</div></details>
+      ${d.sha256 ? `<details><summary style="cursor:pointer;color:var(--mut);font-size:13.5px">Verify from the command line</summary><div class="code" style="margin-top:10px;font-size:12px">${VERIFY[d.os]}${esc(d.file)}\n<span class="c"># expected</span>\n${d.sha256}</div></details>` : ''}
     </article>`;
   }).join('');
   $$('.rv', grid).forEach(el => setTimeout(() => el.classList.add('in'), 50));
   $$('.spot', grid).forEach(el => el.addEventListener('pointermove', e => { const r = el.getBoundingClientRect(); el.style.setProperty('--mx', (e.clientX - r.left) + 'px'); el.style.setProperty('--my', (e.clientY - r.top) + 'px'); }));
 
   // hero button reflects the visitor's OS
-  const pick = m.downloads.find(d => d.os === plat);
-  if (pick) $('#heroDlLabel').textContent = 'Download for ' + (plat === 'mac' ? 'macOS' : 'Windows');
+  const pick = items.find(d => d.os === plat);
+  if (pick) $('#heroDlLabel').textContent = 'Download for ' + pick.name;
 
-  grid.addEventListener('click', async e => {
+  grid.addEventListener('click', e => {
     const c = e.target.closest('[data-copy]'); if (c) { copyText(c.dataset.copy, c); return; }
-    if (e.target.closest('[data-dl]')) { toast('Download started — verify the checksum when it finishes'); return; }
-    const v = e.target.closest('[data-verify]'); if (!v) return;
-    const card = v.closest('.dl'), out = $('.verify', card), bar = $('.vbar', card), fill = $('i', bar);
-    if (!crypto.subtle) { out.className = 'verify bad'; out.textContent = 'Needs a secure context (https or localhost) for in-browser hashing. Use the command line instead.'; return; }
-    v.disabled = true; out.className = 'verify work'; out.textContent = 'Downloading to hash…'; bar.style.display = 'block'; fill.style.width = '0';
-    try {
-      const res = await fetch('downloads/' + encodeURI(v.dataset.verify), { cache: 'no-store' });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const total = +v.dataset.bytes, rd = res.body.getReader(), chunks = []; let got = 0;
-      for (;;) { const { done, value } = await rd.read(); if (done) break; chunks.push(value); got += value.length; fill.style.width = (got / total * 100).toFixed(1) + '%'; out.textContent = `Downloading to hash… ${mb(got)} / ${mb(total)}`; }
-      out.textContent = 'Hashing…';
-      const buf = new Uint8Array(got); let o = 0; for (const c of chunks) { buf.set(c, o); o += c.length; }
-      const hex = [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map(b => b.toString(16).padStart(2, '0')).join('');
-      if (hex === v.dataset.hash) { out.className = 'verify ok'; out.textContent = '✓ Matches the published SHA-256 — this is the file we built.'; }
-      else { out.className = 'verify bad'; out.textContent = '✗ Checksum mismatch. Do not run this file. Expected ' + v.dataset.hash.slice(0, 16) + '…, got ' + hex.slice(0, 16) + '…'; }
-    } catch (err) {
-      out.className = 'verify bad'; out.textContent = 'Couldn’t read the file (' + err.message + '). Open the site over http(s), or verify from the command line.';
-    } finally { v.disabled = false; }
+    if (e.target.closest('[data-dl]')) toast('Download started — verify the checksum when it finishes');
   });
 })();
 })();
