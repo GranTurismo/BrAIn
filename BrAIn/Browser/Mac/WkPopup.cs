@@ -169,11 +169,11 @@ internal static partial class WkPopup
             frame, titled | closable | miniaturizable | resizable, 2, 0);
         if (win == IntPtr.Zero) { ObjC.Send(wv, ObjC.Sel("release")); return IntPtr.Zero; }
 
+        ObjC.Send(win, ObjC.Sel("setReleasedWhenClosed:"), (IntPtr)0); // we release it on close
         ObjC.Send(win, ObjC.Sel("setContentView:"), wv);
-        ObjC.Send(wv, ObjC.Sel("release")); // the window retains it
+        ObjC.Send(wv, ObjC.Sel("release")); // the window now holds the only reference
         ObjC.Send(win, ObjC.Sel("center"));
         ObjC.Send(win, ObjC.Sel("makeKeyAndOrderFront:"), IntPtr.Zero);
-        ObjC.Send(win, ObjC.Sel("setReleasedWhenClosed:"), (IntPtr)0); // we release it on close
 
         lock (_popupWindow) _popupWindow[wv] = win;
         return wv;
@@ -185,8 +185,16 @@ internal static partial class WkPopup
         {
             IntPtr win;
             lock (_popupWindow) { if (!_popupWindow.Remove(webView, out win)) return; }
-            if (win != IntPtr.Zero) { ObjC.Send(win, ObjC.Sel("close")); ObjC.Send(win, ObjC.Sel("release")); }
-            ObjC.Send(webView, ObjC.Sel("release"));
+            if (win == IntPtr.Zero) return;
+            // The window owns the web view (one reference), so it must not be released
+            // again here — a second release left AppKit's focus-ring state pointing at
+            // a freed first responder and crashed the next run-loop turn. We're also
+            // inside a WebKit callback on this view, so keep it alive until the
+            // autorelease pool drains, and drop first-responder status before it goes.
+            ObjC.Send(ObjC.Send(webView, ObjC.Sel("retain")), ObjC.Sel("autorelease"));
+            ObjC.Send(win, ObjC.Sel("makeFirstResponder:"), IntPtr.Zero);
+            ObjC.Send(win, ObjC.Sel("close"));
+            ObjC.Send(win, ObjC.Sel("autorelease"));
         }
         catch { }
     }

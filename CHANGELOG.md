@@ -2,6 +2,11 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.3.1 — 2026-10-21
+
+### Fixed
+- **macOS: crash after a page's popup window closed** — closing a popup (for example a sign-in window) released its web view twice, so the next run-loop turn touched freed memory and BrAIn quit with a segmentation fault, usually seconds after loading a page such as LinkedIn's sign-in. The popup window now owns its web view alone and is closed safely.
+
 ## 1.3.0 — 2026-10-20
 
 ### Added
