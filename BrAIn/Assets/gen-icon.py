@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BrAIn app icon — light pastel tile + white line-art brain mesh.
+"""BrAIn app icon — warm ember tile + white line-art brain mesh.
 Lobed brain silhouette (perturbed circle) enclosing a small neural mesh:
 a center node wired to a ring of nodes. Full-bleed rounded tile, renders
 2048px, builds icon.iconset -> icon.icns and multi-size PNG-in-ICO.
@@ -46,8 +46,8 @@ def cap(d, x, y, w):
 def render():
     mask = tile_mask()
 
-    # ---- tile: soft periwinkle -> cyan diagonal gradient ----
-    tile = lgrad(S, (168, 172, 255), (94, 120, 250), (56, 200, 225))
+    # ---- tile: warm ember diagonal gradient (peach -> orange -> magenta-pink) ----
+    tile = lgrad(S, (255, 190, 125), (247, 118, 70), (226, 72, 140))
     # slight top-left lift for gloss
     lift = Image.new('L', (S, S), 0)
     ImageDraw.Draw(lift).ellipse([(-S * .2, -S * .45), (S * .75, S * .35)], fill=30)
@@ -81,10 +81,10 @@ def render():
         cap(d, x, y, nodeR * 2)
     cap(d, cx, cy, nodeR * 2.3)
 
-    # soft indigo shadow under the mark, then the white stroke itself
+    # soft deep-ember shadow under the mark, then the white stroke itself
     sh = Image.new('L', (S, S), 0)
     sh.paste(st, (0, int(S * .012)))
-    shadow = Image.new('RGB', (S, S), (70, 80, 190))
+    shadow = Image.new('RGB', (S, S), (40, 110, 120))
     tile = ImageChops.subtract(
         tile, ImageChops.multiply(shadow, Image.merge(
             'RGB', (sh.filter(ImageFilter.GaussianBlur(22)),) * 3)

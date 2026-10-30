@@ -12,6 +12,7 @@ namespace BrAIn.Browser.Mac;
 ///   - sized popups (OAuth/payment flows that carry width/height) → a real NSWindow
 ///     with a WKWebView built from the supplied configuration, so window.opener
 ///     stays wired and the flow can post back to its parent;
+///   - pop-ups blocked by the quick controls → nil, nothing opens;
 ///   - webViewDidClose → closes a popup window it created;
 ///   - every other selector → forwardingTargetForSelector: to the original delegate
 ///     (JS alerts, permission prompts, file pickers keep working).
@@ -47,6 +48,9 @@ internal static partial class WkPopup
 
     /// <summary>A plain new-window request wants a tab. Main-thread only.</summary>
     internal static Action<string>? OnNewTab;
+    /// <summary>Quick controls: (opener view, opener URL, popup URL) → true drops the
+    /// request because pop-ups are blocked there. Main-thread only.</summary>
+    internal static Func<IntPtr, string, string, bool>? Blocks;
     internal static Action<string>? Log;
 
     private static IntPtr _cls;
@@ -124,6 +128,10 @@ internal static partial class WkPopup
             var web = url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
                    || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
             if (!web) return IntPtr.Zero;
+
+            // Pop-ups blocked for this tab/site: nothing opens and window.open returns null.
+            // (The user's own target=_blank clicks don't come here then — chrome.js opens those as tabs.)
+            if (Blocks?.Invoke(webView, MacWindow.GetWebViewUrl(webView) ?? "", url) == true) return IntPtr.Zero;
 
             // A sized popup (OAuth/payment) keeps a real window so window.opener works.
             if (FeatureNumber(feats, "width") != IntPtr.Zero || FeatureNumber(feats, "height") != IntPtr.Zero)

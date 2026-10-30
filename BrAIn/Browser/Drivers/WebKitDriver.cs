@@ -531,19 +531,22 @@ public sealed class WebKitDriver : DriverBase
     public async Task LoadHtmlAsync(string html, CancellationToken ct)
     {
         RaiseLoadStarted();
+        BrowserController.Mark("loadHTML issued");
         Controller.InvokeOnUi(() => { if (Alive(_webview)) WkTabs.LoadHtml(_webview, html); });
         _watchedUrl = "about:blank";
-        await WaitNativeLoadAsync(ct, 8000);
+        await WaitNativeLoadAsync(ct, 8000, ownPage: true);
         _everLoaded = true;
     }
 
     /// <summary>Waits until WebKit reports the view finished loading. Returns
     /// early when no load ever started (blocked/cancelled navigation).</summary>
-    private async Task WaitNativeLoadAsync(CancellationToken ct, int timeoutMs = 20000)
+    /// <param name="ownPage">A built-in about: page: no SPA to hydrate, so skip the post-load grace period and poll faster.</param>
+    private async Task WaitNativeLoadAsync(CancellationToken ct, int timeoutMs = 20000, bool ownPage = false)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
         var saw = false; var idle = 0;
-        await Task.Delay(40, ct);
+        var poll = ownPage ? 25 : 60;
+        await Task.Delay(ownPage ? 20 : 40, ct);
         while (DateTime.UtcNow < deadline)
         {
             ct.ThrowIfCancellationRequested();
@@ -551,12 +554,13 @@ public sealed class WebKitDriver : DriverBase
             else
             {
                 idle++;
+                if (saw && idle == 1) BrowserController.Mark("webkit finished first load");
                 if (saw && idle >= 2) break;   // finished
                 if (!saw && idle >= 8) break;  // never started
             }
-            await Task.Delay(60, ct);
+            await Task.Delay(poll, ct);
         }
-        if (saw) await Task.Delay(150, ct); // let SPA hydration run before helpers inject
+        if (saw && !ownPage) await Task.Delay(150, ct); // let SPA hydration run before helpers inject
         RaiseLoadCompleted();
     }
 

@@ -9,13 +9,19 @@ namespace BrAIn.Mcp;
 /// Agent-facing tools for auto-run site scripts. Anything an agent writes is a
 /// DRAFT: it is stored disabled and only starts running after the user turns it
 /// on in the Personality page, because it would otherwise be persistent
-/// agent-written code that executes on every visit to a site.
+/// agent-written code that executes on every visit to a site. In full control mode
+/// (BrowserController.FullControl, turned on by the user) scripts are saved switched on
+/// and the user's own scripts may be changed too.
 /// </summary>
 [McpServerToolType]
 public sealed class UserScriptTools(UserScriptStore store, BrowserController browser)
 {
     private const string DraftNote =
         "Saved as a DRAFT. It does not run yet: the user must review it and switch it on in the Personality page (about:personality → Site scripts). Tell them that.";
+    private const string LiveNote =
+        "Saved and switched ON (full control mode: no review) — it runs on matching pages from the next load. Tell the user what it does.";
+
+    private string Note => browser.FullControl ? LiveNote : DraftNote;
 
     [McpServerTool(Name = "userscript_list"),
      Description("List the auto-run site scripts (id, name, URL patterns, status). Scripts run automatically when a page whose address matches loads.")]
@@ -82,9 +88,9 @@ public sealed class UserScriptTools(UserScriptStore store, BrowserController bro
         var err = store.Save(new UserScript
         {
             Name = name, Matches = matches ?? [], Js = js, Description = description ?? "",
-            Enabled = false, Pending = true, Source = "agent",
+            Enabled = browser.FullControl, Pending = !browser.FullControl, Source = "agent",
         }, out var saved);
-        return Task.FromResult(err is not null ? $"Not saved: {err}" : $"{DraftNote}\nid: {saved.Id}");
+        return Task.FromResult(err is not null ? $"Not saved: {err}" : $"{Note}\nid: {saved.Id}");
     }
 
     [McpServerTool(Name = "userscript_install_template"),
@@ -98,9 +104,9 @@ public sealed class UserScriptTools(UserScriptStore store, BrowserController bro
         var err = store.Save(new UserScript
         {
             Name = t.Name, Description = t.Description, Matches = matches is { Length: > 0 } ? matches : t.Matches, Js = t.Js,
-            Enabled = false, Pending = true, Source = "template", Template = t.Id,
+            Enabled = browser.FullControl, Pending = !browser.FullControl, Source = "template", Template = t.Id,
         }, out var saved);
-        return Task.FromResult(err is not null ? $"Not saved: {err}" : $"{DraftNote}\nid: {saved.Id}");
+        return Task.FromResult(err is not null ? $"Not saved: {err}" : $"{Note}\nid: {saved.Id}");
     }
 
     [McpServerTool(Name = "userscript_update"),
@@ -114,13 +120,14 @@ public sealed class UserScriptTools(UserScriptStore store, BrowserController bro
     {
         var s = store.Get(id);
         if (s is null) return Task.FromResult($"No script with id '{id}'.");
-        if (s.Source == "user") return Task.FromResult("That script was written by the user — ask them to edit it in the Personality page.");
+        if (s.Source == "user" && !browser.FullControl) return Task.FromResult("That script was written by the user — ask them to edit it in the Personality page.");
         if (js is not null) s.Js = js;
         if (matches is { Length: > 0 }) s.Matches = matches;
         if (!string.IsNullOrWhiteSpace(name)) s.Name = name;
-        s.Enabled = false; s.Pending = true;
+        if (browser.FullControl) { s.Enabled = true; s.Pending = false; }
+        else { s.Enabled = false; s.Pending = true; }
         var err = store.Save(s, out _);
-        return Task.FromResult(err is not null ? $"Not saved: {err}" : $"Updated. {DraftNote}");
+        return Task.FromResult(err is not null ? $"Not saved: {err}" : $"Updated. {Note}");
     }
 
     [McpServerTool(Name = "userscript_delete"),
@@ -129,7 +136,7 @@ public sealed class UserScriptTools(UserScriptStore store, BrowserController bro
     {
         var s = store.Get(id);
         if (s is null) return Task.FromResult($"No script with id '{id}'.");
-        if (s.Source == "user") return Task.FromResult("That script was written by the user — ask them to remove it in the Personality page.");
+        if (s.Source == "user" && !browser.FullControl) return Task.FromResult("That script was written by the user — ask them to remove it in the Personality page.");
         store.Delete(id);
         return Task.FromResult("Deleted.");
     }

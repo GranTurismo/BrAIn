@@ -33,10 +33,10 @@
   .eyebrow i { width: 7px; height: 7px; border-radius: 50%; background: #6fe0c6; box-shadow: 0 0 10px #6fe0c6; }
   h1 {
     margin: 20px 0 14px; font-size: 64px; line-height: 1.02; font-weight: 800; letter-spacing: -1.5px;
-    background: linear-gradient(115deg, #ffffff 5%, #b9b9ff 45%, #6fe0c6 100%);
+    background: linear-gradient(115deg, #ffffff 5%, #ffc8a3 45%, #6fe0c6 100%);
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
-  .lede { max-width: 600px; font-size: 17px; line-height: 1.65; color: #b4b4d0; }
+  .lede { max-width: 600px; font-size: 17px; line-height: 1.65; color: #c8c2bc; }
   .lede b { color: #fff; font-weight: 600; }
   .stats { display: flex; gap: 34px; margin-top: 30px; flex-wrap: wrap; }
   .stat b { display: block; font-size: 26px; font-weight: 800; color: #fff; letter-spacing: -.5px; }
@@ -44,32 +44,6 @@
 
   /* ---- section heads ---- */
   .sec { margin: 54px 0 20px; }
-
-  /* ---- flagship ---- */
-  .flag {
-    display: grid; grid-template-columns: 1.15fr 1fr; gap: 0; overflow: hidden; border-radius: 24px; position: relative;
-    border: 1px solid hsl(var(--h) 100% 78% / .2);
-    background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.025));
-    box-shadow: 0 20px 60px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.07);
-  }
-  .flag .txt { padding: 38px 38px 36px; }
-  .flag h3 { font-size: 28px; line-height: 1.15; font-weight: 750; letter-spacing: -.4px; color: #fff; margin: 14px 0 12px; }
-  .flag p { color: #a4a4c2; line-height: 1.7; font-size: 14.5px; }
-  .flag p + p { margin-top: 10px; }
-  .flag p b { color: #e6e6fa; font-weight: 600; }
-  .demo {
-    padding: 28px; display: flex; align-items: center; justify-content: center;
-    background: radial-gradient(420px 300px at 50% 40%, hsl(var(--h) 80% 50% / .22), transparent 75%), rgba(0,0,0,.28);
-    border-left: 1px solid var(--line);
-  }
-  .term {
-    width: 100%; border-radius: 14px; background: #0a0a14; border: 1px solid rgba(255,255,255,.09);
-    font: 12.5px/1.75 var(--mono); color: #9b9bb8; overflow: hidden; box-shadow: 0 16px 40px rgba(0,0,0,.5);
-  }
-  .term .bar { display: flex; gap: 6px; padding: 10px 13px; background: rgba(255,255,255,.04); border-bottom: 1px solid var(--line); }
-  .term .bar i { width: 9px; height: 9px; border-radius: 50%; background: rgba(255,255,255,.14); }
-  .term pre { padding: 14px 16px; white-space: pre-wrap; font: inherit; }
-  .term .k { color: hsl(var(--h) 100% 80%); } .term .g { color: #6fe0c6; } .term .d { color: #5c5c78; }
 
   /* ---- grid ---- */
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
@@ -92,14 +66,14 @@
     box-shadow: inset 0 1px 0 rgba(255,255,255,.28), 0 8px 20px -8px hsl(var(--c) 90% 55% / .7);
   }
   .ico svg { width: 21px; height: 21px; }
-  .fc h4 { font-size: 16.5px; font-weight: 700; color: #f2f2ff; letter-spacing: -.1px; margin-bottom: 7px; }
-  .fc p { font-size: 13px; line-height: 1.6; color: #8f8fae; }
+  .fc h4 { font-size: 16.5px; font-weight: 700; color: #fbf8f6; letter-spacing: -.1px; margin-bottom: 7px; }
+  .fc p { font-size: 13px; line-height: 1.6; color: #a59e98; }
   .tag {
     position: absolute; top: 18px; right: 18px; font-size: 9.5px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase;
-    padding: 3px 8px; border-radius: 6px; color: #b0b0cc; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.08);
+    padding: 3px 8px; border-radius: 6px; color: #c4beb8; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.08);
   }
   .tag.on { color: #0d2a22; background: #6fe0c6; border-color: transparent; }
-  .tag.wip { color: #f2c14e; background: rgba(242,193,78,.12); border-color: rgba(242,193,78,.25); }
+  .tag.soon { color: #f2c14e; background: rgba(242,193,78,.12); border-color: rgba(242,193,78,.25); }
   .go { margin-top: 14px; display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 650; color: hsl(var(--c) 90% 78%); }
 
 
@@ -112,21 +86,21 @@
   .ss-head { display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
   .ss-head .t { flex: 1; min-width: 260px; }
   .ss-head h3 { font-size: 26px; font-weight: 750; letter-spacing: -.4px; color: #fff; margin: 12px 0 8px; }
-  .ss-head p { color: #a4a4c2; line-height: 1.65; font-size: 14px; max-width: 640px; }
-  .ss-head p b { color: #e6e6fa; font-weight: 600; }
+  .ss-head p { color: #bab3ac; line-height: 1.65; font-size: 14px; max-width: 640px; }
+  .ss-head p b { color: #f4f0eb; font-weight: 600; }
   .pbtn { padding: 11px 20px; border-radius: 12px; border: 0; cursor: pointer; color: #fff; font: 650 13.5px var(--font);
     background: linear-gradient(120deg, hsl(var(--h) 80% 64%), hsl(calc(var(--h) - 40) 70% 56%));
     box-shadow: 0 8px 22px -6px hsl(var(--h) 90% 60% / .6), inset 0 1px 0 rgba(255,255,255,.22); transition: filter .15s, transform .1s; }
   .pbtn:hover { filter: brightness(1.1); } .pbtn:active { transform: scale(.97); }
-  .gbtn { padding: 8px 14px; border-radius: 10px; cursor: pointer; color: #cfcfe8; font: 600 12.5px var(--font);
+  .gbtn { padding: 8px 14px; border-radius: 10px; cursor: pointer; color: #e1dbd6; font: 600 12.5px var(--font);
     background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); transition: background .12s, color .12s; }
   .gbtn:hover { background: rgba(255,255,255,.12); color: #fff; }
   .gbtn[disabled] { opacity: .5; pointer-events: none; }
   .sub2 { margin: 26px 0 12px; font-size: 11px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; color: var(--dim); }
 
-  .agent { margin-top: 18px; padding: 14px 16px; border-radius: 14px; font-size: 13px; line-height: 1.6; color: #a4a4c2;
+  .agent { margin-top: 18px; padding: 14px 16px; border-radius: 14px; font-size: 13px; line-height: 1.6; color: #bab3ac;
     background: hsl(var(--h) 80% 60% / .1); border: 1px dashed hsl(var(--h) 100% 78% / .3); }
-  .agent b { color: #e6e6fa; } .agent code { font-size: 12px; }
+  .agent b { color: #f4f0eb; } .agent code { font-size: 12px; }
 
   .tpls { display: grid; grid-template-columns: repeat(auto-fill, minmax(236px, 1fr)); gap: 12px; }
   .tp { display: flex; flex-direction: column; gap: 6px; padding: 14px 15px; border-radius: 15px;
@@ -136,8 +110,8 @@
   .tp .ti { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; color: #fff;
     background: linear-gradient(140deg, hsl(var(--h) 80% 62%), hsl(calc(var(--h) - 50) 70% 48%)); box-shadow: inset 0 1px 0 rgba(255,255,255,.25); }
   .tp .ti svg { width: 16px; height: 16px; }
-  .tp h5 { font-size: 13.5px; font-weight: 650; color: #f0f0ff; }
-  .tp p { font-size: 12px; line-height: 1.55; color: #8585a6; flex: 1; }
+  .tp h5 { font-size: 13.5px; font-weight: 650; color: #fbf7f4; }
+  .tp p { font-size: 12px; line-height: 1.55; color: #9d958e; flex: 1; }
   .tp .ft { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
   .tp .ft span { font-size: 11px; color: var(--dim); }
 
@@ -150,11 +124,11 @@
     background: rgba(255,255,255,.04); border: 1px solid var(--line); }
   .sr.draft { border-color: rgba(242,193,78,.35); background: rgba(242,193,78,.05); }
   .sr .nm { min-width: 0; flex: 1; }
-  .sr .nm b { display: block; font-size: 14px; font-weight: 650; color: #f2f2ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sr .nm b { display: block; font-size: 14px; font-weight: 650; color: #fbf8f6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sr .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
-  .chip { font: 11px var(--mono); padding: 2px 8px; border-radius: 6px; color: #a9a9c8; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.07); }
+  .chip { font: 11px var(--mono); padding: 2px 8px; border-radius: 6px; color: #bfb8b2; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.07); }
   .src { font-size: 10px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; padding: 3px 8px; border-radius: 6px; flex: none;
-    color: #b0b0cc; background: rgba(255,255,255,.07); }
+    color: #c4beb8; background: rgba(255,255,255,.07); }
   .src.ai { color: #0b2420; background: #6fe0c6; } .src.dr { color: #f2c14e; background: rgba(242,193,78,.14); }
   .sw { width: 38px; height: 22px; border-radius: 99px; flex: none; position: relative; cursor: pointer; border: 0;
     background: rgba(255,255,255,.14); transition: background .15s; }
@@ -163,9 +137,9 @@
   .sw.on { background: linear-gradient(120deg, hsl(var(--h) 80% 64%), hsl(calc(var(--h) - 40) 70% 56%)); }
   .sw.on::after { transform: translateX(16px); }
   .ib { width: 30px; height: 30px; border: 0; border-radius: 9px; background: transparent; color: var(--dim); cursor: pointer; display: grid; place-items: center; flex: none; transition: background .12s, color .12s; }
-  .ib:hover { background: rgba(255,255,255,.1); color: #e0e0f4; } .ib.del:hover { background: rgba(232,17,35,.18); color: #ffb4b9; }
+  .ib:hover { background: rgba(255,255,255,.1); color: #efeae6; } .ib.del:hover { background: rgba(232,17,35,.18); color: #ffb4b9; }
   .ib svg { width: 15px; height: 15px; }
-  .none { padding: 26px 10px; text-align: center; color: #50506a; font-size: 13.5px; line-height: 1.7; }
+  .none { padding: 26px 10px; text-align: center; color: #635d57; font-size: 13.5px; line-height: 1.7; }
 
   .chip.pz { color: #f2c14e; background: rgba(242,193,78,.1); border-color: rgba(242,193,78,.25); cursor: pointer; }
   .chip.pz:hover { background: rgba(242,193,78,.2); }
@@ -177,34 +151,33 @@
   .er.c .more { display: none; }
   .toast { position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; z-index: 60;
     max-width: min(560px, 92vw); padding: 12px 18px; border-radius: 14px; font-size: 13px; line-height: 1.5;
-    background: rgba(22,22,34,.98); border: 1px solid rgba(255,255,255,.14); color: #e6e6fa; box-shadow: 0 18px 50px rgba(0,0,0,.6);
+    background: rgba(31,28,25,.98); border: 1px solid rgba(255,255,255,.14); color: #f4f0eb; box-shadow: 0 18px 50px rgba(0,0,0,.6);
     transition: opacity .2s, transform .25s cubic-bezier(.16,1,.3,1); }
   .toast.on { opacity: 1; transform: translate(-50%, 0); }
   .toast.ok { border-color: rgba(111,224,198,.45); } .toast.bad { border-color: rgba(255,138,148,.5); color: #ffc4c9; }
-  .modal { position: fixed; inset: 0; z-index: 50; display: none; place-items: center; padding: 20px; background: rgba(4,4,10,.66); }
+  .modal { position: fixed; inset: 0; z-index: 50; display: none; place-items: center; padding: 20px; background: rgba(8,7,6,.66); }
   .modal.on { display: grid; }
   .mbox { width: min(760px, 100%); max-height: calc(100vh - 40px); overflow: auto; border-radius: 22px; padding: 26px;
-    background: linear-gradient(180deg, rgba(26,26,42,.99), rgba(16,16,28,.99)); border: 1px solid hsl(var(--h) 100% 78% / .25);
+    background: linear-gradient(180deg, rgba(38,34,30,.99), rgba(25,22,19,.99)); border: 1px solid hsl(var(--h) 100% 78% / .25);
     box-shadow: 0 34px 90px rgba(0,0,0,.65); }
   .mbox h4 { font-size: 20px; font-weight: 750; color: #fff; margin-bottom: 16px; }
   .fl { display: block; font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--dim); margin: 14px 0 6px; }
-  .in { width: 100%; padding: 11px 14px; border-radius: 12px; outline: none; color: #f0f0fc; font: 14px var(--font);
+  .in { width: 100%; padding: 11px 14px; border-radius: 12px; outline: none; color: #f9f6f3; font: 14px var(--font);
     background: var(--glass); border: 1px solid rgba(255,255,255,.1); transition: border-color .15s, box-shadow .15s; }
   .in:focus { border-color: hsl(var(--h) 100% 74% / .55); box-shadow: 0 0 0 4px hsl(var(--h) 100% 74% / .13); }
   textarea.in { resize: vertical; font: 12.5px/1.6 var(--mono); min-height: 74px; }
   textarea.code { min-height: 260px; white-space: pre; overflow: auto; tab-size: 2; }
-  .hint { font-size: 12px; color: #6c6c8a; margin-top: 6px; line-height: 1.55; }
+  .hint { font-size: 12px; color: #827b74; margin-top: 6px; line-height: 1.55; }
   .mact { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
   .mact .err { flex: 1; color: #ff9aa3; font-size: 12.5px; }
   .warn { margin-top: 14px; padding: 11px 14px; border-radius: 12px; font-size: 12.5px; line-height: 1.55; color: #f2d58a;
     background: rgba(242,193,78,.1); border: 1px solid rgba(242,193,78,.28); display: none; }
   .warn.on { display: block; }
 
-  .foot { margin-top: 56px; text-align: center; color: #50506a; font-size: 12.5px; line-height: 1.8; }
+  .foot { margin-top: 56px; text-align: center; color: #635d57; font-size: 12.5px; line-height: 1.8; }
   .foot a { color: var(--mut); }
 
   @media (max-width: 860px) {
-    .flag { grid-template-columns: 1fr; } .demo { border-left: 0; border-top: 1px solid var(--line); }
     .grid { grid-template-columns: repeat(2, 1fr); } h1 { font-size: 48px; } .hero { padding: 40px 28px; }
   }
   @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
@@ -267,36 +240,8 @@
       </div>
     </div>
 
-    <div class="sec"><h2>Flagship</h2></div>
-    <section class="flag">
-      <div class="txt">
-        <span class="tag wip" style="position:static">In development</span>
-        <h3>Every website becomes an API.</h3>
-        <p>BrAIn watches the requests a site makes behind the scenes and compiles them into <b>typed tools</b> your agent can call directly — no clicking, no screenshots, no guessing where the button moved.</p>
-        <p>Your agent uses your own logged-in session, so it works on sites that have <b>no public API at all</b>. Faster, cheaper, and far more reliable than driving the UI.</p>
-      </div>
-      <div class="demo">
-        <div class="term">
-          <div class="bar"><i></i><i></i><i></i></div>
-<pre><span class="d">// learned from your session on github.com</span>
-<span class="k">github</span>.list_notifications()
-<span class="k">github</span>.get_pull_request(<span class="g">repo</span>, <span class="g">n</span>)
-<span class="k">github</span>.comment(<span class="g">issue</span>, <span class="g">body</span>)
-
-<span class="d">// 1 call · 140 ms · 0 clicks</span></pre>
-        </div>
-      </div>
-    </section>
-
     <div class="sec"><h2>Breaking features</h2></div>
     <section class="grid">
-
-      <article class="fc" style="--c:200">
-        <span class="tag wip">Planned</span>
-        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3"/></svg></div>
-        <h4>Session hub</h4>
-        <p>Give any AI access to the accounts you're signed into — banks, portals, government sites — with no API keys and no OAuth apps.</p>
-      </article>
 
       <article class="fc live" style="--c:290" id="c-scripts">
         <span class="tag on">Live</span>
@@ -304,27 +249,6 @@
         <h4>Rewrite any site</h4>
         <p>Auto-run scripts on any website &mdash; write them yourself, start from a template, or let your AI agent draft them.</p>
         <span class="go">Open Site scripts &darr;</span>
-      </article>
-
-      <article class="fc" style="--c:160">
-        <span class="tag wip">Planned</span>
-        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
-        <h4>Swarm mode</h4>
-        <p>"Compare 40 laptops" opens 40 tabs in parallel, extracts each, cross-checks the results and hands you one table. Light enough to actually run.</p>
-      </article>
-
-      <article class="fc" style="--c:25">
-        <span class="tag wip">Planned</span>
-        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg></div>
-        <h4>Dark-pattern bodyguard</h4>
-        <p>Rejects cookie banners, finds the hidden "cancel subscription" flow, unsubscribes you, and flags fake timers and fake reviews.</p>
-      </article>
-
-      <article class="fc" style="--c:320">
-        <span class="tag wip">Planned</span>
-        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".6" fill="currentColor"/></svg></div>
-        <h4>Goals, not tabs</h4>
-        <p>Organize around what you're doing — "plan Berlin trip", "tax filing". Each goal keeps its pages, notes and agent progress, ready to resume.</p>
       </article>
 
       <article class="fc live" style="--c:255" id="c-flows">
@@ -335,10 +259,18 @@
         <span class="go">Open Flows &amp; activity &rarr;</span>
       </article>
 
+      <article class="fc live" style="--c:42" id="c-roadmap">
+        <span class="tag soon">Coming</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V4"/><path d="M4 4h12l-2 4 2 4H4"/></svg></div>
+        <h4>What's coming next</h4>
+        <p>Websites as APIs, swarm mode, a dark-pattern bodyguard and more &mdash; everything we're building or planning.</p>
+        <span class="go">Open Planned features &rarr;</span>
+      </article>
+
     </section>
 
     <div class="foot">
-      Features marked <b style="color:#f2c14e">Planned</b> or <b style="color:#f2c14e">In development</b> aren't available yet.<br>
+      Features that aren't available yet are on <a href="#" id="roadmap">Planned features</a>.<br>
       Internal page &middot; <a href="#" id="back">&larr; Back to new tab</a>
     </div>
   </div>
@@ -507,6 +439,12 @@
   send('usget');
   document.getElementById('c-flows').addEventListener('click', function () {
     send('navigate:about:flows');
+  });
+  document.getElementById('c-roadmap').addEventListener('click', function () {
+    send('navigate:about:roadmap');
+  });
+  document.getElementById('roadmap').addEventListener('click', function (e) {
+    e.preventDefault(); send('navigate:about:roadmap');
   });
 </script>
 </body>

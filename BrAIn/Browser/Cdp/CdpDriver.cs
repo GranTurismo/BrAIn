@@ -60,7 +60,7 @@ public sealed class CdpDriver : DriverBase
         try
         {
             var res = await _session.SendAsync("Page.addScriptToEvaluateOnNewDocument",
-                new { source = _injectSource }, ct);
+                new { source = Controller.QcBootFor(Tab) + _injectSource }, ct);
             if (res.ValueKind == JsonValueKind.Object &&
                 res.TryGetProperty("identifier", out var idEl) &&
                 idEl.GetString() is { } id)
@@ -116,7 +116,8 @@ public sealed class CdpDriver : DriverBase
             // mid-rotation still sees at least one inject script (never a
             // gap), and scripts evaluate in registration order so the newest
             // __brainBoot always wins.
-            var src = "window.__brainBoot=" + stateJson + ";\n" + _injectSource;
+            // quick-controls values first: chrome.js reads them as it starts, before the page paints
+            var src = Controller.QcBootFor(Tab) + "window.__brainBoot=" + stateJson + ";\n" + _injectSource;
             var res = await _session.SendAsync("Page.addScriptToEvaluateOnNewDocument",
                 new { source = src }, ct);
             if (res.ValueKind == JsonValueKind.Object &&
@@ -701,6 +702,23 @@ public sealed class CdpDriver : DriverBase
     }
 
     // ---------------- emulation ----------------
+
+    private bool _qcDark; // start-up pins the light scheme (InitializeAsync)
+
+    /// <summary>Quick controls' Dark pages: report a dark colour scheme so sites with a dark theme
+    /// of their own switch to it (chrome.js inverts the rest); off goes back to the light one.
+    /// Sent only on a change, so an agent's browser_emulate colour scheme isn't overridden.</summary>
+    internal async Task SetDarkSchemeAsync(bool dark)
+    {
+        if (_session is null || _qcDark == dark) return;
+        _qcDark = dark;
+        try
+        {
+            await _session.SendAsync("Emulation.setEmulatedMedia",
+                new { features = new[] { new { name = "prefers-color-scheme", value = dark ? "dark" : "light" } } }, CancellationToken.None);
+        }
+        catch { _qcDark = !dark; }
+    }
 
     public override async Task<string> EmulateAsync(Emulation e, CancellationToken ct)
     {

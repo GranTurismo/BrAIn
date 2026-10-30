@@ -252,7 +252,8 @@ internal static partial class MacWindow
         var root = ObjC.Send(view, ObjC.Sel("layer"));
         ObjC.SendNInt(root, ObjC.Sel("setMasksToBounds:"), 1);
         var seg = ObjC.Send(ObjC.GetClass("CALayer"), ObjC.Sel("new"));
-        var color = ObjC.Send(ObjC.Send(ObjC.GetClass("NSColor"), ObjC.Sel("systemPurpleColor")), ObjC.Sel("CGColor"));
+        var accent = ObjC.SendDouble4(ObjC.GetClass("NSColor"), ObjC.Sel("colorWithSRGBRed:green:blue:alpha:"), 0.93, 0.56, 0.32, 1.0);
+        var color = ObjC.Send(accent, ObjC.Sel("CGColor"));
         ObjC.Send(seg, ObjC.Sel("setBackgroundColor:"), color);
         ObjC.Send(root, ObjC.Sel("addSublayer:"), seg);
         return view;

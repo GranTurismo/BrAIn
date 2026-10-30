@@ -99,6 +99,7 @@ To open on a specific page at startup, add `"args": ["https://example.com"]`.
 | Diagnostics | `browser_evaluate`, `browser_console_log`, `browser_network_requests`, `browser_cookies` |
 | Browser data | `browser_bookmark` (add / remove / toggle / check / list), `browser_history` (list / search / delete / clear), `browser_downloads` (list / wait / cancel / reveal / clear), `browser_import` (bookmarks + history from other browsers) |
 | Tab chrome | `browser_tab` (pin / mute / duplicate / move / reopen closed) |
+| Privacy | `browser_ghost` (status / on / off / toggle — Ghost mode: nothing saved, new tabs private; the agent can turn it off only if it turned it on) |
 | Clipboard, find, save | `browser_clipboard` (read / write), `browser_find_in_page` (Ctrl+F style), `browser_save_page` (DOM to .html) |
 | Emulation | `browser_emulate` (user agent, light/dark, offline, geolocation; Windows full, macOS user agent + colour scheme) |
 | Page history | `browser_rewind` (list / read / search the tab's past states — opt-in, see Rewind below) |

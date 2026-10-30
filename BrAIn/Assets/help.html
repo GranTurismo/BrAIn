@@ -19,16 +19,16 @@
   h2 { margin: 42px 0 16px; }
 
   .card { padding: 22px 24px; margin-bottom: 14px; }
-  .card p { color: #b6b6cc; font-size: 14px; line-height: 1.75; }
+  .card p { color: #c6c1bc; font-size: 14px; line-height: 1.75; }
   .card p + p { margin-top: 10px; }
-  .card b { color: #f0f0fd; font-weight: 600; }
+  .card b { color: #f9f6f4; font-weight: 600; }
   .keys code { white-space: nowrap; }
   .card code { white-space: normal; overflow-wrap: anywhere; }
 
   /* config snippet */
   .cfg {
     position: relative; margin-top: 14px;
-    background: #0a0a13; border: 1px solid rgba(255,255,255,.08); border-radius: 14px;
+    background: #110e0c; border: 1px solid rgba(255,255,255,.08); border-radius: 14px;
     padding: 18px 20px; overflow-x: auto; box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
   }
   .cfg pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.75; color: #a8e6d4; white-space: pre; }
@@ -36,7 +36,7 @@
   .copy {
     position: absolute; top: 12px; right: 12px;
     padding: 6px 14px; border-radius: 9px; border: 1px solid rgba(255,255,255,.1);
-    background: rgba(255,255,255,.06); color: #b9b9cf; font: 600 11.5px var(--font); cursor: pointer;
+    background: rgba(255,255,255,.06); color: #c9c4bf; font: 600 11.5px var(--font); cursor: pointer;
     transition: background .15s, color .15s;
   }
   .copy:hover { background: rgba(255,255,255,.12); color: #fff; }
@@ -48,13 +48,13 @@
     padding: 7px 18px; border: 0; border-radius: 9px; background: transparent; color: var(--mut);
     font: 600 12px var(--font); cursor: pointer; transition: all .15s;
   }
-  .ptoggle button.on { background: hsl(var(--h) 100% 74% / .2); color: #ececff; }
-  .mac-note { font-size: 13px !important; color: #9a9ab8 !important; }
+  .ptoggle button.on { background: hsl(var(--h) 100% 74% / .2); color: #faf5f1; }
+  .mac-note { font-size: 13px !important; color: #b0a9a2 !important; }
 
   /* shortcuts grid */
   .keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 26px; }
   .keys .row { display: flex; align-items: center; justify-content: space-between; gap: 14px;
-    padding: 9px 2px; font-size: 13px; color: #b6b6cc; border-bottom: 1px solid rgba(255,255,255,.04); }
+    padding: 9px 2px; font-size: 13px; color: #c6c1bc; border-bottom: 1px solid rgba(255,255,255,.04); }
   .keys .row span:last-child { flex: none; }
 
   /* tool chips */
@@ -66,7 +66,7 @@
   }
 
   .steps { counter-reset: s; }
-  .steps .st { display: flex; gap: 14px; padding: 9px 0; font-size: 14px; color: #b6b6cc; line-height: 1.6; }
+  .steps .st { display: flex; gap: 14px; padding: 9px 0; font-size: 14px; color: #c6c1bc; line-height: 1.6; }
   .steps .st::before {
     counter-increment: s; content: counter(s);
     width: 26px; height: 26px; flex: none; border-radius: 9px;
@@ -75,7 +75,7 @@
     box-shadow: 0 6px 14px -4px hsl(var(--h) 90% 60% / .55), inset 0 1px 0 rgba(255,255,255,.25);
   }
 
-  .foot { margin-top: 48px; text-align: center; color: #50506a; font-size: 12.5px; line-height: 1.8; }
+  .foot { margin-top: 48px; text-align: center; color: #635d57; font-size: 12.5px; line-height: 1.8; }
 </style>
 </head>
 <body>
@@ -93,6 +93,7 @@
       Bookmarks and history persist between launches.</p>
       <p><b>Copy as Markdown:</b> <kbd>Ctrl+Shift+M</kbd> (or <b>⋮ → Copy page as Markdown</b>, or right-click selected text) puts the page — or just your selection — on the clipboard as clean Markdown: headings, links, lists, tables and code, without menus, banners or scripts. Paste it straight into an AI chat or your notes.</p>
       <p><b>Ask before risky actions:</b> when an AI agent is about to click something that looks like paying, deleting, sending or agreeing (or submit a card form), BrAIn holds the action and asks you: <b>Deny</b>, <b>Allow once</b>, or <b>Allow this site for 10 minutes</b>. No answer in 90 seconds counts as no. Search, login and add-to-cart are never interrupted. Turn it on or off in <b>⋮ → Agent asks before risky actions</b>. Flows you approved run without asking at each step. It cannot see inside scripts the agent runs with <i>evaluate</i>, so keep the agent paused (<kbd>Ctrl+Shift+.</kbd>) if you need a hard stop.</p>
+      <p><b>Full control (use with care):</b> <b>⋮ → AI agent → Full control mode…</b> lets an AI agent connected over MCP act as you <b>without asking first</b>: Ask before risky actions stops asking, site scripts it writes run right away (and it can change or delete yours), flows it saves are active without review, and it can turn Ghost mode off. A warning explains the risks — it uses your signed-in accounts, a website can hide instructions that mislead an agent, and what it does may not be reversible — and you choose when it ends: after 15 minutes, after an hour, or when BrAIn closes. It is never remembered across launches and no agent can switch it on. While it is on, a red <b>Full control</b> pill in the toolbar counts down; click it to turn it off at once. Saved passwords stay out of the agent's reach, and pausing or cancelling the agent still works.</p>
       <p><b>Your turn:</b> when an AI agent reaches a step only you can do — logging in, a CAPTCHA, a 2FA code — it asks for you. BrAIn brings the tab forward and shows a card; do the step in the page yourself (the agent never sees what you type), then press <b>Done</b>, or <b>I can&rsquo;t do this</b> to tell it to stop. If you don&rsquo;t answer, the agent is told so after a few minutes.</p>
       <p><b>Record a flow:</b> <b>⋮ → Record a flow…</b>, do the task once by hand, then press <b>Stop</b>. Name it, tick any typed value you want callers to be able to change, and save. It appears in <b>Flows</b> as a pending flow; approve it and every AI agent can run it as a single tool. Passwords and card numbers are never recorded: they become arguments you supply each run. It starts from the page you were on and records clicks, typing, choices, checkboxes and Enter in this tab.</p></div>
 
@@ -113,6 +114,18 @@
       are kept and how much RAM they may use; the AI agent only sees the
       history if you allow it separately.</p></div>
 
+    <h2>Ghost mode</h2>
+    <div class="card"><p>
+      One switch for “leave no trace”: the <b>ghost button</b> in the toolbar,
+      <code>Ctrl+Shift+X</code>, or <b>⋮ → Ghost mode</b>. While it is on,
+      nothing is saved — no history, no password saving or autofill, no Rewind
+      snapshots, no session restore and no AI-call log on disk. Tabs you open
+      meanwhile are private tabs, and their cookies and site data vanish when
+      they close. Turn it off and the browser goes back to remembering as usual.</p>
+      <p>Tabs that were already open keep their normal site data, so open a new
+      tab after switching on for a fully clean session. Ghost mode is never
+      remembered — every launch starts with it off.</p></div>
+
     <h2>Keyboard shortcuts</h2>
     <div class="card keys">
       <div class="row"><span>Command palette / tab search</span><code>Ctrl+K · Ctrl+Shift+A</code></div>
@@ -123,7 +136,7 @@
       <div class="row"><span>Developer tools</span><code>F12</code></div>
       <div class="row"><span>Rewind — page time travel</span><code>Ctrl+Shift+Y</code></div>
       <div class="row"><span>Pause / resume the agent</span><code>Ctrl+Shift+.</code></div>
-      <p style="margin:14px 0 2px;font-size:13px;color:#8f8fae">
+      <p style="margin:14px 0 2px;font-size:13px;color:#a59e98">
         All 60+ bindings — tab cycling, pinning, muting, moving, hard reload,
         paste-and-go, mac-specific combos — live on the searchable cheat sheet:
         <a href="#" id="scopen"><b>Keyboard shortcuts</b></a>
@@ -204,7 +217,7 @@
     </div>
 
     <div class="foot">
-      Internal page · <a href="#" id="back">← Back to new tab</a>
+      Internal page · <a href="#" id="back">← Back to new tab</a> · <a href="#" id="tour">Replay the welcome tour</a>
     </div>
   </div>
 <script>
@@ -213,6 +226,9 @@
   }
   document.getElementById('back').addEventListener('click', function (e) {
     e.preventDefault(); send('navigate:about:newtab');
+  });
+  document.getElementById('tour').addEventListener('click', function (e) {
+    e.preventDefault(); send('welcome');
   });
   document.getElementById('scopen').addEventListener('click', function (e) {
     e.preventDefault(); send('navigate:about:shortcuts');

@@ -63,6 +63,10 @@ public sealed class ActivityLog
     /// <summary>Raised after an entry is added or the log is cleared (any thread).</summary>
     public event Action? Changed;
 
+    /// <summary>Ghost mode: new entries stay in memory for the live Flows view but never reach calls.jsonl.</summary>
+    public volatile bool Ghost;
+    private readonly HashSet<ActivityEntry> _ghostItems = new(ReferenceEqualityComparer.Instance);
+
     public ActivityLog(string storeDir)
     {
         _path = Path.Combine(storeDir, "calls.jsonl");
@@ -89,14 +93,16 @@ public sealed class ActivityLog
         lock (_lock)
         {
             _items.Add(e);
+            if (Ghost) _ghostItems.Add(e);
             var trimmed = false;
-            while (_items.Count > Cap) { _items.RemoveAt(0); trimmed = true; }
+            while (_items.Count > Cap) { _ghostItems.Remove(_items[0]); _items.RemoveAt(0); trimmed = true; }
             try
             {
-                if (trimmed && ++_sinceRewrite >= RewriteEvery)
+                if (Ghost) { /* memory only */ }
+                else if (trimmed && ++_sinceRewrite >= RewriteEvery)
                 {
                     _sinceRewrite = 0;
-                    File.WriteAllLines(_path, _items.Select(x => JsonSerializer.Serialize(x, Json)));
+                    File.WriteAllLines(_path, _items.Where(x => !_ghostItems.Contains(x)).Select(x => JsonSerializer.Serialize(x, Json)));
                 }
                 else
                 {
@@ -125,6 +131,7 @@ public sealed class ActivityLog
         lock (_lock)
         {
             _items.Clear();
+            _ghostItems.Clear();
             try { File.WriteAllText(_path, ""); } catch { }
         }
         try { Changed?.Invoke(); } catch { }
@@ -306,7 +313,7 @@ internal static class ActivityRecorder
                 });
                 return new CallToolResult { IsError = true, Content = [new TextContentBlock { Text = Seatbelt.BusyText }] };
             }
-            if (browser.Belt.Gates(tool, args))
+            if (!browser.FullControl && browser.Belt.Gates(tool, args))
             {
                 var gtab = ResolveTab(browser, args);
                 BeltFacts? facts = null;
@@ -368,7 +375,7 @@ internal static class ActivityRecorder
                 try { browser.RewindAfterTool(tool, ResolveTab(browser, args)); } catch { }
             }
             }
-            finally { browser.AgentEnd(); }
+            finally { browser.AgentEnd(tool); }
     }
 
     /// <summary>Asks the page what the click/Enter would hit (brain.js risk*). Null on old scripts or failure.</summary>

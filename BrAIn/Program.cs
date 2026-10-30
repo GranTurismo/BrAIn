@@ -60,7 +60,9 @@ public static class Program
 
         var selfTest = args.Contains("--selftest-tabs");
         if (selfTest && args.Contains("--selftest-evict")) Environment.SetEnvironmentVariable("BRAIN_MAXLIVE", "3"); // opt-in cap to exercise eviction
+        BrowserController.Mark("main");
         var controller = new BrowserController(args);
+        BrowserController.Mark("controller ready");
         var selfTestFails = 0;
         if (selfTest)
             _ = Task.Run(async () =>

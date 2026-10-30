@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Planned features — BrAIn</title>
+<script>
+  // Served via LoadRawString — flags itself so the host maps the tab to
+  // about:roadmap instead of the literal about:blank that location.href reports.
+  window.__brainRoadmap = 1;
+</script>
+<style>
+/*@THEME*/
+  body { padding: 76px 24px 96px; }
+  .wrap { max-width: 1040px; }
+
+  /* ---- hero ---- */
+  .hero {
+    position: relative; overflow: hidden; border-radius: 28px; padding: 50px 52px 46px;
+    border: 1px solid rgba(242,193,78,.22);
+    background:
+      radial-gradient(620px 340px at 88% -20%, rgba(242,193,78,.24), transparent 70%),
+      radial-gradient(560px 360px at 0% 120%, hsl(var(--h) 85% 58% / .32), transparent 70%),
+      linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+    box-shadow: 0 30px 80px -20px rgba(242,193,78,.18), inset 0 1px 0 rgba(255,255,255,.1);
+  }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px; padding: 5px 13px 5px 10px; border-radius: 99px;
+    font-size: 11px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase;
+    color: #ffe3a1; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12);
+  }
+  .eyebrow i { width: 7px; height: 7px; border-radius: 50%; background: #f2c14e; box-shadow: 0 0 10px #f2c14e; }
+  h1 {
+    margin: 20px 0 14px; font-size: 56px; line-height: 1.04; font-weight: 800; letter-spacing: -1.4px;
+    background: linear-gradient(115deg, #ffffff 5%, #ffd98a 50%, #ffc8a3 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede { max-width: 620px; font-size: 16.5px; line-height: 1.65; color: #c8c2bc; }
+  .lede b { color: #fff; font-weight: 600; }
+  .lede a { color: hsl(var(--h) 100% 82%); }
+
+  /* ---- section heads ---- */
+  .sec { margin: 54px 0 20px; }
+
+  /* ---- flagship ---- */
+  .flag {
+    display: grid; grid-template-columns: 1.15fr 1fr; gap: 0; overflow: hidden; border-radius: 24px; position: relative;
+    border: 1px solid hsl(var(--h) 100% 78% / .2);
+    background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.025));
+    box-shadow: 0 20px 60px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.07);
+  }
+  .flag .txt { padding: 38px 38px 36px; }
+  .flag h3 { font-size: 28px; line-height: 1.15; font-weight: 750; letter-spacing: -.4px; color: #fff; margin: 14px 0 12px; }
+  .flag p { color: #bab3ac; line-height: 1.7; font-size: 14.5px; }
+  .flag p + p { margin-top: 10px; }
+  .flag p b { color: #f4f0eb; font-weight: 600; }
+  .demo {
+    padding: 28px; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(420px 300px at 50% 40%, hsl(var(--h) 80% 50% / .22), transparent 75%), rgba(0,0,0,.28);
+    border-left: 1px solid var(--line);
+  }
+  .term {
+    width: 100%; border-radius: 14px; background: #110f0d; border: 1px solid rgba(255,255,255,.09);
+    font: 12.5px/1.75 var(--mono); color: #b0a9a3; overflow: hidden; box-shadow: 0 16px 40px rgba(0,0,0,.5);
+  }
+  .term .bar { display: flex; gap: 6px; padding: 10px 13px; background: rgba(255,255,255,.04); border-bottom: 1px solid var(--line); }
+  .term .bar i { width: 9px; height: 9px; border-radius: 50%; background: rgba(255,255,255,.14); }
+  .term pre { padding: 14px 16px; white-space: pre-wrap; font: inherit; }
+  .term .k { color: hsl(var(--h) 100% 80%); } .term .g { color: #6fe0c6; } .term .d { color: #706a64; }
+
+  /* ---- grid ---- */
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  .fc {
+    position: relative; padding: 24px 22px 22px; border-radius: 20px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.025));
+    border: 1px solid var(--line); box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+    transition: transform .18s cubic-bezier(.16,1,.3,1), border-color .18s, box-shadow .18s;
+  }
+  .fc::before {
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 2px; opacity: .85;
+    background: linear-gradient(90deg, hsl(var(--c) 85% 66%), transparent 85%);
+  }
+  .fc:hover { transform: translateY(-3px); border-color: hsl(var(--c) 85% 70% / .45);
+    box-shadow: 0 18px 44px -14px hsl(var(--c) 85% 55% / .45), inset 0 1px 0 rgba(255,255,255,.07); }
+  .ico {
+    width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center; margin-bottom: 16px;
+    color: #fff; background: linear-gradient(140deg, hsl(var(--c) 80% 62%), hsl(calc(var(--c) + 40) 70% 46%));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.28), 0 8px 20px -8px hsl(var(--c) 90% 55% / .7);
+  }
+  .ico svg { width: 21px; height: 21px; }
+  .fc h4 { font-size: 16.5px; font-weight: 700; color: #fbf8f6; letter-spacing: -.1px; margin-bottom: 7px; }
+  .fc p { font-size: 13px; line-height: 1.6; color: #a59e98; }
+  .tag {
+    position: absolute; top: 18px; right: 18px; font-size: 9.5px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 6px; color: #c4beb8; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.08);
+  }
+  .tag.wip { color: #f2c14e; background: rgba(242,193,78,.12); border-color: rgba(242,193,78,.25); }
+  .tag.dev { color: #ffc8a3; background: rgba(255,170,120,.12); border-color: rgba(255,170,120,.28); }
+
+  .foot { margin-top: 56px; text-align: center; color: #635d57; font-size: 12.5px; line-height: 1.8; }
+  .foot a { color: var(--mut); }
+
+  @media (max-width: 860px) {
+    .flag { grid-template-columns: 1fr; } .demo { border-left: 0; border-top: 1px solid var(--line); }
+    h1 { font-size: 44px; } .hero { padding: 40px 28px; }
+  }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <div class="wrap">
+
+    <section class="hero">
+      <span class="eyebrow"><i></i>Planned features</span>
+      <h1>What's coming<br>to BrAIn.</h1>
+      <p class="lede">Features we're building or planning. <b>None of them are available yet</b> &mdash; what you can use today lives on the <a href="#" id="pers">Personality page</a>.</p>
+    </section>
+
+    <div class="sec"><h2>In development</h2></div>
+    <section class="flag">
+      <div class="txt">
+        <span class="tag dev" style="position:static">In development</span>
+        <h3>Every website becomes an API.</h3>
+        <p>BrAIn watches the requests a site makes behind the scenes and compiles them into <b>typed tools</b> your agent can call directly — no clicking, no screenshots, no guessing where the button moved.</p>
+        <p>Your agent uses your own logged-in session, so it works on sites that have <b>no public API at all</b>. Faster, cheaper, and far more reliable than driving the UI.</p>
+      </div>
+      <div class="demo">
+        <div class="term">
+          <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="d">// learned from your session on github.com</span>
+<span class="k">github</span>.list_notifications()
+<span class="k">github</span>.get_pull_request(<span class="g">repo</span>, <span class="g">n</span>)
+<span class="k">github</span>.comment(<span class="g">issue</span>, <span class="g">body</span>)
+
+<span class="d">// 1 call · 140 ms · 0 clicks</span></pre>
+        </div>
+      </div>
+    </section>
+
+    <div class="sec"><h2>Planned</h2></div>
+    <section class="grid">
+
+      <article class="fc" style="--c:200">
+        <span class="tag wip">Planned</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3"/></svg></div>
+        <h4>Session hub</h4>
+        <p>Give any AI access to the accounts you're signed into — banks, portals, government sites — with no API keys and no OAuth apps.</p>
+      </article>
+
+      <article class="fc" style="--c:160">
+        <span class="tag wip">Planned</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
+        <h4>Swarm mode</h4>
+        <p>"Compare 40 laptops" opens 40 tabs in parallel, extracts each, cross-checks the results and hands you one table. Light enough to actually run.</p>
+      </article>
+
+      <article class="fc" style="--c:25">
+        <span class="tag wip">Planned</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <h4>Dark-pattern bodyguard</h4>
+        <p>Rejects cookie banners, finds the hidden "cancel subscription" flow, unsubscribes you, and flags fake timers and fake reviews.</p>
+      </article>
+
+      <article class="fc" style="--c:320">
+        <span class="tag wip">Planned</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".6" fill="currentColor"/></svg></div>
+        <h4>Goals, not tabs</h4>
+        <p>Organize around what you're doing — "plan Berlin trip", "tax filing". Each goal keeps its pages, notes and agent progress, ready to resume.</p>
+      </article>
+
+    </section>
+
+    <div class="foot">
+      Nothing on this page is available yet &middot; <a href="#" id="pers2">See what you can use today &rarr;</a><br>
+      Internal page &middot; <a href="#" id="back">&larr; Back to new tab</a>
+    </div>
+  </div>
+<script>
+  function send(cmd) {
+    try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
+  }
+  function go(id, to) {
+    document.getElementById(id).addEventListener('click', function (e) { e.preventDefault(); send('navigate:' + to); });
+  }
+  go('back', 'about:newtab');
+  go('pers', 'about:personality');
+  go('pers2', 'about:personality');
+</script>
+</body>
+</html>

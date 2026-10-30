@@ -197,6 +197,41 @@ public sealed class ProfileTools(BrowserController browser)
         }
     }
 
+    // ============================================================== GHOST
+
+    [McpServerTool(Name = "browser_ghost"), Description(
+        "Ghost mode = browse without leaving a trace. While it is on nothing is saved: no history, no password saving or autofill, " +
+        "no Rewind snapshots, no session restore, and your tool calls stay out of the on-disk activity log; new tabs open as private " +
+        "tabs whose site data is wiped on close. Tabs that were already open keep their normal site data, so open a new tab after " +
+        "turning it on. action: status | on | off | toggle. You can turn it on whenever a task is sensitive; you can turn it off only if you " +
+        "turned it on yourself — if the user switched it on, leave it on (use browser_ask_human if you truly need it off). " +
+        "It always starts off when BrAIn launches.")]
+    public Task<string> Ghost(
+        [Description("status | on | off | toggle")] string action = "status")
+    {
+        var act = (action ?? "status").Trim().ToLowerInvariant();
+        if (act == "toggle") act = browser.GhostMode ? "off" : "on";
+        switch (act)
+        {
+            case "status":
+                return Task.FromResult(!browser.GhostMode ? "Ghost mode is off"
+                    : browser.GhostByAgent ? "Ghost mode is on (you turned it on; you may turn it off)"
+                    : "Ghost mode is on (the user turned it on; leave it on)");
+            case "on":
+                if (browser.GhostMode) return Task.FromResult("Ghost mode is already on");
+                browser.SetGhost(true, byAgent: true);
+                return Task.FromResult("Ghost mode is on: nothing is saved and new tabs are private. Tabs already open keep their normal site data — open a new tab (browser_new_tab) for a clean one.");
+            case "off":
+                if (!browser.GhostMode) return Task.FromResult("Ghost mode is already off");
+                if (!browser.GhostByAgent && !browser.FullControl)
+                    return Task.FromResult("Not changed: the user turned Ghost mode on, so only they can turn it off. Ask them with browser_ask_human if you need it off.");
+                browser.SetGhost(false);
+                return Task.FromResult("Ghost mode is off: browsing is remembered again.");
+            default:
+                return Task.FromResult($"unknown action '{action}' (status | on | off | toggle)");
+        }
+    }
+
     // ========================================================== CLIPBOARD
 
     private const int ClipboardReadCap = 20_000;

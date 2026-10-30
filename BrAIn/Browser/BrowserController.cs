@@ -125,6 +125,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     public string StoreDir => _storeDir;
     /// <summary>History of MCP tool calls (calls.jsonl).</summary>
     public BrAIn.Mcp.ActivityLog Activity { get; private set; } = null!;
+    private FaviconCache _favicons = null!;
     /// <summary>User-approved reusable automations, exposed to agents as flow_* tools.</summary>
     public BrAIn.Mcp.FlowService Flows { get; private set; } = null!;
     public BrAIn.Mcp.Seatbelt Belt { get; private set; } = null!;
@@ -253,6 +254,34 @@ public sealed partial class BrowserController : IAsyncDisposable
         PushChromeStateAll();
     }
 
+    // Windows: a page went fullscreen (a video player's button). Its view already fills the window,
+    // so the window goes fullscreen with it, and back afterwards unless it was fullscreen before.
+    private Guid _pageFsTab;
+    private bool _pageFsOwnsWindow;
+
+    private void PageFullScreen(Guid tabId, bool on)
+    {
+        var win = _mainWindow;
+        if (win is null) return;
+        try
+        {
+            if (on)
+            {
+                if (Tabs.ActiveExact?.Id != tabId) return;
+                _pageFsTab = tabId;
+                _pageFsOwnsWindow = !win.FullScreen;
+                if (_pageFsOwnsWindow) win.FullScreen = true;
+            }
+            else if (_pageFsTab == tabId)
+            {
+                _pageFsTab = Guid.Empty;
+                if (_pageFsOwnsWindow && win.FullScreen) win.FullScreen = false;
+                _pageFsOwnsWindow = false;
+            }
+        }
+        catch (Exception ex) { Log("page fullscreen failed: " + ex.Message); }
+    }
+
     /// <summary>Per-tab mute: macOS drivers mute their WKWebView; on Windows the tab's WebView2 view does.</summary>
     private void ApplyTabMute(BrowserTab t)
     {
@@ -262,6 +291,8 @@ public sealed partial class BrowserController : IAsyncDisposable
 
     private void ToggleTabMute(BrowserTab tab)
     {
+        // the tab pill's speaker is the "Mute sound" quick control at tab scope
+        lock (_qcLock) tab.Qc["mute"] = !tab.IsMuted;
         tab.IsMuted = !tab.IsMuted;
         if (PerTab) ApplyTabMute(tab);
         else SyncPageMute();
@@ -327,6 +358,8 @@ public sealed partial class BrowserController : IAsyncDisposable
         Directory.CreateDirectory(_userDataDir);
         _pw = new PasswordStore(_storeDir);
         Activity = new BrAIn.Mcp.ActivityLog(_storeDir);
+        _favicons = new FaviconCache(_storeDir);
+        _favicons.Changed += () => { try { PushChromeStateAll(); } catch { } };
         Flows = new BrAIn.Mcp.FlowService(this, Activity);
         Activity.Changed += ScheduleFlowsPush;
         Flows.Changed += ScheduleFlowsPush;
@@ -388,6 +421,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                 var root = JsonDocument.Parse(File.ReadAllText(pPath)).RootElement;
                 if (root.TryGetProperty("tbh", out var tbh)) _tbHide = ReadIds(tbh, TbBuiltinIds);
                 if (root.TryGetProperty("tbx", out var tbx)) _tbExtra = ReadIds(tbx, TbExtraIds);
+                _welcomed = root.TryGetProperty("welcomed", out var wel) && wel.ValueKind == JsonValueKind.True;
                 if (root.TryGetProperty("se", out var se))
                     _engine = SearchEngines.FirstOrDefault(x => x.Id == se.GetString()) ?? _engine;
                 // Rewind is opt-in: absent / malformed = off.
@@ -402,6 +436,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                     foreach (var kv in keys.EnumerateObject())
                         if (kv.Value.ValueKind == JsonValueKind.String)
                             _keyBinds[kv.Name] = kv.Value.GetString() ?? "";
+                QcLoad(root);
                 ApplyRwConfig();
             }
             var kPath = Path.Combine(_storeDir, "pwskip.json");
@@ -430,6 +465,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         {
             await Task.Delay(800);
             Interlocked.Exchange(ref _sessionDirty, 0);
+            if (_ghost) return; // Ghost mode: leave session.json exactly as it was
             var urls = Tabs.All
                 .Where(t => !t.IsClosed && !t.IsPrivate &&
                     t.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
@@ -557,6 +593,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             }
             // Logical tabs share this single window/webview; only the main
             // driver needs wiring.
+            Mark("window created");
             _windowCreated.TrySetResult();
             // Pushes are skipped while _driverReady is pending — flush the
             // current state the moment init settles (success or failure) so
@@ -631,7 +668,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         {
             // Photino needs some content to open the window; the real pages live in
             // the per-tab views created once the window exists.
-            window.LoadRawString("<!doctype html><html><head><meta charset=\"utf-8\"></head><body style=\"background:#0b0b13\"></body></html>");
+            window.LoadRawString("<!doctype html><html><head><meta charset=\"utf-8\"></head><body style=\"background:#110f0d\"></body></html>");
             return window;
         }
         if (_initialUrl is not null && NormalizeUrl(_initialUrl) != "about:newtab")
@@ -736,6 +773,11 @@ public sealed partial class BrowserController : IAsyncDisposable
             first.MacWindowNumber = number;
             Mac.WkPopup.OnNewTab = url => _ = Task.Run(() => NewTabAsync(url, default));
             Mac.WkPopup.Log = Log;
+            Mac.WkPopup.Blocks = (view, openerUrl, url) => QcBlocksPopup(
+                view == IntPtr.Zero ? null : Tabs.All.FirstOrDefault(t => t.NativeView == view) ?? (PerTab ? null : DocTab),
+                openerUrl, url);
+            // tab switches crossfade: the old page is hidden once the fade has run
+            Mac.WkTabs.Later = (ms, act) => _ = Task.Delay(ms).ContinueWith(_ => { try { InvokeOnUi(act); } catch { } }, TaskScheduler.Default);
             InvokeOnUi(() =>
             {
                 Mac.WkTabs.SetBootstrap(boot);
@@ -746,18 +788,21 @@ public sealed partial class BrowserController : IAsyncDisposable
                 catch (Exception ex) { Log("split bar failed: " + ex.Message); }
                 Mac.WkTabs.HideBootstrap();
             });
+            Mark("window dressed + bar view");
 
             await EnsureTabViewAsync(first);
+            Mark("first tab view created");
             ShowTabView(first); // views are created hidden; the first tab's must be shown explicitly
             _driverTab = first;
             first.Bound.TrySetResult();
             _driverReady.TrySetResult();
+            Mark("driver ready");
             Log("driver ready: per-tab views");
 
             // Load the first tab's page (start page or the URL from the command line).
             _ = Task.Run(async () =>
             {
-                try { await NavigateAsync(first.LastUrl, first); }
+                try { Mark("first navigate start"); await NavigateAsync(first.LastUrl, first); Mark("first navigate returned"); }
                 catch (Exception ex) { Log("first load failed: " + ex.Message); }
             });
 
@@ -771,6 +816,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                     {
                         for (var i = 0; i < 40 && (IsLoading || first.LastUrl is null); i++) await Task.Delay(100);
                         await Task.Delay(450);
+                        Mark("fullscreen requested");
                         InvokeOnUi(() => SetWindowState(first, "fullscreen"));
                     }
                     catch (Exception ex) { Log("auto fullscreen failed: " + ex.Message); }
@@ -841,6 +887,8 @@ public sealed partial class BrowserController : IAsyncDisposable
                 OnMessage = OnPageViewMessage,
                 OnAudible = (id, on) => { if (Tabs.Find(id) is { } t) SetTabAudible(t, on); },
                 OnNewTab = url => _ = NewTabAsync(url, default),
+                BlockPopup = (id, opener, url) => Tabs.Find(id) is { } t && QcBlocksPopup(t, opener, url),
+                OnFullScreen = PageFullScreen,
             };
             _winTabs = ws;
 
@@ -1091,9 +1139,12 @@ public sealed partial class BrowserController : IAsyncDisposable
         var view = InvokeOnUi(() =>
         {
             var nsWin = Mac.MacWindow.WindowByNumber(_nsWindowNumber);
-            return nsWin == IntPtr.Zero
+            var v = nsWin == IntPtr.Zero
                 ? IntPtr.Zero
                 : Mac.WkTabs.Create(nsWin, tab.Id, PageLibSource, tab.IsPrivate, _zoom);
+            // quick controls reach the view's very first document too
+            if (v != IntPtr.Zero && !_noToolbar) Mac.WkTabs.SetQcScript(v, QcBootScript(tab));
+            return v;
         });
         if (view == IntPtr.Zero) throw new InvalidOperationException("Could not create a web view for the tab");
         tab.MacWindowNumber = _nsWindowNumber;
@@ -1217,6 +1268,8 @@ public sealed partial class BrowserController : IAsyncDisposable
         };
         driver.LoadCompleted += async (_, _) =>
         {
+            Mark("first page loaded");
+            if (!SplitOn) MaybeShowWelcome(); // split mode waits for the toolbar view's barready instead
             if (PerTab)
             {
                 tab.Loading = false;
@@ -1225,6 +1278,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                 try
                 {
                     await RefreshTabInfoAsync(tab);
+                    if (!_noToolbar) QcApplyMute(tab, tab.LastUrl); // backup for a page that never said qcdoc
                     await EnsurePageHelpersAsync(tab);
                     _ = BlankWatchdogAsync(tab);
                 }
@@ -1310,7 +1364,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         // so an agent can drive a background tab without stealing the screen.
         if (!PerTab && Tabs.Active?.Id != tab.Id) Tabs.Activate(tab.Id);
         url = NormalizeUrl(url);
-        if (url is "about:newtab" or "about:help" or "about:shortcuts" or "about:history" or "about:import" or "about:passwords" or "about:flows" or "about:personality" or "about:ollama")
+        if (url is "about:newtab" or "about:help" or "about:shortcuts" or "about:history" or "about:import" or "about:passwords" or "about:flows" or "about:personality" or "about:roadmap" or "about:ollama")
             return await LoadInternalPageAsync(tab, url);
         if (PerTab) return await NavigatePerTabAsync(tab, url, ct);
         // materialize:false — a virtual new tab navigating away must not
@@ -1370,6 +1424,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
             "about:flows" => (BuildFlowsHtml(), "Flows & activity"),
             "about:personality" => (BuildPersonalityHtml(), "Personality"),
+            "about:roadmap" => (Assets.RoadmapHtml, "Planned features"),
             "about:ollama" => (BuildOllamaHtml(), "Ollama"),
             _ => (Assets.NewTabHtml, "New Tab"),
         };
@@ -1398,6 +1453,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
             "about:flows" => (BuildFlowsHtml(), "Flows & activity"),
             "about:personality" => (BuildPersonalityHtml(), "Personality"),
+            "about:roadmap" => (Assets.RoadmapHtml, "Planned features"),
             "about:ollama" => (BuildOllamaHtml(), "Ollama"),
             _ => (Assets.NewTabHtml, "New Tab"),
         };
@@ -1521,7 +1577,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     {
         await _windowCreated.Task.WaitAsync(ct);
         var main = _mainWindow ?? throw new InvalidOperationException("Browser window not initialized");
-        var tab = new BrowserTab { Id = Guid.NewGuid(), IsMain = false, Window = main, IsPrivate = priv };
+        var tab = new BrowserTab { Id = Guid.NewGuid(), IsMain = false, Window = main, IsPrivate = priv || _ghost };
         if (PerTab) return await NewTabPerTabAsync(tab, url, ct);
         var overlay = url is null && await CanOverlayAsync();
         Tabs.Add(tab);
@@ -1957,7 +2013,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         if (!json.StartsWith(p, StringComparison.Ordinal)) return false;
         var i = p.Length; var n = 0;
         while (i < json.Length && char.IsDigit(json[i]) && n < 1000) n = n * 10 + (json[i++] - '0');
-        return n is >= 10 and <= 15 or >= 22 and <= 26 or >= 70 and <= 79;
+        return n is >= 10 and <= 15 or >= 22 and <= 26 or >= 70 and <= 79 or 97;
     }
 
     /// <summary>Starts the split-toolbar bar view (main thread).</summary>
@@ -2062,6 +2118,8 @@ public sealed partial class BrowserController : IAsyncDisposable
             var (verb, arg) = colon < 0 ? (cmd, "") : (cmd[..colon], cmd[(colon + 1)..]);
             // A web page can call window.external.sendMessage too: sensitive commands need a trusted sender.
             if (!MessageTrust.Allowed(verb, fromBar, SplitOn, (PerTab ? tab : (Tabs.Active ?? tab)).LastUrl)) return;
+            var docTab = PerTab ? tab : (DocTab ?? tab);
+            var qcHad = verb == "qcdoc" && QcDocReset(docTab); // before the hop off this thread
             Task.Run(async () =>
             {
                 try
@@ -2093,6 +2151,9 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "home": await NavigateAsync("newtab", active); break;
                         case "newtab": await NewTabAsync(string.IsNullOrEmpty(arg) ? null : arg, default); break;
                         case "newprivtab": await NewTabAsync(string.IsNullOrEmpty(arg) ? null : arg, default, priv: true); break;
+                        case "ghost": SetGhost(arg == "" ? !_ghost : arg == "1"); break;
+                        case "welcome": ShowWelcome(); break;
+                        case "welcomed": MarkWelcomed(); break;
                         case "pin":
                             if (Tabs.FindByPrefix(arg) is { } pt)
                             {
@@ -2106,6 +2167,11 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "mute":
                             if (Tabs.FindByPrefix(arg) is { } mu) ToggleTabMute(mu);
                             break;
+                        case "fullctl": FullControlCommand(arg, fromBar); break;
+                        case "qcset": QcSet(active, arg); break;
+                        case "qcreset": QcReset(active, arg); break;
+                        case "qcpop": await QcOpenPopupAsync(active); break;
+                        case "qcdoc": QcDocStart(docTab, qcHad); break;
                         case "audible": SetPageAudible(arg == "1"); break;
                         case "restoresession":
                             {
@@ -2308,7 +2374,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                             Recorder.Discard();
                             break;
                         case "recget": PushRec(); break;
-                        case "barready": PushChromeStateAll(); break;
+                        case "barready": Mark("toolbar painted"); PushChromeStateAll(); MaybeShowWelcome(); break;
                         case "barh":
                             if (SplitOn)
                                 try { InvokeOnUi(() => Mac.WkBar.Layout(SplitWindow(), arg)); } catch { }
@@ -2428,7 +2494,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         var tabs = Tabs.All.Where(t => !t.IsClosed).Select(t => new
         {
             id = t.Id.ToString("N")[..8],
-            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:shortcuts" ? "Shortcuts" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl == "about:flows" ? "Flows & activity" : t.LastUrl == "about:personality" ? "Personality" : t.LastUrl == "about:ollama" ? "Ollama" : t.LastUrl),
+            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:shortcuts" ? "Shortcuts" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl == "about:flows" ? "Flows & activity" : t.LastUrl == "about:personality" ? "Personality" : t.LastUrl == "about:roadmap" ? "Planned features" : t.LastUrl == "about:ollama" ? "Ollama" : t.LastUrl),
             url = t.LastUrl,
             icon = t.LastIcon,
             active = t.Id == activeId,
@@ -2443,7 +2509,20 @@ public sealed partial class BrowserController : IAsyncDisposable
         }).ToList();
         object[] hist;
         lock (_history)
-            hist = _history.Take(40).Select(h => (object)new { u = h.Url, t = h.Title, i = h.Icon, d = h.Time, v = h.Visits }).ToArray();
+        {
+            // The start page shows the first four distinct sites as tiles. Their icons go out as local
+            // data: URIs (never remote URLs): a remote icon is a network fetch WebKit counts as the
+            // page still loading, so the launch page sat behind a loading bar for about a second.
+            var tileHosts = new HashSet<string>();
+            hist = _history.Take(40).Select(h =>
+            {
+                var icon = h.Icon;
+                if (tileHosts.Count < 4 && Uri.TryCreate(h.Url, UriKind.Absolute, out var u) && u.Host.Length > 0
+                    && tileHosts.Add(u.Host.StartsWith("www.", StringComparison.Ordinal) ? u.Host[4..] : u.Host))
+                    icon = _favicons.Get(icon);
+                return (object)new { u = h.Url, t = h.Title, i = icon, d = h.Time, v = h.Visits };
+            }).ToArray();
+        }
         object[] bmarks;
         lock (_bookmarks)
             bmarks = _bookmarks.Take(10).Select(bm => (object)new { u = bm.Url, t = bm.Title, i = bm.Icon }).ToArray();
@@ -2478,13 +2557,16 @@ public sealed partial class BrowserController : IAsyncDisposable
             w = _winMax ? 1 : 0,
             dt = _dtOpen ? _dtTab : "",
             privActive = Tabs.Active?.IsPrivate == true,
+            ghost = _ghost,
             us = UsBadge(Tabs.Active?.LastUrl),
+            qc = QcState(Tabs.Active),
             se = _engine.Id,
             rw = _rwOn, rwa = _rwAgent, rwk = _rwKeepMin, rwm = _rwMaxMb, rws = RwSkipList(),
             keys = _keyBinds,
             sel = SearchEngines.Select(e => new { i = e.Id, n = e.Name }).ToArray(),
             sess = _savedSession.Count,
             ag = AgentObj(),
+            fc = FullControlObj(),
             split = SplitOn,
             fresh,
             src,
@@ -2572,8 +2654,8 @@ public sealed partial class BrowserController : IAsyncDisposable
 
     private object AgentObj() => new { p = _agPaused, n = Volatile.Read(ref _agBusy), t = _agTool, s = _agSeen, k = Volatile.Read(ref _agBlocked) };
 
-    public void AgentBegin(string tool) { _agSeen = true; _agTool = tool; Interlocked.Increment(ref _agBusy); PushAgent(); }
-    public void AgentEnd() { if (Interlocked.Decrement(ref _agBusy) < 0) Interlocked.Exchange(ref _agBusy, 0); PushAgent(); }
+    public void AgentBegin(string tool) { _agSeen = true; _agTool = tool; Interlocked.Increment(ref _agBusy); NoteAgentInput(tool, +1); PushAgent(); }
+    public void AgentEnd(string? tool = null) { if (Interlocked.Decrement(ref _agBusy) < 0) Interlocked.Exchange(ref _agBusy, 0); NoteAgentInput(tool, -1); PushAgent(); }
     public void AgentBlocked(string tool) { _agSeen = true; _agTool = tool; Interlocked.Increment(ref _agBlocked); PushAgent(); }
 
     public void SetAgentPaused(bool paused)
@@ -2773,7 +2855,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     }
 
     // Toolbar customization (buttons right of the address bar): hidden built-ins + added shortcuts.
-    private static readonly string[] TbBuiltinIds = ["agbtn", "pip", "star", "rwb", "dlbtn"];
+    private static readonly string[] TbBuiltinIds = ["agbtn", "qcbtn", "pip", "star", "ghb", "rwb", "dlbtn"];
     private static readonly string[] TbExtraIds = ["history", "pw", "flows", "shot", "devtools", "print"];
     private string[] _tbHide = [];
     private string[] _tbExtra = [];
@@ -2796,13 +2878,19 @@ public sealed partial class BrowserController : IAsyncDisposable
         PushChromeStateAll();
     }
 
-    private void SavePrefs() => SaveStore("prefs.json", new
+    private void SavePrefs()
     {
-        se = _engine.Id,
-        tbh = _tbHide, tbx = _tbExtra,
-        rw = _rwOn, rwa = _rwAgent, rwk = _rwKeepMin, rwm = _rwMaxMb, rws = RwSkipList(),
-        keys = _keyBinds,
-    });
+        var qc = QcSnapshot();
+        SaveStore("prefs.json", new
+        {
+            se = _engine.Id,
+            tbh = _tbHide, tbx = _tbExtra,
+            rw = _rwOn, rwa = _rwAgent, rwk = _rwKeepMin, rwm = _rwMaxMb, rws = RwSkipList(),
+            keys = _keyBinds,
+            welcomed = _welcomed,
+            qca = qc.All, qcs = qc.Sites,
+        });
+    }
 
     /// <summary>Page-menu Paste — the webviews expose no in-page clipboard
     /// read (navigator.clipboard is absent in this context), so the text is
@@ -2834,6 +2922,83 @@ public sealed partial class BrowserController : IAsyncDisposable
     // allows it ("Let the AI agent read this history").
     // ------------------------------------------------------------------
     private readonly Rewind.RewindStore _rw = new();
+    // ------------------------------------------------------------------
+    // Ghost mode — one switch for "leave no trace". While on: no history, no
+    // password capture or autofill, no Rewind snapshots, no session restore
+    // state and no MCP call log on disk; tabs opened meanwhile are private
+    // tabs (ephemeral site data). Never persisted — every launch starts off.
+    // Tabs already open keep their normal site-data store.
+    // ------------------------------------------------------------------
+    private volatile bool _ghost;
+    public bool GhostMode => _ghost;
+
+    // ------------------------------------------------------------------
+    // Welcome film (welcome.js) — plays once on first launch, replayable from
+    // ⌘K / ⋮ → "Welcome tour". A full-window overlay evaluated into the toolbar
+    // view (macOS split) or the current document; it reports back "welcomed".
+    // Only loaded when shown, so it costs nothing on ordinary pages.
+    // ------------------------------------------------------------------
+    private bool _welcomed, _welcomeShown;
+
+    private void MaybeShowWelcome()
+    {
+        if (_welcomed || _welcomeShown || _noToolbar) return;
+        _welcomeShown = true;
+        ShowWelcome();
+    }
+
+    private void ShowWelcome()
+    {
+        if (_noToolbar) return;
+        // The film's Flows and Site-scripts scenes run the real pages on demo data.
+        var cfg = JsonSerializer.Serialize(new
+        {
+            exe = Environment.ProcessPath ?? "",
+            mac = IsMac,
+            pages = new { flows = Assets.FlowsHtml, personality = Assets.PersonalityHtml },
+            tpls = UserScriptStore.Templates,
+        }, UsJson);
+        var js = "window.__brainWelcomeCfg=" + cfg + ";\n" + Assets.WelcomeJs;
+        if (SplitOn)
+        {
+            try { InvokeOnUi(() => { Mac.WkBar.Eval(js); Mac.WkBar.FocusBar(SplitWindow()); }); }
+            catch (Exception ex) { Log("welcome failed: " + ex.Message); }
+            return;
+        }
+        _ = Task.Run(async () =>
+        {
+            try { await EvalScriptAsync(js, false); }
+            catch (Exception ex) { Log("welcome failed: " + ex.Message); }
+        });
+    }
+
+    /// <summary>The film closed (skipped, finished, or an agent started working) — never auto-play it again.</summary>
+    private void MarkWelcomed()
+    {
+        if (SplitOn) try { InvokeOnUi(() => Mac.WkBar.FocusPage(SplitWindow())); } catch { }
+        if (_welcomed) return;
+        _welcomed = true;
+        SavePrefs();
+    }
+
+    /// <summary>True when nothing about this tab may be recorded.</summary>
+    private bool NoTrace(BrowserTab tab) => _ghost || tab.IsPrivate;
+
+    private volatile bool _ghostByAgent;
+    /// <summary>True when the AI agent (browser_ghost) switched Ghost mode on — only then may it switch it off.</summary>
+    public bool GhostByAgent => _ghostByAgent;
+
+    public void SetGhost(bool on, bool byAgent = false)
+    {
+        if (_ghost == on) return;
+        _ghost = on;
+        _ghostByAgent = on && byAgent; // any change from the user takes the switch back
+        Activity.Ghost = on;
+        _favicons.FetchEnabled = !on;
+        if (!on) SaveSessionSoon(); // catch session.json up with what is open now
+        PushChromeStateAll();
+    }
+
     private bool _rwOn;
     private bool _rwAgent;
     private int _rwKeepMin = 30, _rwMaxMb = 128;
@@ -2911,7 +3076,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     {
         if (!_rwOn || json.Length > 14_000_000) return;
         var tab = RwOwner(sender);
-        if (tab.IsPrivate || tab.IsClosed) return;
+        if (NoTrace(tab) || tab.IsClosed) return;
         try
         {
             using var doc = JsonDocument.Parse(json);
@@ -2993,7 +3158,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// agent did, step by step.</summary>
     internal void RewindAfterTool(string tool, BrowserTab? tab)
     {
-        if (!_rwOn || tab is null || tab.IsPrivate || Mcp.ActivityLog.ReadOnlyTools.Contains(tool)) return;
+        if (!_rwOn || tab is null || NoTrace(tab) || Mcp.ActivityLog.ReadOnlyTools.Contains(tool)) return;
         _ = Task.Run(async () =>
         {
             await Task.Delay(700);
@@ -3184,7 +3349,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// then b:26 hands the credential back for the page to fill.</summary>
     private async Task PwFillAsync(BrowserTab tab, string id)
     {
-        if (_noToolbar || tab.IsClosed || tab.IsPrivate || _pw is null) return;
+        if (_noToolbar || tab.IsClosed || NoTrace(tab) || _pw is null) return;
         var e = await PwEntryForFillAsync(tab, id);
         if (e is null) return;
         if (!await PwAuthAsync($"autofill your {PwHost(e.Origin)} login"))
@@ -3232,7 +3397,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     private async Task PushPwCreds(BrowserTab tab)
     {
         if (_noToolbar || tab.IsClosed || _pw is null) return;
-        var o = tab.IsPrivate ? null : await DocOriginAsync(tab);
+        var o = NoTrace(tab) ? null : await DocOriginAsync(tab);
         var items = o is null
             ? Array.Empty<object>()
             : _pw.ListFor(o).Select(e => (object)new { id = e.Id, u = e.User }).ToArray();
@@ -3244,7 +3409,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// origin is on the Never list, stay silent; otherwise b:24 asks.</summary>
     private void PwCandidate(BrowserTab tab, string arg)
     {
-        if (_noToolbar || tab.IsClosed || tab.IsPrivate || _pw is null) return;
+        if (_noToolbar || tab.IsClosed || NoTrace(tab) || _pw is null) return;
         try
         {
             var j = JsonDocument.Parse(arg).RootElement;
@@ -3286,7 +3451,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// the pending entry captured at submit time, not from the page.</summary>
     private void PwSave(BrowserTab tab, string arg, string? origin)
     {
-        if (tab.IsPrivate || _pw is null || origin is null) return;
+        if (NoTrace(tab) || _pw is null || origin is null) return;
         try
         {
             var j = JsonDocument.Parse(arg).RootElement;
@@ -3664,7 +3829,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                   u: location.href, t: document.title,
                   n: !!window.__brainNewTab, h: !!window.__brainHelp, y: !!window.__brainHist,
                   p: !!window.__brainImport, w: !!window.__brainPw, f: !!window.__brainFlows,
-                  s: !!window.__brainShortcuts, x: !!window.__brainPersonality, o: !!window.__brainOllama,
+                  s: !!window.__brainShortcuts, x: !!window.__brainPersonality, o: !!window.__brainOllama, r: !!window.__brainRoadmap,
                   i: (document.querySelector("link[rel~='icon']") || document.querySelector("link[rel='shortcut icon']") || {}).href ||
                      (/^https?:$/.test(location.protocol) ? location.origin + '/favicon.ico' : '')
                 })
@@ -3687,8 +3852,9 @@ public sealed partial class BrowserController : IAsyncDisposable
                 var isSc = root.TryGetProperty("s", out var ss) && ss.GetBoolean();
                 var isPers = root.TryGetProperty("x", out var xx) && xx.GetBoolean();
                 var isOll = root.TryGetProperty("o", out var oo) && oo.GetBoolean();
-                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isSc ? "about:shortcuts" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : isFlows ? "about:flows" : isPers ? "about:personality" : isOll ? "about:ollama" : root.GetProperty("u").GetString() ?? tab.LastUrl);
-                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isSc ? "Keyboard shortcuts" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : isFlows ? "Flows & activity" : isPers ? "Personality" : isOll ? "Ollama" : root.GetProperty("t").GetString();
+                var isRoad = root.TryGetProperty("r", out var rr) && rr.GetBoolean();
+                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isSc ? "about:shortcuts" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : isFlows ? "about:flows" : isPers ? "about:personality" : isRoad ? "about:roadmap" : isOll ? "about:ollama" : root.GetProperty("u").GetString() ?? tab.LastUrl);
+                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isSc ? "Keyboard shortcuts" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : isFlows ? "Flows & activity" : isPers ? "Personality" : isRoad ? "Planned features" : isOll ? "Ollama" : root.GetProperty("t").GetString();
                 // u and i come from the same document — always reassign so a
                 // cross-site navigation can never keep the old site's icon.
                 var iRaw = root.GetProperty("i").GetString();
@@ -3700,7 +3866,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                     ? iRaw : null;
                 if (PerTab) (tab.CanBack, tab.CanFwd) = await driver.GetNavStateAsync(rcts.Token);
                 else (_canBack, _canFwd) = await driver.GetNavStateAsync(rcts.Token);
-                if (!tab.IsPrivate) RecordHistory(tab.LastUrl, tab.LastTitle, tab.LastIcon);
+                if (!NoTrace(tab)) RecordHistory(tab.LastUrl, tab.LastTitle, tab.LastIcon);
                 SaveSessionSoon();
                 if (Tabs.Active?.Id == tab.Id) SetWindowTitleFor(tab);
                 PushChromeStateAll();
@@ -4598,6 +4764,9 @@ public sealed partial class BrowserController : IAsyncDisposable
             return "about:passwords";
         if (url.Equals("personality", StringComparison.OrdinalIgnoreCase))
             return "about:personality";
+        if (url.Equals("roadmap", StringComparison.OrdinalIgnoreCase) ||
+            url.Equals("planned", StringComparison.OrdinalIgnoreCase))
+            return "about:roadmap";
         if (url.Equals("ollama", StringComparison.OrdinalIgnoreCase))
             return "about:ollama";
         if (!url.Contains("://") && !url.StartsWith("about:") && !url.StartsWith("file:") &&
@@ -4647,6 +4816,16 @@ public sealed partial class BrowserController : IAsyncDisposable
 
     /// <summary>stderr (stdout carries MCP) and, on Windows — where the GUI-subsystem exe has no console —
     /// a log file next to the other app data (%LOCALAPPDATA%\BrAIn\brain.log, reset when it passes 2 MB).</summary>
+    private static readonly DateTime _procStart = System.Diagnostics.Process.GetCurrentProcess().StartTime;
+    private static readonly HashSet<string> _marked = new();
+
+    /// <summary>Logs how long after process start a startup milestone was reached (first time only).</summary>
+    internal static void Mark(string what)
+    {
+        lock (_marked) if (!_marked.Add(what)) return;
+        Log($"startup +{(DateTime.Now - _procStart).TotalMilliseconds:F0}ms {what}");
+    }
+
     internal static void Log(string msg)
     {
         var line = $"[BrAIn] {msg}";
@@ -4699,6 +4878,7 @@ internal static class Assets
 
     private static readonly Lazy<string> _brainJs = new(() => Load("BrAIn.Assets.brain.js"));
     private static readonly Lazy<string> _chromeJs = new(() => Load("BrAIn.Assets.chrome.js"));
+    private static readonly Lazy<string> _welcomeJs = new(() => Load("BrAIn.Assets.welcome.js"));
     private static readonly Lazy<string> _theme = new(() => Load("BrAIn.Assets.theme.css"));
     // Internal pages share one stylesheet, inlined where they say /*@THEME*/.
     private static string Themed(string name) => Load(name).Replace("/*@THEME*/", _theme.Value);
@@ -4709,12 +4889,14 @@ internal static class Assets
     private static readonly Lazy<string> _imp = new(() => Themed("BrAIn.Assets.import.html"));
     private static readonly Lazy<string> _pw = new(() => Themed("BrAIn.Assets.passwords.html"));
     private static readonly Lazy<string> _pers = new(() => Themed("BrAIn.Assets.personality.html"));
+    private static readonly Lazy<string> _roadmap = new(() => Themed("BrAIn.Assets.roadmap.html"));
     private static readonly Lazy<string> _ollama = new(() => Themed("BrAIn.Assets.ollama.html"));
     private static readonly Lazy<string> _flows = new(() => Themed("BrAIn.Assets.flows.html"));
     private static readonly Lazy<string> _combinedLib = new(() => BrainJs + "\n" + ChromeJs);
 
     public static string BrainJs => _brainJs.Value;
     public static string ChromeJs => _chromeJs.Value;
+    public static string WelcomeJs => _welcomeJs.Value;
     public static string CombinedLib => _combinedLib.Value;
 
     public static string NewTabHtml => _newTab.Value;
@@ -4723,6 +4905,7 @@ internal static class Assets
     public static string HistoryHtml => _hist.Value;
     public static string FlowsHtml => _flows.Value;
     public static string PersonalityHtml => _pers.Value;
+    public static string RoadmapHtml => _roadmap.Value;
     public static string OllamaHtml => _ollama.Value;
     public static string ImportHtml => _imp.Value;
     public static string PasswordsHtml => _pw.Value;

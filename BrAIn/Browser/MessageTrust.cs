@@ -22,11 +22,14 @@ internal static class MessageTrust
         "usget", "ussave", "usdel", "ustoggle", "usrun", "ustest", "usexclude", "usclrerr",
     };
 
-    private static readonly HashSet<string> BarOnly = new(StringComparer.Ordinal) { "askok", "beltmode", "agcancel", "handoff", "histq", "olside", "updateapply" };
+    private static readonly HashSet<string> BarOnly = new(StringComparer.Ordinal) { "askok", "beltmode", "agcancel", "handoff", "olside", "updateapply", "qcset", "qcreset", "qcpop", "fullctl" };
+
+    // History search: the toolbar's address bar and BrAIn's own pages (the new-tab search box).
+    private static readonly HashSet<string> BarOrInternal = new(StringComparer.Ordinal) { "histq" };
 
     private static readonly HashSet<string> InternalUrls = new(StringComparer.Ordinal)
     {
-        "about:newtab", "about:help", "about:shortcuts", "about:history", "about:import", "about:passwords", "about:flows", "about:personality", "about:ollama",
+        "about:newtab", "about:help", "about:shortcuts", "about:history", "about:import", "about:passwords", "about:flows", "about:personality", "about:roadmap", "about:ollama",
     };
 
     public static bool IsInternalUrl(string? url)
@@ -44,6 +47,7 @@ internal static class MessageTrust
         if (fromBar) return true;
         if (InternalOnly.Contains(verb)) return IsInternalUrl(senderUrl);
         if (splitOn && BarOnly.Contains(verb)) return false;
+        if (splitOn && BarOrInternal.Contains(verb)) return IsInternalUrl(senderUrl);
         return true;
     }
 }

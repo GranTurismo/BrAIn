@@ -58,6 +58,10 @@ internal sealed class WinTabs
     public Action<Guid, string>? OnMessage;
     public Action<Guid, bool>? OnAudible;
     public Action<string>? OnNewTab;
+    /// <summary>Quick controls: (tab id, opener URL, popup URL) → true drops the new-window request (pop-ups blocked there).</summary>
+    public Func<Guid, string, string, bool>? BlockPopup;
+    /// <summary>A page entered or left its own fullscreen (a video player's button). UI thread.</summary>
+    public Action<Guid, bool>? OnFullScreen;
     public Action<string>? Log;
 
     /// <summary>How long a hidden tab stays warm before its renderer is suspended.</summary>
@@ -261,6 +265,8 @@ internal sealed class WinTabs
             // windows) keep the engine's own window so they retain their window.opener link.
             var f = e.WindowFeatures;
             var uri = e.Uri ?? "";
+            // Handled without a NewWindow: nothing opens and window.open returns null
+            if (BlockPopup?.Invoke(v.TabId, core.Source ?? "", uri) == true) { e.Handled = true; return; }
             if (f.HasSize || f.HasPosition) return;
             if (!uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
                 !uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return;
@@ -272,6 +278,14 @@ internal sealed class WinTabs
             try { v.Audible = core.IsDocumentPlayingAudio; } catch { return; }
             OnAudible?.Invoke(v.TabId, v.Audible);
             if (!v.Audible && !v.Visible) ScheduleSuspend(v);
+        };
+        // The fullscreen element fills this view, which only fills the window: the controller
+        // makes the window itself fullscreen for as long as the page is.
+        core.ContainsFullScreenElementChanged += (_, _) =>
+        {
+            bool on;
+            try { on = core.ContainsFullScreenElement; } catch { return; }
+            OnFullScreen?.Invoke(v.TabId, on);
         };
         core.NavigationCompleted += (_, _) => v.NavDone?.TrySetResult();
         core.ProcessFailed += (_, e) => Log?.Invoke($"WebView2 process failed ({e.ProcessFailedKind}) in tab {v.TabId.ToString("N")[..8]}");
@@ -342,6 +356,15 @@ internal sealed class WinTabs
     });
 
     public bool Has(View view) => !view.Closed;
+
+    /// <summary>The address the view shows right now (already the new page at document start,
+    /// before the host's own record of the tab catches up).</summary>
+    public string? Url(View view)
+    {
+        string? u = null;
+        _ui(() => { try { if (!view.Closed) u = view.Core.Source; } catch { } });
+        return u;
+    }
 
     public void SetZoom(View view, int percent) => _ui(() =>
     {

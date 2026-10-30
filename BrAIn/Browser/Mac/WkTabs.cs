@@ -65,6 +65,8 @@ internal static partial class WkTabs
         public IntPtr View, Handler, Ucc;
         public Guid Tab;
         public bool Private;
+        public string Lib = "", Qc = "";
+        public bool Dark;
     }
 
     private static IntPtr _handlerClass;
@@ -173,6 +175,7 @@ internal static partial class WkTabs
         AddScript(ucc, Shim);
         AddScript(ucc, libSource);
         ObjC.Send(cfg, ObjC.Sel("setUserContentController:"), ucc);
+        EnableElementFullscreen(cfg);
 
         if (priv)
         {
@@ -231,8 +234,51 @@ internal static partial class WkTabs
         ObjC.Send(handler, ObjC.Sel("release"));
         ObjC.Send(ucc, ObjC.Sel("release"));
 
-        _views[wv] = new ViewInfo { View = wv, Handler = handler, Ucc = ucc, Tab = tab, Private = priv };
+        _views[wv] = new ViewInfo { View = wv, Handler = handler, Ucc = ucc, Tab = tab, Private = priv, Lib = libSource };
         return wv;
+    }
+
+    /// <summary>Quick controls: the view's document-start values (window.__brainQc, read and
+    /// removed by chrome.js before any page script runs). Applies from the next document on;
+    /// the page showing now gets a push instead.</summary>
+    internal static void SetQcScript(IntPtr view, string js)
+    {
+        if (!_views.TryGetValue(view, out var info) || info.Qc == js) return;
+        info.Qc = js;
+        ObjC.Send(info.Ucc, ObjC.Sel("removeAllUserScripts"));
+        if (js.Length > 0) AddScript(info.Ucc, js); // first, so chrome.js finds it
+        AddScript(info.Ucc, Shim);
+        AddScript(info.Ucc, info.Lib);
+    }
+
+    /// <summary>Dark pages: the view reports a dark system appearance, so sites with a dark theme
+    /// of their own (prefers-color-scheme) switch to it; chrome.js inverts the ones without.
+    /// Off restores the light appearance every page gets by default.</summary>
+    internal static void SetDarkLook(IntPtr view, bool dark)
+    {
+        if (!_views.TryGetValue(view, out var info) || info.Dark == dark) return;
+        var look = ObjC.Send(ObjC.GetClass("NSAppearance"), ObjC.Sel("appearanceNamed:"),
+            ObjC.NsString(dark ? "NSAppearanceNameDarkAqua" : "NSAppearanceNameAqua"));
+        if (look == IntPtr.Zero) return;
+        ObjC.Send(view, ObjC.Sel("setAppearance:"), look);
+        info.Dark = dark;
+    }
+
+    /// <summary>The Fullscreen API (element.requestFullscreen). WKWebView ships with it off and
+    /// Photino never turns it on, so only a bare &lt;video&gt; could go fullscreen: players whose
+    /// button makes their own container fullscreen (most custom players) did nothing.
+    /// Public since macOS 12.3; older systems have the private switch.</summary>
+    private static void EnableElementFullscreen(IntPtr cfg)
+    {
+        var prefs = ObjC.Send(cfg, ObjC.Sel("preferences"));
+        if (prefs == IntPtr.Zero) return;
+        foreach (var name in new[] { "setElementFullscreenEnabled:", "_setFullScreenEnabled:" })
+        {
+            var sel = ObjC.Sel(name);
+            if (ObjC.SendBool(prefs, ObjC.Sel("respondsToSelector:"), sel) == 0) continue;
+            ObjC.SendNInt(prefs, sel, 1);
+            return;
+        }
     }
 
     /// <summary>Tears a tab's view down completely (stops loads, drops scripts,
@@ -242,13 +288,20 @@ internal static partial class WkTabs
         if (view == IntPtr.Zero || !_views.Remove(view, out var info)) return;
         try
         {
+            // still on screen = the closed tab's page crossfading into its neighbour: it goes
+            // dead now, but leaves the window only once that fade has run
+            var onScreen = (ObjC.SendNInt(view, ObjC.Sel("isHidden")) & 0xFF) == 0 && Later is not null && !ReduceMotion();
             ObjC.Send(view, ObjC.Sel("stopLoading"));
             ObjC.Send(view, ObjC.Sel("setNavigationDelegate:"), IntPtr.Zero);
             ObjC.Send(view, ObjC.Sel("setUIDelegate:"), IntPtr.Zero);
             ObjC.Send(info.Ucc, ObjC.Sel("removeScriptMessageHandlerForName:"), ObjC.NsString("brain"));
             ObjC.Send(info.Ucc, ObjC.Sel("removeAllUserScripts"));
-            ObjC.Send(view, ObjC.Sel("removeFromSuperview"));
-            ObjC.Send(view, ObjC.Sel("release"));
+            void Remove()
+            {
+                try { ObjC.Send(view, ObjC.Sel("removeFromSuperview")); ObjC.Send(view, ObjC.Sel("release")); } catch { }
+            }
+            if (onScreen) Later!((int)(FadeSecs * 1000) + 40, Remove);
+            else Remove();
         }
         catch { }
         lock (_byHandler) _byHandler.Remove(info.Handler);
@@ -262,10 +315,18 @@ internal static partial class WkTabs
 
     // ------------------------------------------------------------------ visibility / layout
 
-    /// <summary>Makes <paramref name="view"/> the visible page view. The new view
-    /// is shown before the old ones are hidden so there is never an empty frame,
-    /// and keyboard focus only moves if it was inside a view that is being hidden
-    /// (a focused address bar keeps its focus).</summary>
+    /// <summary>Runs an action on the main thread after a delay (set by the controller).
+    /// Without it, a tab switch hides the old page at once instead of crossfading.</summary>
+    internal static Action<int, Action>? Later;
+
+    private const double FadeSecs = 0.18;
+    private static int _switchGen;
+
+    /// <summary>Makes <paramref name="view"/> the visible page view, crossfading from the
+    /// page that was showing: whichever of the two sits higher in the view stack fades
+    /// (the new page in, or the old page out), so the other is always fully drawn
+    /// underneath and the dark window never flashes through. Keyboard focus only moves
+    /// if it was inside a view that is being hidden (a focused address bar keeps its focus).</summary>
     internal static void Show(IntPtr nsWindow, IntPtr view)
     {
         if (view == IntPtr.Zero || !_views.ContainsKey(view)) return;
@@ -275,19 +336,95 @@ internal static partial class WkTabs
             fr != IntPtr.Zero && fr != nsWindow &&
             ObjC.SendBool(fr, ObjC.Sel("respondsToSelector:"), ObjC.Sel("isDescendantOf:")) != 0 &&
             ObjC.SendBool(fr, ObjC.Sel("isDescendantOf:"), v) != 0;
-        var wasHidden = (ObjC.SendNInt(view, ObjC.Sel("isHidden")) & 0xFF) != 0;
+        bool Hidden(IntPtr v) => (ObjC.SendNInt(v, ObjC.Sel("isHidden")) & 0xFF) != 0;
+        var wasHidden = Hidden(view);
+        var prev = Active != view && _views.ContainsKey(Active) && !Hidden(Active) ? Active : IntPtr.Zero;
+        ClearFade(view);
         ObjC.SendNInt(view, ObjC.Sel("setHidden:"), 0);
-        if (wasHidden) FadeIn(view);
+        var still = ReduceMotion();
+        var crossfade = wasHidden && prev != IntPtr.Zero && Later is not null && !still;
+        if (crossfade && StackIndex(view) < StackIndex(prev)) FadeOut(prev); // the old page is on top: it fades away
+        else if (wasHidden && !still) FadeIn(view);
         foreach (var v in _views.Keys)
         {
             if (v == view) continue;
             if (InsideView(v)) focusWasInHidden = true;
+            if (crossfade && v == prev) continue; // hidden once the fade is done
             ObjC.SendNInt(v, ObjC.Sel("setHidden:"), 1);
+            ClearFade(v);
         }
         // the window starts with focus in Photino's (now hidden) bootstrap view
         if (_boot != IntPtr.Zero && (fr == _boot || InsideView(_boot))) focusWasInHidden = true;
         Active = view;
         if (focusWasInHidden) ObjC.Send(nsWindow, ObjC.Sel("makeFirstResponder:"), view);
+        if (crossfade)
+        {
+            var gen = ++_switchGen;
+            Later!((int)(FadeSecs * 1000) + 40, () =>
+            {
+                if (gen != _switchGen || !_views.ContainsKey(prev) || prev == Active) return;
+                ObjC.SendNInt(prev, ObjC.Sel("setHidden:"), 1);
+                ClearFade(prev);
+            });
+        }
+    }
+
+    /// <summary>System Settings → Accessibility → Display → Reduce motion.</summary>
+    private static bool ReduceMotion()
+    {
+        try
+        {
+            var ws = ObjC.Send(ObjC.GetClass("NSWorkspace"), ObjC.Sel("sharedWorkspace"));
+            return ws != IntPtr.Zero && (ObjC.SendNInt(ws, ObjC.Sel("accessibilityDisplayShouldReduceMotion")) & 0xFF) != 0;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>Position of a page view among its window's subviews (higher draws on top).</summary>
+    private static nint StackIndex(IntPtr view)
+    {
+        var sup = ObjC.Send(view, ObjC.Sel("superview"));
+        if (sup == IntPtr.Zero) return 0;
+        var subs = ObjC.Send(sup, ObjC.Sel("subviews"));
+        return subs == IntPtr.Zero ? 0 : ObjC.SendNInt(subs, ObjC.Sel("indexOfObject:"), view);
+    }
+
+    private static IntPtr FadeAnim(string keyPath, double from, double to, double dur, string timingName)
+    {
+        var num = ObjC.GetClass("NSNumber");
+        var a = ObjC.Send(ObjC.GetClass("CABasicAnimation"), ObjC.Sel("animationWithKeyPath:"), ObjC.NsString(keyPath));
+        ObjC.Send(a, ObjC.Sel("setFromValue:"), ObjC.SendDoubleArg(num, ObjC.Sel("numberWithDouble:"), from));
+        ObjC.Send(a, ObjC.Sel("setToValue:"), ObjC.SendDoubleArg(num, ObjC.Sel("numberWithDouble:"), to));
+        ObjC.SendDoubleArg(a, ObjC.Sel("setDuration:"), dur);
+        var timing = ObjC.Send(ObjC.GetClass("CAMediaTimingFunction"), ObjC.Sel("functionWithName:"), ObjC.NsString(timingName));
+        if (timing != IntPtr.Zero) ObjC.Send(a, ObjC.Sel("setTimingFunction:"), timing);
+        return a;
+    }
+
+    /// <summary>The outgoing page fades to nothing and stays there (fill forwards) until
+    /// it is hidden; <see cref="ClearFade"/> removes that before the view is shown again.</summary>
+    private static void FadeOut(IntPtr view)
+    {
+        try
+        {
+            var layer = ObjC.Send(view, ObjC.Sel("layer"));
+            if (layer == IntPtr.Zero) return;
+            var a = FadeAnim("opacity", 1, 0, FadeSecs, "easeInEaseOut");
+            ObjC.Send(a, ObjC.Sel("setFillMode:"), ObjC.NsString("forwards"));
+            ObjC.SendNInt(a, ObjC.Sel("setRemovedOnCompletion:"), 0);
+            ObjC.Send(layer, ObjC.Sel("addAnimation:forKey:"), a, ObjC.NsString("brainOut"));
+        }
+        catch { /* purely cosmetic */ }
+    }
+
+    private static void ClearFade(IntPtr view)
+    {
+        try
+        {
+            var layer = ObjC.Send(view, ObjC.Sel("layer"));
+            if (layer != IntPtr.Zero) ObjC.Send(layer, ObjC.Sel("removeAnimationForKey:"), ObjC.NsString("brainOut"));
+        }
+        catch { }
     }
 
     /// <summary>Soft entrance for a page view that just became visible (new tab,
@@ -300,19 +437,8 @@ internal static partial class WkTabs
         {
             var layer = ObjC.Send(view, ObjC.Sel("layer"));
             if (layer == IntPtr.Zero) return;
-            var num = ObjC.GetClass("NSNumber");
-            var timing = ObjC.Send(ObjC.GetClass("CAMediaTimingFunction"), ObjC.Sel("functionWithName:"), ObjC.NsString("easeOut"));
-            IntPtr Anim(string keyPath, double from, double to, double dur)
-            {
-                var a = ObjC.Send(ObjC.GetClass("CABasicAnimation"), ObjC.Sel("animationWithKeyPath:"), ObjC.NsString(keyPath));
-                ObjC.Send(a, ObjC.Sel("setFromValue:"), ObjC.SendDoubleArg(num, ObjC.Sel("numberWithDouble:"), from));
-                ObjC.Send(a, ObjC.Sel("setToValue:"), ObjC.SendDoubleArg(num, ObjC.Sel("numberWithDouble:"), to));
-                ObjC.SendDoubleArg(a, ObjC.Sel("setDuration:"), dur);
-                if (timing != IntPtr.Zero) ObjC.Send(a, ObjC.Sel("setTimingFunction:"), timing);
-                return a;
-            }
-            ObjC.Send(layer, ObjC.Sel("addAnimation:forKey:"), Anim("opacity", 0, 1, 0.18), ObjC.NsString("brainFade"));
-            ObjC.Send(layer, ObjC.Sel("addAnimation:forKey:"), Anim("transform.translation.y", 8, 0, 0.22), ObjC.NsString("brainSettle"));
+            ObjC.Send(layer, ObjC.Sel("addAnimation:forKey:"), FadeAnim("opacity", 0, 1, FadeSecs, "easeOut"), ObjC.NsString("brainFade"));
+            ObjC.Send(layer, ObjC.Sel("addAnimation:forKey:"), FadeAnim("transform.translation.y", 8, 0, 0.22, "easeOut"), ObjC.NsString("brainSettle"));
         }
         catch { /* purely cosmetic */ }
     }
@@ -326,9 +452,12 @@ internal static partial class WkTabs
     /// <summary>Resizes every page view (and the hidden bootstrap view) to the page area.</summary>
     internal static void ApplyFrame(MacWindow.CGRect want)
     {
+        var home = _boot == IntPtr.Zero ? IntPtr.Zero : ObjC.Send(_boot, ObjC.Sel("window"));
         void Set(IntPtr v)
         {
             if (v == IntPtr.Zero) return;
+            // a page in element fullscreen lives in WebKit's own fullscreen window until it exits
+            if (home != IntPtr.Zero && ObjC.Send(v, ObjC.Sel("window")) is var w && w != IntPtr.Zero && w != home) return;
             var cur = ObjC.SendRect(v, ObjC.Sel("frame"));
             if (Math.Abs(cur.X - want.X) > 0.5 || Math.Abs(cur.Y - want.Y) > 0.5 ||
                 Math.Abs(cur.W - want.W) > 0.5 || Math.Abs(cur.H - want.H) > 0.5)
@@ -400,7 +529,7 @@ internal static partial class WkTabs
     internal static void SetWindowBackground(IntPtr nsWindow)
     {
         var color = ObjC.SendDouble4(ObjC.GetClass("NSColor"), ObjC.Sel("colorWithSRGBRed:green:blue:alpha:"),
-            0x0b / 255.0, 0x0b / 255.0, 0x13 / 255.0, 1.0);
+            0x11 / 255.0, 0x0f / 255.0, 0x0d / 255.0, 1.0);
         if (color != IntPtr.Zero) ObjC.Send(nsWindow, ObjC.Sel("setBackgroundColor:"), color);
     }
 }

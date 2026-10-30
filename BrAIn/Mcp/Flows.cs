@@ -716,7 +716,7 @@ internal sealed class FlowFunction : AIFunction
 // ======================================================================
 
 [McpServerToolType]
-public sealed class FlowTools(FlowService flows, ActivityLog log)
+public sealed class FlowTools(FlowService flows, ActivityLog log, BrowserController browser)
 {
     [McpServerTool(Name = "browser_activity"),
      Description("Recent MCP tool calls in this browser, newest last, each with an id. Use the ids with browser_save_flow to turn a task you just completed into a reusable flow.")]
@@ -814,6 +814,11 @@ public sealed class FlowTools(FlowService flows, ActivityLog log)
         var (err, id) = flows.Propose(def);
         if (err is not null) return Task.FromResult("Error: " + err);
         var secrets = def.Parameters.Count(p => p.Name.StartsWith("secret_", StringComparison.Ordinal));
+        // full control (turned on by the user): no review, the proposal is activated at once
+        if (browser.FullControl && flows.Approve(id, null) is null)
+            return Task.FromResult(
+                $"flow_{def.Name} saved and ACTIVE (full control mode: no review) with {def.Steps.Count} steps and {def.Parameters.Count} argument(s)" +
+                (secrets > 0 ? $" ({secrets} of them are secrets the caller must supply; none were stored)" : "") + ". Tell the user it was added.");
         return Task.FromResult(
             $"Proposal {id} for flow_{def.Name} saved with {def.Steps.Count} steps and {def.Parameters.Count} argument(s)" +
             (secrets > 0 ? $" ({secrets} of them are secrets the caller must supply; none were stored)" : "") + ". " +

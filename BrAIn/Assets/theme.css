@@ -1,12 +1,12 @@
 /* BrAIn shared theme — inlined into every internal page when it is loaded. */
 :root {
-  --h: 252;
+  --h: 24;
   --ac: hsl(var(--h) 100% 78%);
   --ac2: hsl(calc(var(--h) - 72) 56% 62%);
-  --bg: #08080f;
-  --ink: #ececf8;
-  --mut: #8a8aa6;
-  --dim: #5c5c78;
+  --bg: #0d0b0a;
+  --ink: #f5f2ef;
+  --mut: #9e9892;
+  --dim: #706a64;
   --line: rgba(255,255,255,.07);
   --glass: rgba(255,255,255,.045);
   --glass-hi: rgba(255,255,255,.075);
@@ -38,7 +38,7 @@ html.anim .wrap > * { animation: rise .55s cubic-bezier(.16,1,.3,1) both; }
 
 .logo {
   font-weight: 800; letter-spacing: 1.5px; line-height: 1.25;
-  background: linear-gradient(115deg, #a9a9ff 10%, #6fe0c6 95%);
+  background: linear-gradient(115deg, #ffb36b 10%, #ff7a9c 95%);
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .sub { color: var(--mut); line-height: 1.65; }
@@ -74,7 +74,7 @@ a { color: var(--ac); text-decoration: none; }
 a:hover { text-decoration: underline; }
 code, kbd {
   font-family: var(--mono); font-size: .92em; padding: 1px 7px; border-radius: 6px;
-  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.09); color: #a6a6c4;
+  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.09); color: #bcb5ae;
 }
 ::selection { background: hsl(var(--h) 100% 70% / .4); }
 ::-webkit-scrollbar { width: 10px; }

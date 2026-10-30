@@ -85,6 +85,18 @@ public sealed class BrowserTab
     /// for the document owner — logical tabs unload when switched away).</summary>
     public bool IsAudible { get; set; }
 
+    /// <summary>Quick controls set for this tab only (id → on/off). They win over the
+    /// site and everywhere values and go away with the tab. Guarded by the controller's lock.</summary>
+    public Dictionary<string, bool> Qc { get; } = new();
+
+    /// <summary>Pop-ups blocked in the current document, and the last one's address
+    /// (the quick-controls panel offers to open it).</summary>
+    public int PopupsBlocked { get; set; }
+    public string? LastBlockedPopup { get; set; }
+    /// <summary>Opener address and time of the last blocked pop-up (tells which document it belongs to).</summary>
+    public string? PopupOpener { get; set; }
+    public long PopupAt { get; set; }
+
     public bool IsClosed { get; set; }
 
     public override string ToString() => $"{Id.ToString()[..8]} {(IsMain ? "(main) " : "")}{LastTitle ?? "?"} <{LastUrl}>";
