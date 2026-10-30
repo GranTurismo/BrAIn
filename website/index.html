@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BrAIn — the browser your AI can actually use</title>
 <meta name="description" content="A desktop browser with an MCP server built in — Rewind page time-travel, a one-keystroke agent kill switch, dev-grade tooling. macOS &amp; Windows.">
-<meta name="theme-color" content="#07070d">
+<meta name="theme-color" content="#0d0b0a">
 <meta name="robots" content="index,follow,max-image-preview:large">
 <meta name="author" content="BrAIn">
 <meta name="msvalidate.01" content="D8D2FC1AADBC45BB5FD01842634133A6" />
@@ -25,9 +25,9 @@
 <meta name="twitter:description" content="A real browser with an MCP server inside. Rewind pages, keep every tab live, and stay in control of the agent.">
 <meta name="twitter:image" content="https://brain.gtgroup.dev/assets/og.png">
 <meta name="twitter:image:alt" content="BrAIn — a desktop browser with a built-in AI agent, Rewind page time-travel and a human kill switch.">
-<link rel="icon" type="image/png" href="assets/favicon.png">
-<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" type="image/png" href="assets/favicon.png?v=2">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=2">
+<link rel="stylesheet" href="assets/style.css?v=3">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -61,7 +61,7 @@
 </script>
 </head>
 <body>
-<div id="loader" aria-hidden="true"><img src="assets/favicon.png" alt="" width="46" height="46"><span>BrAIn</span></div>
+<div id="loader" aria-hidden="true"><img src="assets/logo.png" alt="" width="52" height="52"><span>BrAIn</span></div>
 <div class="progress" id="progress"></div>
 <div class="fallback-bg"></div>
 <canvas id="aurora" aria-hidden="true"></canvas>
@@ -69,7 +69,7 @@
 
 <!-- ============ NAV ============ -->
 <nav class="top" id="nav">
-  <a class="logo" href="#top"><img src="assets/favicon.png" alt="" width="30" height="30">BrAIn</a>
+  <a class="logo" href="#top"><img src="assets/logo.png" alt="" width="30" height="30"><span>BrAIn</span></a>
   <div class="links" id="links">
     <a href="#features">Features</a>
     <a href="#rewind">Rewind</a>
@@ -89,7 +89,7 @@
 <header class="hero" id="top">
   <div class="wrap cols">
     <div>
-      <span class="chip rv"><i></i><span><span data-version>latest</span> · macOS &amp; Windows</span></span>
+      <span class="chip live rv"><i></i><span><span data-version>latest</span> · macOS &amp; Windows</span></span>
       <h1 class="rv" style="--d:.05s">The browser your AI can actually <span class="grad rot" id="rot">use</span><span class="rot"><span class="cursor"></span></span></h1>
       <p class="lead rv" style="--d:.12s">BrAIn is a real desktop browser with an <b style="color:var(--ink)">MCP server built into the same process</b>. Your agent sees the real DOM, acts on the real page — and you can rewind it, pause it and audit every step.</p>
       <p class="triplet rv" style="--d:.16s">Every page <a href="#features">inspectable</a><span>·</span>every action <a href="#agent">verifiable</a><span>·</span>every moment <a href="#rewind">rewindable</a></p>
@@ -114,9 +114,10 @@
       <div class="win tilt" id="heroWin">
         <div class="bar">
           <div class="lights"><i></i><i></i><i></i></div>
-          <div class="tabs"><span class="tab on"><span class="dot"></span>Checkout</span><span class="tab"><span class="dot"></span>Docs</span><span class="tab"><span class="dot"></span>New tab</span></div>
-          <div class="omni"><b>shop.example</b>/checkout</div>
-          <div class="tools"><i></i><i class="ag" id="hAgent"></i><i></i></div>
+          <div class="navc" aria-hidden="true"><i><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 3.5 6 8l4.5 4.5"/></svg></i><i><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3.5 10 8l-4.5 4.5"/></svg></i><i><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7"/><path d="M13.4 1.6v3h-3" stroke-linejoin="round"/></svg></i></div>
+          <div class="tabs"><span class="tab on" style="--th:24"><span class="dot">S</span>Checkout</span><span class="tab" style="--th:205"><span class="dot">D</span>Docs</span></div>
+          <div class="omni"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="4" y="7" width="8" height="6.4" rx="1.4"/><path d="M6 7V5.6a2 2 0 0 1 4 0V7"/></svg><span><b>shop.example</b>/checkout</span></div>
+          <div class="tools" aria-hidden="true"><i class="orb"><svg viewBox="0 0 16 16"><path d="M8 1.8 9.4 5.4 13 6.8 9.4 8.2 8 11.8 6.6 8.2 3 6.8l3.6-1.4z" fill="currentColor"/></svg></i><i class="ag" id="hAgent"><svg viewBox="0 0 16 16"><rect x="3" y="5.2" width="10" height="7.6" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="9" r="1" fill="currentColor"/><circle cx="10" cy="9" r="1" fill="currentColor"/></svg></i><i><svg viewBox="0 0 16 16"><circle cx="8" cy="3.4" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="12.6" r="1.3" fill="currentColor"/></svg></i></div>
         </div>
         <div class="page" id="heroPage">
           <span class="frozen">Frozen · <span id="hAgo">2 min ago</span></span>
@@ -362,7 +363,7 @@
         <div class="ratio"><b class="grad" data-ratio="81">81×</b>less memory at the end — and BrAIn idles at <b style="display:inline;font-size:inherit;color:var(--ink)">156 MB</b> vs Chrome's <b style="display:inline;font-size:inherit;color:var(--ink)">1,211 MB</b>.</div>
       </div>
       <div class="card chartwrap rv" style="--d:.08s" id="chartCard">
-        <div class="legend"><span><i style="background:#a5a5bd"></i>Chrome</span><span><i style="background:linear-gradient(90deg,#8f7cff,#6fe0c6)"></i>BrAIn</span><span style="margin-left:auto">RAM (MB) as each tab opens — hover</span></div>
+        <div class="legend"><span><i style="background:#aba49d"></i>Chrome</span><span><i style="background:linear-gradient(90deg,#ffb36b,#ff7a9c)"></i>BrAIn</span><span style="margin-left:auto">RAM (MB) as each tab opens — hover</span></div>
         <svg id="chart" viewBox="0 0 700 300" role="img" aria-label="Memory growth over 25 tabs: Chrome grows to 14 GB, BrAIn stays near 170 MB"></svg>
         <div class="tip" id="tip"></div>
       </div>
@@ -383,7 +384,8 @@
     <div class="card arch rv">
       <svg viewBox="0 0 1000 430" role="img" aria-label="Architecture: MCP client talks over stdio to the BrAIn process, which contains the MCP host, the browser controller, Rewind and the activity log, and drives one native view per tab.">
         <defs>
-          <linearGradient id="g1" x1="0" x2="1"><stop offset="0" stop-color="#8f7cff"/><stop offset="1" stop-color="#6fe0c6"/></linearGradient>
+          <!-- user-space units: a horizontal line has a zero-height box, which a bounding-box gradient would not paint -->
+          <linearGradient id="g1" gradientUnits="userSpaceOnUse" x1="200" y1="0" x2="800" y2="0"><stop offset="0" stop-color="#ffb36b"/><stop offset="1" stop-color="#ff7a9c"/></linearGradient>
         </defs>
         <rect class="node" x="20" y="150" width="190" height="130" rx="18"/>
         <text x="115" y="195" text-anchor="middle" font-size="17" font-weight="700">Your AI client</text>
@@ -395,19 +397,19 @@
         <text x="265" y="238" text-anchor="middle" class="sub">JSON-RPC</text>
 
         <rect class="node hi" x="320" y="30" width="400" height="370" rx="24"/>
-        <text x="520" y="64" text-anchor="middle" font-size="15" font-weight="800" letter-spacing="3" fill="#b9b9ff">BrAIn PROCESS</text>
+        <text x="520" y="64" text-anchor="middle" font-size="15" font-weight="800" letter-spacing="3" fill="#ffc8a3">BrAIn PROCESS</text>
         <rect class="node" x="350" y="90" width="160" height="70" rx="14"/><text x="430" y="122" text-anchor="middle" font-weight="650">MCP host</text><text x="430" y="143" text-anchor="middle" class="sub">60+ tools</text>
         <rect class="node" x="530" y="90" width="160" height="70" rx="14"/><text x="610" y="122" text-anchor="middle" font-weight="650">Controller</text><text x="610" y="143" text-anchor="middle" class="sub">tabs · state · trust</text>
         <rect class="node mint" x="350" y="185" width="160" height="70" rx="14"/><text x="430" y="217" text-anchor="middle" font-weight="650">Rewind</text><text x="430" y="238" text-anchor="middle" class="sub">in-memory timeline</text>
         <rect class="node mint" x="530" y="185" width="160" height="70" rx="14"/><text x="610" y="217" text-anchor="middle" font-weight="650">Activity + Flows</text><text x="610" y="238" text-anchor="middle" class="sub">audit · approvals</text>
         <rect class="node" x="350" y="285" width="340" height="86" rx="14"/><text x="520" y="318" text-anchor="middle" font-weight="650">Driver</text><text x="520" y="340" text-anchor="middle" class="sub">WKWebView (macOS) · WebView2 + CDP (Windows)</text>
-        <path class="flow" d="M430 160 V185 M610 160 V185 M520 255 V285" stroke="#8f7cff" stroke-width="2" fill="none" opacity=".7"/>
+        <path class="flow" d="M430 160 V185 M610 160 V185 M520 255 V285" stroke="#ff9f6e" stroke-width="2" fill="none" opacity=".7"/>
 
         <path class="flow" d="M720 215 H790" stroke="url(#g1)" stroke-width="3" fill="none"/>
         <rect class="node" x="790" y="60" width="190" height="64" rx="14"/><text x="885" y="98" text-anchor="middle" font-weight="650">Tab 1 · own view</text>
         <rect class="node" x="790" y="150" width="190" height="64" rx="14"/><text x="885" y="188" text-anchor="middle" font-weight="650">Tab 2 · own view</text>
         <rect class="node" x="790" y="240" width="190" height="64" rx="14"/><text x="885" y="278" text-anchor="middle" font-weight="650">Tab 3 · own view</text>
-        <rect class="node" x="790" y="330" width="190" height="64" rx="14" stroke-dasharray="5 6"/><text x="885" y="368" text-anchor="middle" font-weight="650" fill="#9393b0">… every tab</text>
+        <rect class="node" x="790" y="330" width="190" height="64" rx="14" stroke-dasharray="5 6"/><text x="885" y="368" text-anchor="middle" font-weight="650" fill="#a39c95">… every tab</text>
       </svg>
     </div>
   </div>
@@ -468,7 +470,7 @@
 <footer>
   <div class="wrap">
     <div class="fc">
-      <div><a class="logo" href="#top"><img src="assets/favicon.png" alt="" width="30" height="30">BrAIn</a><p style="margin:14px 0 0;max-width:340px">The browser that remembers — and the first one your AI can actually use.</p></div>
+      <div><a class="logo" href="#top"><img src="assets/logo.png" alt="" width="30" height="30"><span>BrAIn</span></a><p style="margin:14px 0 0;max-width:340px">The browser that remembers — and the first one your AI can actually use.</p></div>
       <div style="display:flex;gap:48px;flex-wrap:wrap">
         <div><b style="color:var(--ink)">Product</b><br><a href="#features">Features</a><br><a href="#rewind">Rewind</a><br><a href="#speed">Benchmarks</a><br><a href="#download">Download</a></div>
         <div><b style="color:var(--ink)">Project</b><br><a href="https://github.com/GranTurismo/BrAIn" rel="noopener">GitHub</a><br><a href="https://github.com/GranTurismo/BrAIn/blob/main/CHANGELOG.md" rel="noopener">Changelog</a><br><a href="https://github.com/GranTurismo/BrAIn/issues" rel="noopener">Report an issue</a><br><a href="https://github.com/GranTurismo/BrAIn/releases" rel="noopener">Releases</a></div>
@@ -478,6 +480,6 @@
   </div>
 </footer>
 <div id="toast" role="status"></div>
-<script src="assets/app.js?v=2"></script>
+<script src="assets/app.js?v=3"></script>
 </body>
 </html>

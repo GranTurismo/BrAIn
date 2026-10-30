@@ -4,10 +4,16 @@ Static product page. **No build step and no dependencies** — plain HTML/CSS/JS
 
 ```
 index.html            the page
-assets/style.css      styles
+assets/style.css      styles — the app's palette (theme.css): warm near-black, glass panels, ember accent
 assets/app.js         aurora shader, demos (rewind / agent / tabs / shortcuts), chart, live download cards
-assets/og.png         social-card image (screenshot of the hero)
+assets/og.png         social-card image (2400×1260 screenshot of the hero)
+assets/logo.png       128 px app icon for the nav, loader and footer
+assets/favicon.png    64 px app icon · apple-touch-icon.png: 180 px, full-bleed (iOS rounds it)
+assets/brain-512.png  512 px app icon
 ```
+
+The icons are resized from `BrAIn/Assets/icon-src.png` (made by `BrAIn/Assets/gen-icon.py`); the
+touch icon is that renderer's tile without the rounded-corner mask.
 
 ## Run locally
 
