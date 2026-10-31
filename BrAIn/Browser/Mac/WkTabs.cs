@@ -65,6 +65,7 @@ internal static partial class WkTabs
         public IntPtr View, Handler, Ucc;
         public Guid Tab;
         public bool Private;
+        public bool Ghost;   // private view on the seeded ghost store ("Keep my cookies & logins")
         public string Lib = "", Qc = "";
         public bool Dark;
     }
@@ -155,7 +156,7 @@ internal static partial class WkTabs
     }
 
     /// <summary>Creates a hidden web view for a tab and adds it under the toolbar.</summary>
-    internal static IntPtr Create(IntPtr nsWindow, Guid tab, string libSource, bool priv, int zoomPct)
+    internal static IntPtr Create(IntPtr nsWindow, Guid tab, string libSource, bool priv, int zoomPct, bool ghostLogins = false)
     {
         var content = ObjC.Send(nsWindow, ObjC.Sel("contentView"));
         if (content == IntPtr.Zero || _boot == IntPtr.Zero) return IntPtr.Zero;
@@ -177,7 +178,12 @@ internal static partial class WkTabs
         ObjC.Send(cfg, ObjC.Sel("setUserContentController:"), ucc);
         EnableElementFullscreen(cfg);
 
-        if (priv)
+        // Ghost tabs that keep the user's cookies share the seeded ephemeral store (WkTabs.Ghost.cs).
+        // If it is gone (its last tab just closed), they fall back to the clean private store below.
+        var ghost = priv && ghostLogins && _ghostStore != IntPtr.Zero;
+        if (ghost)
+            ObjC.Send(cfg, ObjC.Sel("setWebsiteDataStore:"), _ghostStore);
+        else if (priv)
         {
             // One ephemeral store shared by all private tabs (a private "window"):
             // nothing it holds ever reaches disk, and it is dropped with the last tab.
@@ -234,7 +240,7 @@ internal static partial class WkTabs
         ObjC.Send(handler, ObjC.Sel("release"));
         ObjC.Send(ucc, ObjC.Sel("release"));
 
-        _views[wv] = new ViewInfo { View = wv, Handler = handler, Ucc = ucc, Tab = tab, Private = priv, Lib = libSource };
+        _views[wv] = new ViewInfo { View = wv, Handler = handler, Ucc = ucc, Tab = tab, Private = priv, Ghost = ghost, Lib = libSource };
         return wv;
     }
 
@@ -306,10 +312,15 @@ internal static partial class WkTabs
         catch { }
         lock (_byHandler) _byHandler.Remove(info.Handler);
         if (Active == view) Active = IntPtr.Zero;
-        if (info.Private && _privStore != IntPtr.Zero && !_views.Values.Any(v => v.Private))
+        if (info.Private && !info.Ghost && _privStore != IntPtr.Zero && !_views.Values.Any(v => v.Private && !v.Ghost))
         {
             ObjC.Send(_privStore, ObjC.Sel("release")); // ephemeral data goes with it
             _privStore = IntPtr.Zero;
+        }
+        if (info.Ghost && _ghostStore != IntPtr.Zero && !_views.Values.Any(v => v.Ghost))
+        {
+            ObjC.Send(_ghostStore, ObjC.Sel("release")); // the cookie copy and everything set since dies here
+            _ghostStore = IntPtr.Zero;
         }
     }
 

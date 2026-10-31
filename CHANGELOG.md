@@ -2,6 +2,11 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.6.0 — 2026-10-31
+
+### Added
+- **Ghost mode: cookies & logins** — a new switch (⋮ → Tabs → *Ghost: cookies & logins*, or the command palette) chooses what a ghost tab starts with. Off (the default, as before): empty, so every site sees a visitor who isn't signed in. On: new ghost tabs start with a *copy* of your cookies, so signed-in sites open signed in, and saved passwords can be autofilled. The copy only goes one way — nothing a ghost tab sets or changes reaches your real profile, no new passwords are offered for saving, and everything is dropped when the last ghost tab closes. Only cookies are copied (sites that keep their sign-in in local storage still ask you to sign in), and tabs you open with *Private* during Ghost mode always start clean. The choice is remembered across launches (Ghost mode itself still isn't) and applies to tabs opened afterwards; the ghost button's tooltip says which kind new tabs will be. `browser_ghost` tells an agent which kind of ghost tabs it will get, but only you can change the setting.
+
 ## 1.5.0 — 2026-10-31
 
 ### Added

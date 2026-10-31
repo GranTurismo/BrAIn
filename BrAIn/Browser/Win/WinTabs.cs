@@ -33,6 +33,8 @@ internal sealed class WinTabs
         public volatile bool Audible;
         public volatile bool Suspended;
         public bool InPrivate;
+        public bool Ghost;    // InPrivate view on the named ghost profile (Ghost mode, "Keep my cookies & logins")
+        public bool Seeded;   // ... and that profile already holds its copy of the user's cookies
         public IntPtr Hwnd;   // the controller's top-level child window of the main window
         public CancellationTokenSource? SuspendCts;
         public TaskCompletionSource? NavDone;
@@ -137,7 +139,7 @@ internal sealed class WinTabs
 
     /// <summary>Creates a hidden view navigated to a blank data URL containing <c>marker</c> — the marker
     /// lets the CDP driver find this view's page target among all of them.</summary>
-    public async Task<View> CreateViewAsync(Guid tabId, bool priv, int zoomPercent, string marker)
+    public async Task<View> CreateViewAsync(Guid tabId, bool priv, int zoomPercent, string marker, bool ghostLogins = false)
     {
         if (!priv && PrewarmEnabled)
         {
@@ -160,10 +162,38 @@ internal sealed class WinTabs
                 catch { /* the spare failed to build — make a fresh one below */ }
             }
         }
-        return await BuildViewAsync(tabId, priv, zoomPercent, marker);
+        return await BuildViewAsync(tabId, priv, zoomPercent, marker, ghostLogins && priv);
     }
 
     private Task<View>? _spare;
+
+    private readonly SemaphoreSlim _ghostSeedLock = new(1, 1);
+
+    /// <summary>Copies the cookies of the normal profile into the ghost profile — once per life of that
+    /// in-memory profile (it is gone when its last view closes). One way only: whatever the ghost views
+    /// set afterwards never reaches the real profile. Best effort; on any failure the view opens with
+    /// what was copied, and the user simply is not signed in.</summary>
+    private async Task SeedGhostCookiesAsync(View ghost)
+    {
+        await _ghostSeedLock.WaitAsync();
+        try
+        {
+            // a live ghost view that was already seeded means the profile holds its copy
+            if (_views.Values.Any(v => v.Ghost && v.Seeded && !v.Closed && !ReferenceEquals(v, ghost))) { ghost.Seeded = true; return; }
+            var src = _views.Values.FirstOrDefault(v => !v.InPrivate && !v.Closed && v.Core is not null);
+            if (src is null) { Log?.Invoke("ghost cookie copy: no normal view to copy from"); return; }
+            var cookies = await Run(() => src.Core.CookieManager.GetCookiesAsync(null), _ui).WaitAsync(TimeSpan.FromSeconds(5));
+            _ui(() =>
+            {
+                var mgr = ghost.Core.CookieManager;
+                foreach (var c in cookies)
+                    try { mgr.AddOrUpdateCookie(mgr.CopyCookie(c)); } catch { /* one odd cookie must not stop the rest */ }
+            });
+            ghost.Seeded = true;
+        }
+        catch (Exception ex) { Log?.Invoke("ghost cookie copy failed: " + ex.Message); }
+        finally { _ghostSeedLock.Release(); }
+    }
 
     /// <summary>Starts building the spare view in the background (no-op if one exists).</summary>
     public void PrewarmSpare(int zoomPercent)
@@ -177,7 +207,11 @@ internal sealed class WinTabs
         }, TaskScheduler.Default);
     }
 
-    private async Task<View> BuildViewAsync(Guid tabId, bool priv, int zoomPercent, string marker)
+    /// <summary>Name of the in-memory profile ghost tabs with cookies share — apart from the plain InPrivate
+    /// profile of ordinary private tabs, which must stay clean.</summary>
+    private const string GhostProfile = "brainghost";
+
+    private async Task<View> BuildViewAsync(Guid tabId, bool priv, int zoomPercent, string marker, bool ghostLogins = false)
     {
         var env = _env ?? throw new InvalidOperationException("WebView2 environment not created");
         var view = new View { TabId = tabId, Marker = marker };
@@ -190,6 +224,29 @@ internal sealed class WinTabs
         CoreWebView2Controller controller;
         if (priv)
         {
+            controller = null!;
+            if (ghostLogins)
+            {
+                try
+                {
+                    controller = await Run(() =>
+                    {
+                        var o = env.CreateCoreWebView2ControllerOptions();
+                        o.IsInPrivateModeEnabled = true;
+                        o.ProfileName = GhostProfile;
+                        return env.CreateCoreWebView2ControllerAsync(_hwnd(), o);
+                    }, _ui).WaitAsync(TimeSpan.FromSeconds(20));
+                    view.InPrivate = true;
+                    view.Ghost = true;
+                }
+                catch (Exception ex)
+                {
+                    // No named in-private profile here: an ordinary clean private view below
+                    // (the user's cookies are never copied into the shared private profile).
+                    Log?.Invoke("ghost profile unavailable, opening a clean private view: " + ex.Message);
+                }
+            }
+            if (controller is null)
             try
             {
                 controller = await Run(() =>
@@ -223,6 +280,9 @@ internal sealed class WinTabs
 
         // The bridge shim must exist before the first document is created.
         await Run(() => view.Core.AddScriptToExecuteOnDocumentCreatedAsync(Shim), _ui).WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Ghost tab that keeps the user's cookies: fill its in-memory profile before any page loads.
+        if (view.Ghost) await SeedGhostCookiesAsync(view);
 
         // A real (cross-document) navigation, so NavigationCompleted is certain to fire; the data URL
         // carries the marker and paints the window colour instead of a white flash.

@@ -73,6 +73,11 @@ public sealed class BrowserTab
     /// persisted session, and its site data is wiped on close.</summary>
     public bool IsPrivate { get; set; }
 
+    /// <summary>Opened in Ghost mode with "Keep my cookies &amp; logins": still a private tab (no history,
+    /// nothing saved), but its ephemeral site data starts as a copy of the user's cookies, so signed-in
+    /// sites open signed in, and saved passwords may be autofilled. Nothing flows back to the real profile.</summary>
+    public bool GhostLogins { get; set; }
+
     /// <summary>Pinned tab: compact icon-only pill pinned to the strip's left
     /// edge; immune to close/middle-click until unpinned.</summary>
     public bool IsPinned { get; set; }

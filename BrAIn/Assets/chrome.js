@@ -63,7 +63,7 @@
     var lastScrollReport = 0;
     state.tbh = []; state.tbx = [];
     state.bmarks = []; state.bm = false; state.zoom = 100; state.topmost = false;
-    state.sess = 0; state.privActive = false; state.ghost = false;
+    state.sess = 0; state.privActive = false; state.ghost = false; state.gl = false;
     state.rw = false; state.rwa = false; state.rwk = 30; state.rwm = 128; state.rws = [];
     state.ag = { p: false, n: 0, t: '', s: false, k: 0 }; // agent: paused / busy count / tool / ever seen / blocked count
     state.se = 'google'; state.sel = []; // search engine id + [{i,n}] list
@@ -1833,6 +1833,11 @@
     // {fc:{on, until}} rides the b:9 state (until: unix ms, 0 = when BrAIn closes).
     var fcMins = 60;
     function fcOn() { return !!(state.fc && state.fc.on); }
+    // Ghost mode and the user's sign-ins: on = ghost tabs start with a copy of your cookies (and may
+    // autofill saved passwords); off = they start empty. Nothing new is saved either way.
+    function ghostLoginsLabel() {
+        return state.gl ? 'Ghost: cookies & logins on — turn off' : 'Ghost: cookies & logins off — turn on';
+    }
     function fcLeft() {
         var u = state.fc && state.fc.until;
         if (!u) return '';
@@ -2182,6 +2187,7 @@
         var secs = [
             ['Tabs', [
                 ['ghost', state.ghost ? 'Ghost mode: on — turn off' : 'Ghost mode: off — turn on', 'Ctrl+Shift+X'],
+                ['ghostlogins', ghostLoginsLabel(), ''],
                 ['dupe', 'Duplicate tab', 'Ctrl+Shift+D'],
                 ['pin', at && at.pin ? 'Unpin tab' : 'Pin tab', 'Ctrl+Alt+P'],
                 ['mute', docTabMuted() ? 'Unmute tab' : 'Mute tab', 'Ctrl+Alt+M'],
@@ -2480,6 +2486,7 @@
             ['newtab', 'New tab', 'tab open blank', IS_MAC ? '\u2318T' : 'Ctrl+T'],
             ['newpriv', 'New private tab', 'incognito private tab', IS_MAC ? '\u21e7\u2318N' : 'Ctrl+Shift+N'],
             ['ghost', state.ghost ? 'Turn Ghost mode off' : 'Turn Ghost mode on', 'ghost mode private incognito no history trace temporary', IS_MAC ? '\u21e7\u2318X' : 'Ctrl+Shift+X'],
+            ['ghostlogins', ghostLoginsLabel(), 'ghost mode cookies logins sign in signed in sessions authorization passwords autofill keep clean', ''],
             ['reopen', 'Reopen closed tab', 'undo close restore', IS_MAC ? '\u21e7\u2318T' : 'Ctrl+Shift+T'],
             ['dupe', 'Duplicate tab', 'copy clone same tab', IS_MAC ? '\u21e7\u2318D' : 'Ctrl+Shift+D'],
             ['pin', a && a.pin ? 'Unpin tab' : 'Pin tab', 'pin keep sticky tab', IS_MAC ? '\u2303\u2325P' : 'Ctrl+Alt+P'],
@@ -4541,6 +4548,8 @@
         if (b.ag) { state.ag = b.ag; if (b.ag.n > 0) { agRunUntil = Date.now() + 2200; welcomeYield(); } }
         state.privActive = !!b.privActive;
         setGhostState(!!b.ghost);
+        state.gl = !!b.gl;
+        paintGhostTip();
         if (b.se) state.se = b.se;
         if (Array.isArray(b.sel)) state.sel = b.sel;
         state.keys = b.keys || {};
@@ -5160,12 +5169,22 @@
         rwSync();
         if (rw.open) { if (state.rw) send('rwlist'); rwRender(sh); }
     }
+    function ghostTip(on) {
+        return on ? 'Ghost mode is ON — nothing is saved' + (state.gl ? '; new tabs start with your cookies & logins' : '; new tabs start clean') + '. Click to turn off'
+            : 'Ghost mode — browse without leaving a trace';
+    }
+    // The cookies & logins setting can change while Ghost mode stays as it is: refresh the tooltips.
+    function paintGhostTip() {
+        var sh = sh0(); if (!sh) return;
+        var b = sh.getElementById('ghb'); if (b) b.setAttribute('data-tip', ghostTip(!!state.ghost));
+        var p = sh.getElementById('gpill'); if (p) p.title = state.gl ? 'Ghost mode is on — nothing is saved. New tabs start with your cookies & logins. Click to turn off' : 'Ghost mode is on — nothing is saved. Click to turn off';
+    }
     function paintGhost(sh) {
         var b = sh.getElementById('ghb'); if (!b) return;
         var on = !!state.ghost;
         b.classList.toggle('on', on);
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
-        b.setAttribute('data-tip', on ? 'Ghost mode is ON — nothing is saved. Click to turn off' : 'Ghost mode — browse without leaving a trace');
+        b.setAttribute('data-tip', ghostTip(on));
         var om = sh.getElementById('omni');
         if (om) om.classList.toggle('priv', !!(state.privActive || on));
         var bar = sh.querySelector('.bar');
@@ -7395,6 +7414,8 @@
                             state.privActive = !!j.privActive;
                         }
                         setGhostState(!!j.ghost);
+                        state.gl = !!j.gl;
+                        paintGhostTip();
                         exposeState();
                         // Split mode: each view only does its own half — the page
                         // view never draws the (hidden) bar, the bar view never

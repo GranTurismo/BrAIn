@@ -427,6 +427,8 @@ public sealed partial class BrowserController : IAsyncDisposable
                 // Rewind is opt-in: absent / malformed = off.
                 _rwOn = root.TryGetProperty("rw", out var rwp) && rwp.ValueKind == JsonValueKind.True;
                 _rwAgent = root.TryGetProperty("rwa", out var rwa) && rwa.ValueKind == JsonValueKind.True;
+                // Ghost mode itself is never remembered; this preference (cookies & logins in ghost tabs) is.
+                _ghostLogins = root.TryGetProperty("ghl", out var ghl) && ghl.ValueKind == JsonValueKind.True;
                 if (root.TryGetProperty("rwk", out var rwk) && rwk.ValueKind == JsonValueKind.Number) _rwKeepMin = rwk.GetInt32();
                 if (root.TryGetProperty("rwm", out var rwm) && rwm.ValueKind == JsonValueKind.Number) _rwMaxMb = rwm.GetInt32();
                 if (root.TryGetProperty("rws", out var rws) && rws.ValueKind == JsonValueKind.Array)
@@ -986,7 +988,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             var sw = System.Diagnostics.Stopwatch.StartNew();
             // unique per creation: a view rebuilt after eviction must never bind to its dying predecessor's target
             var marker = "braintab-" + tab.Id.ToString("N")[..8] + Guid.NewGuid().ToString("N")[..8];
-            var view = await ws.CreateViewAsync(tab.Id, tab.IsPrivate, _zoom, marker);
+            var view = await ws.CreateViewAsync(tab.Id, tab.IsPrivate, _zoom, marker, tab.GhostLogins);
             tab.BindMarker = view.Marker; // a prewarmed view already carries its own marker
             var viewMs = sw.ElapsedMilliseconds;
             if (tab.IsClosed) { ws.Destroy(view); throw new InvalidOperationException("Tab is closed"); }
@@ -1136,12 +1138,13 @@ public sealed partial class BrowserController : IAsyncDisposable
         if (_nsWindowNumber == 0 && !ReferenceEquals(tab, _firstTab))
             await _driverReady.Task.WaitAsync(TimeSpan.FromSeconds(25));
         if (tab.IsClosed) throw new InvalidOperationException("Tab is closed");
+        if (tab.GhostLogins) await SeedGhostCookiesAsync();
         var view = InvokeOnUi(() =>
         {
             var nsWin = Mac.MacWindow.WindowByNumber(_nsWindowNumber);
             var v = nsWin == IntPtr.Zero
                 ? IntPtr.Zero
-                : Mac.WkTabs.Create(nsWin, tab.Id, PageLibSource, tab.IsPrivate, _zoom);
+                : Mac.WkTabs.Create(nsWin, tab.Id, PageLibSource, tab.IsPrivate, _zoom, tab.GhostLogins);
             // quick controls reach the view's very first document too
             if (v != IntPtr.Zero && !_noToolbar) Mac.WkTabs.SetQcScript(v, QcBootScript(tab));
             return v;
@@ -1573,11 +1576,15 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// <summary>Opens a new logical tab in the (single) browser window and
     /// navigates it to <paramref name="url"/>. Private tabs leave no history,
     /// never join the session/reopen state and wipe site data on close.</summary>
-    public async Task<BrowserTab> NewTabAsync(string? url, CancellationToken ct = default, bool priv = false)
+    public async Task<BrowserTab> NewTabAsync(string? url, CancellationToken ct = default, bool priv = false, bool? ghostLogins = null)
     {
         await _windowCreated.Task.WaitAsync(ct);
         var main = _mainWindow ?? throw new InvalidOperationException("Browser window not initialized");
-        var tab = new BrowserTab { Id = Guid.NewGuid(), IsMain = false, Window = main, IsPrivate = priv || _ghost };
+        // Ghost mode with "Keep my cookies & logins" (and not an explicitly private tab): the tab is
+        // private as ever, but its site data starts as a copy of the user's cookies. A duplicate of
+        // such a tab passes ghostLogins to stay the same kind.
+        var gl = ghostLogins ?? (!priv && _ghost && _ghostLogins);
+        var tab = new BrowserTab { Id = Guid.NewGuid(), IsMain = false, Window = main, IsPrivate = priv || _ghost || gl, GhostLogins = gl };
         if (PerTab) return await NewTabPerTabAsync(tab, url, ct);
         var overlay = url is null && await CanOverlayAsync();
         Tabs.Add(tab);
@@ -1722,7 +1729,9 @@ public sealed partial class BrowserController : IAsyncDisposable
         {
             // Never resurface private tabs via reopen — and wipe their site
             // data so cookies/logins from the private session don't leak.
-            if (tab.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            // (Not for a ghost tab that kept the user's cookies: in this shared-view mode it
+            // runs on the real store, and wiping the origin would sign the user out.)
+            if (!tab.GhostLogins && tab.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                 _ = ClearPrivateSiteDataAsync(tab.LastUrl);
         }
         else if (tab.LastUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
@@ -2152,6 +2161,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "newtab": await NewTabAsync(string.IsNullOrEmpty(arg) ? null : arg, default); break;
                         case "newprivtab": await NewTabAsync(string.IsNullOrEmpty(arg) ? null : arg, default, priv: true); break;
                         case "ghost": SetGhost(arg == "" ? !_ghost : arg == "1"); break;
+                        case "ghostlogins": SetGhostLogins(arg == "" ? !_ghostLogins : arg == "1"); break;
                         case "welcome": ShowWelcome(); break;
                         case "welcomed": MarkWelcomed(); break;
                         case "pin":
@@ -2558,6 +2568,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             dt = _dtOpen ? _dtTab : "",
             privActive = Tabs.Active?.IsPrivate == true,
             ghost = _ghost,
+            gl = _ghostLogins,
             us = UsBadge(Tabs.Active?.LastUrl),
             qc = QcState(Tabs.Active),
             se = _engine.Id,
@@ -2886,6 +2897,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             se = _engine.Id,
             tbh = _tbHide, tbx = _tbExtra,
             rw = _rwOn, rwa = _rwAgent, rwk = _rwKeepMin, rwm = _rwMaxMb, rws = RwSkipList(),
+            ghl = _ghostLogins,
             keys = _keyBinds,
             welcomed = _welcomed,
             qca = qc.All, qcs = qc.Sites,
@@ -2927,7 +2939,9 @@ public sealed partial class BrowserController : IAsyncDisposable
     // password capture or autofill, no Rewind snapshots, no session restore
     // state and no MCP call log on disk; tabs opened meanwhile are private
     // tabs (ephemeral site data). Never persisted — every launch starts off.
-    // Tabs already open keep their normal site-data store.
+    // Tabs already open keep their normal site-data store. Optionally ("Keep my
+    // cookies & logins", see _ghostLogins) those private tabs start with a copy of
+    // the user's cookies instead of empty — still nothing written back.
     // ------------------------------------------------------------------
     private volatile bool _ghost;
     public bool GhostMode => _ghost;
@@ -2987,6 +3001,45 @@ public sealed partial class BrowserController : IAsyncDisposable
     private volatile bool _ghostByAgent;
     /// <summary>True when the AI agent (browser_ghost) switched Ghost mode on — only then may it switch it off.</summary>
     public bool GhostByAgent => _ghostByAgent;
+
+    // Ghost mode, "Keep my cookies & logins" — a preference (kept in prefs.json, off by default). On:
+    // tabs opened in Ghost mode start with a copy of the user's cookies, so signed-in sites open
+    // signed in, and saved passwords can be autofilled. Nothing new is saved either way, and nothing
+    // flows back to the real profile: what the tab sets lives in memory until the last ghost tab closes.
+    // Off: ghost tabs start empty. Only the user can change it (no MCP tool does). Applies to tabs
+    // opened afterwards; tabs already open keep what they have.
+    private volatile bool _ghostLogins;
+    public bool GhostLoginsOn => _ghostLogins;
+
+    public void SetGhostLogins(bool on)
+    {
+        if (_ghostLogins == on) return;
+        _ghostLogins = on;
+        SavePrefs();
+        PushChromeStateAll();
+    }
+
+    /// <summary>Whether password autofill is off for this tab. Ghost and private tabs never fill,
+    /// except ghost tabs that keep the user's logins. Tabs that were already open when Ghost mode
+    /// went on follow the preference.</summary>
+    private bool NoFill(BrowserTab tab) => tab.GhostLogins ? false : tab.IsPrivate || (_ghost && !_ghostLogins);
+
+    private readonly SemaphoreSlim _ghostSeedGate = new(1, 1);
+
+    /// <summary>macOS: before a ghost tab with cookies gets its view, makes sure the shared ghost store
+    /// exists and holds a copy of the normal store's cookies. Best effort — on a failure or timeout the
+    /// tab simply opens with what was copied so far. (Windows copies when it builds the view.)</summary>
+    private async Task SeedGhostCookiesAsync()
+    {
+        if (!IsMac) return;
+        await _ghostSeedGate.WaitAsync();
+        try
+        {
+            await InvokeOnUi(() => Mac.WkTabs.SeedGhostStore()).WaitAsync(TimeSpan.FromSeconds(4));
+        }
+        catch (Exception ex) { Log("ghost cookie copy: " + ex.Message); }
+        finally { _ghostSeedGate.Release(); }
+    }
 
     public void SetGhost(bool on, bool byAgent = false)
     {
@@ -3349,7 +3402,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// then b:26 hands the credential back for the page to fill.</summary>
     private async Task PwFillAsync(BrowserTab tab, string id)
     {
-        if (_noToolbar || tab.IsClosed || NoTrace(tab) || _pw is null) return;
+        if (_noToolbar || tab.IsClosed || NoFill(tab) || _pw is null) return;
         var e = await PwEntryForFillAsync(tab, id);
         if (e is null) return;
         if (!await PwAuthAsync($"autofill your {PwHost(e.Origin)} login"))
@@ -3357,7 +3410,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             PushJson(tab, JsonSerializer.Serialize(new { b = 26, deny = true }));
             return;
         }
-        _pw.Upsert(e.Origin, e.User, e.Pass); // bump last-used without altering
+        if (!NoTrace(tab)) _pw.Upsert(e.Origin, e.User, e.Pass); // bump last-used without altering (not in Ghost mode: that would be a trace)
         PushJson(tab, JsonSerializer.Serialize(new { b = 26, id = e.Id, u = e.User, p = e.Pass }));
     }
 
@@ -3397,7 +3450,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     private async Task PushPwCreds(BrowserTab tab)
     {
         if (_noToolbar || tab.IsClosed || _pw is null) return;
-        var o = NoTrace(tab) ? null : await DocOriginAsync(tab);
+        var o = NoFill(tab) ? null : await DocOriginAsync(tab);
         var items = o is null
             ? Array.Empty<object>()
             : _pw.ListFor(o).Select(e => (object)new { id = e.Id, u = e.User }).ToArray();

@@ -124,7 +124,20 @@
       they close. Turn it off and the browser goes back to remembering as usual.</p>
       <p>Tabs that were already open keep their normal site data, so open a new
       tab after switching on for a fully clean session. Ghost mode is never
-      remembered — every launch starts with it off.</p></div>
+      remembered — every launch starts with it off.</p>
+      <p><b>Cookies &amp; logins:</b> by default a ghost tab starts empty, so every
+      site sees a visitor who is not signed in. If you want to stay signed in,
+      turn on <b>⋮ → Tabs → Ghost: cookies &amp; logins</b> (or find it in the
+      command palette). Then new ghost tabs start with a <i>copy</i> of your
+      cookies, so your signed-in sites open signed in, and saved passwords can be
+      autofilled (after the usual confirmation). It only goes one way:
+      nothing a ghost tab sets or changes ever reaches your real profile, and no
+      new passwords are offered for saving — it all disappears when the last ghost
+      tab closes. Only cookies are copied, so a site that keeps its sign-in
+      elsewhere (some store it in local storage) still asks you to sign in. Tabs
+      you open with <b>Private</b> (<code>Ctrl+Shift+N</code>) always start clean.
+      The choice is remembered between launches, and applies to tabs opened
+      afterwards.</p></div>
 
     <h2>Keyboard shortcuts</h2>
     <div class="card keys">
