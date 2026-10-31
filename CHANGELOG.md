@@ -2,6 +2,11 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.5.0 — 2026-10-31
+
+### Added
+- **Grab video captions** site-script template — spots the subtitle files a video player loads (WebVTT, SRT, TTML, YouTube `timedtext`, HLS subtitle playlists, plus `<track>` elements and cues a player builds itself), reads them from the network and keeps the text. It watches `fetch`/XHR for new requests and the resource timeline for ones made before it ran. A small **CC** chip shows up on the page to copy the text or an `.srt`; an agent can read `window.__brainCaptions` (`list()`, `text(id)`, `srt(id)`, `vtt(id)`) with `browser_evaluate`. On sites that switch video without reloading (YouTube), only the current video's captions are listed, and the language comes from the caption file, not the page. Main frame only — a player inside an iframe is not covered.
+
 ## 1.4.0 — 2026-10-30
 
 ### Added

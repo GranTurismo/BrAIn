@@ -323,6 +323,9 @@ public sealed class UserScriptStore
         new("youtube", "YouTube cleanup",
             "Hides Shorts shelves and menu entries, and clicks \"Skip\" (with a real click) the moment a skippable ad offers it.",
             "play", ["youtube.com"], TplYoutube),
+        new("captions", "Grab video captions",
+            "Spots the subtitle files a video player loads (WebVTT, SRT, TTML, YouTube, HLS) and keeps the text. A small CC chip copies it; an agent reads window.__brainCaptions.",
+            "captions", ["*"], TplCaptions),
     ];
 
     private const string TplCookies = """
@@ -484,5 +487,365 @@ new MutationObserver(function () {
   requestAnimationFrame(function () { queued = false; skipAd(); });
 }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
 setInterval(skipAd, 250);
+""";
+
+    private const string TplCaptions = """
+// Grab video captions from the network
+// Watches fetch/XHR and the resource timeline for subtitle files (WebVTT, SRT, TTML, YouTube
+// timedtext, HLS subtitle playlists), parses them and keeps them in window.__brainCaptions:
+//   .list()  .text(id)  .srt(id)  .vtt(id)  .get(id)  .tracks  .notes   (no id = newest track of this page)
+if (window.__brainCaptions) return;
+var MAX_BODY = 5e6, MAX_TRACKS = 30, MAX_PLAYLISTS = 6, MAX_SEGMENTS = 800;
+var SKIP = /\.(jpe?g|png|gif|webp|avif|svg|ico|woff2?|ttf|css|m?js|mp4|m4s|m4a|webm|ts|aac|mp3|ogg|wasm)(\?|#|$)/i;
+var FILE = /\.(vtt|webvtt|srt|ttml2?|dfxp|m3u8)(\?|#|$)/i;
+var HINT = /timedtext|caption|subtitle|texttrack|text_track|transcript|[?&](?:fmt|format)=(?:vtt|webvtt|srt|ttml|json3|srv\d)\b/i;
+var TYPE = /text\/vtt|subrip|ttml|dfxp|mpegurl/i;
+var ARROW = /((?:\d+:)?\d+:\d+(?:[.,]\d+)?)\s*-->\s*((?:\d+:)?\d+:\d+(?:[.,]\d+)?)/;
+var tracks = [], seen = {}, notes = [], lists = 0, nextId = 1, selId = 0, drawn = '', hidden = false, timer, host, root;
+var origFetch = window.fetch, origOpen = XMLHttpRequest.prototype.open, origSend = XMLHttpRequest.prototype.send;
+
+function note(m) { notes.push(String(m).slice(0, 200)); if (notes.length > 40) notes.shift(); }
+function abs(u, base) { try { return new URL(String(u), base || location.href).href; } catch (e) { return ''; } }
+function wanted(u) { return !SKIP.test(u) && (FILE.test(u) || HINT.test(u)); }
+function decode(s) { var ta = document.createElement('textarea'); ta.innerHTML = s; return ta.value; }
+function tidy(s) { return s.split('\n').map(function (l) { return l.trim(); }).filter(Boolean).join('\n'); }
+function clean(s) { return tidy(decode(String(s).replace(/<[^>]*>/g, ''))); }
+function pad(n, w) { n = String(n); while (n.length < w) n = '0' + n; return n; }
+function secs(v) {
+  var m = /^(?:(\d+):)?(\d+):(\d+)(?:[.,](\d+))?$/.exec(String(v || '').trim());
+  return m ? (+(m[1] || 0)) * 3600 + (+m[2]) * 60 + (+m[3]) + (m[4] ? +('0.' + m[4]) : 0) : NaN;
+}
+function stamp(s, sep) {
+  var ms = Math.round(s * 1000);
+  return pad(Math.floor(ms / 3600000), 2) + ':' + pad(Math.floor(ms / 60000) % 60, 2) + ':' + pad(Math.floor(ms / 1000) % 60, 2) + sep + pad(ms % 1000, 3);
+}
+function langOf(u) {
+  // not hl=: on YouTube that is the language of the page, not of the captions
+  var m = /[?&]tlang=([\w-]+)/i.exec(u) || /[?&](?:lang|language|locale)=([\w-]+)/i.exec(u) ||
+    /[\/_.-]([a-z]{2,3}(?:-[A-Za-z]{2,4})?)\.(?:vtt|webvtt|srt|ttml2?|dfxp)(?:[?#]|$)/.exec(u);
+  return m ? m[1] : '';
+}
+// pages like youtube.com/watch change address without reloading: tracks belong to the page they were found on
+function pageKey(h) {
+  try {
+    var u = new URL(h), v = u.searchParams.get('v');
+    return u.origin + u.pathname + (v ? '?v=' + v : u.search);
+  } catch (e) { return h; }
+}
+function here() { var k = pageKey(location.href); return tracks.filter(function (t) { return t.key === k; }); }
+
+// ---- parsers: each returns [{s, e, t}] (start, end in seconds, text)
+function parseVtt(t) {
+  var cues = [];
+  t.replace(/\r\n?/g, '\n').split(/\n{2,}/).forEach(function (block) {
+    var lines = block.split('\n'), i = 0;
+    while (i < lines.length && !ARROW.test(lines[i])) i++;
+    if (i === lines.length || /^(NOTE|STYLE|REGION)\b/.test(lines[0])) return;
+    var m = ARROW.exec(lines[i]), txt = clean(lines.slice(i + 1).join('\n'));
+    if (txt) cues.push({ s: secs(m[1]), e: secs(m[2]), t: txt });
+  });
+  return cues;
+}
+function parseJson3(o) {
+  var cues = [];
+  (o.events || []).forEach(function (e) {
+    var txt = tidy((e.segs || []).map(function (g) { return g.utf8 || ''; }).join(''));
+    if (txt) cues.push({ s: (e.tStartMs || 0) / 1000, e: ((e.tStartMs || 0) + (e.dDurationMs || 0)) / 1000, t: txt });
+  });
+  return cues;
+}
+function nodeText(n) {
+  var s = '';
+  for (var c = n.firstChild; c; c = c.nextSibling) {
+    if (c.nodeType === 3) s += c.nodeValue.replace(/\s+/g, ' ');
+    else if (c.nodeType === 1) s += c.localName === 'br' ? '\n' : nodeText(c);
+  }
+  return s;
+}
+function ttTime(v, tick) {
+  var m = /^(\d+(?:\.\d+)?)(h|ms|m|s|t)$/.exec(String(v || '').trim());
+  if (!m) return secs(String(v || '').replace(/^(\d+:\d+:\d+):\d+$/, '$1'));
+  var n = +m[1];
+  return m[2] === 'h' ? n * 3600 : m[2] === 'm' ? n * 60 : m[2] === 's' ? n : m[2] === 'ms' ? n / 1000 : n / tick;
+}
+function parseXml(t) {
+  var d = new DOMParser().parseFromString(t, 'text/xml'), r = d.documentElement, cues = [], els, i, e, a, b, txt;
+  if (!r || d.getElementsByTagName('parsererror').length) return null;
+  var name = r.localName.toLowerCase();
+  if (name === 'tt') {
+    var tick = +(r.getAttributeNS('http://www.w3.org/ns/ttml#parameter', 'tickRate') || r.getAttribute('ttp:tickRate') || 1);
+    els = d.getElementsByTagNameNS('*', 'p');
+    for (i = 0; i < els.length; i++) {
+      e = els[i];
+      a = ttTime(e.getAttribute('begin'), tick);
+      b = e.getAttribute('end') ? ttTime(e.getAttribute('end'), tick) : a + ttTime(e.getAttribute('dur'), tick);
+      txt = tidy(nodeText(e));
+      if (txt && !isNaN(a)) cues.push({ s: a, e: b, t: txt });
+    }
+    return cues.length ? { format: 'ttml', cues: cues } : null;
+  }
+  if (name !== 'transcript' && name !== 'timedtext') return null;
+  els = d.getElementsByTagName('*');
+  for (i = 0; i < els.length; i++) {
+    e = els[i];
+    if (e.localName === 'text' && e.hasAttribute('start')) {         // youtube, older format (seconds, entities encoded twice)
+      a = +e.getAttribute('start'); b = a + +(e.getAttribute('dur') || 0); txt = tidy(decode(nodeText(e)));
+    } else if (e.localName === 'p' && e.hasAttribute('t')) {         // youtube srv3 (milliseconds)
+      a = +e.getAttribute('t') / 1000; b = a + +(e.getAttribute('d') || 0) / 1000; txt = tidy(nodeText(e));
+    } else continue;
+    if (txt) cues.push({ s: a, e: b, t: txt });
+  }
+  return cues.length ? { format: 'xml', cues: cues } : null;
+}
+function parse(t) {
+  var head = t.slice(0, 2000).trim(), c;
+  if (/^WEBVTT/.test(head) || (head.charAt(0) !== '<' && ARROW.test(head))) {
+    c = parseVtt(t);
+    return c.length ? { format: /^WEBVTT/.test(head) ? 'vtt' : 'srt', cues: c } : null;
+  }
+  if (head.charAt(0) === '{') {
+    try { var o = JSON.parse(t); c = o && o.events ? parseJson3(o) : []; } catch (e) { c = []; }
+    return c.length ? { format: 'json3', cues: c } : null;
+  }
+  return head.charAt(0) === '<' ? parseXml(t) : null;
+}
+
+// ---- tracks
+function add(url, format, cues, meta) {
+  if (!cues.length || tracks.length >= MAX_TRACKS) return;
+  cues.sort(function (a, b) { return a.s - b.s; });
+  cues.forEach(function (c) { if (!(c.e > c.s)) c.e = c.s + 2; });
+  var lang = (meta && meta.lang) || langOf(url);
+  var sig = lang + '|' + cues.length + '|' + cues[0].t + '|' + cues[cues.length - 1].s;
+  if (tracks.some(function (t) { return t.sig === sig; })) return;
+  var tr = {
+    id: nextId++, sig: sig, url: url, format: format, lang: lang, label: (meta && meta.label) || '',
+    auto: /[?&]kind=asr\b/.test(url), cues: cues, page: location.href, key: pageKey(location.href), title: document.title, at: Date.now()
+  };
+  tracks.push(tr);
+  selId = tr.id; hidden = false;
+  draw();
+}
+function ingest(url, body, meta) {
+  if (typeof body !== 'string' || !body || body.length > MAX_BODY) return;
+  var t = body.replace(/^\uFEFF/, '');
+  if (/^\s*#EXTM3U/.test(t)) return playlist(url, t, meta || {});
+  var r = parse(t);
+  if (r) add(url, r.format, r.cues, meta);
+  else note('not captions: ' + url.slice(0, 120));
+}
+function playlist(url, t, meta) {
+  var lines = t.split(/\r?\n/), segs;
+  if (/#EXT-X-STREAM-INF|#EXT-X-MEDIA:/.test(t)) {                   // master playlist: follow its subtitle renditions
+    lines.forEach(function (ln) {
+      var u = /^#EXT-X-MEDIA:/.test(ln) && /TYPE=SUBTITLES/.test(ln) && /URI="([^"]+)"/.exec(ln);
+      if (!u) return;
+      var lang = /LANGUAGE="([^"]*)"/.exec(ln), name = /NAME="([^"]*)"/.exec(ln), sub = abs(u[1], url);
+      if (sub && !seen[sub]) { seen[sub] = 2; fetchIt(sub, { lang: lang ? lang[1] : '', label: name ? name[1] : '', hls: true }); }
+    });
+    return;
+  }
+  segs = lines.filter(function (l) { return l && l.charAt(0) !== '#'; }).map(function (l) { return abs(l, url); });
+  if (!segs.length || segs.length > MAX_SEGMENTS) return;
+  if (!meta.hls && !segs.every(function (s) { return /\.(vtt|webvtt|srt|ttml2?)(\?|#|$)/i.test(s); })) return;
+  segs.forEach(function (s) { seen[s] = 2; });
+  Promise.all(segs.map(function (s) {
+    return origFetch.call(window, s).then(function (r) { return r.text(); });
+  })).then(function (parts) {
+    var dup = {}, cues = [];
+    parts.forEach(function (p) {
+      parseVtt(p).forEach(function (c) { var k = c.s + '|' + c.t; if (!dup[k]) { dup[k] = 1; cues.push(c); } });
+    });
+    for (var i = tracks.length - 1; i >= 0; i--)                     // a player may have loaded single segments first
+      if (segs.indexOf(tracks[i].url) >= 0) tracks.splice(i, 1);
+    add(url, 'vtt', cues, meta);
+    draw();
+  }).catch(function (e) { note('subtitle playlist failed: ' + url.slice(0, 120) + ' ' + e); });
+}
+function fetchIt(url, meta) {
+  if (tracks.length >= MAX_TRACKS) return;
+  origFetch.call(window, url).then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.text();
+  }).then(function (b) { ingest(url, b, meta); })
+    .catch(function (e) { note('could not read ' + url.slice(0, 120) + ': ' + e); });
+}
+
+// ---- finding them: live traffic first (we get the body for free), then the resource timeline for what loaded before us
+function watch(url, type, body, orig) {
+  url = abs(url);
+  if (!url || seen[url] === 2) return;
+  if (!(seen[orig] === 1 || wanted(url) || TYPE.test(type || ''))) return;
+  seen[url] = 2;
+  if (orig) seen[orig] = 2;
+  try {
+    Promise.resolve(body()).then(function (b) {
+      if (typeof b === 'string') ingest(url, b); else fetchIt(url);
+    }, function () { fetchIt(url); });
+  } catch (e) { fetchIt(url); }
+}
+window.fetch = function (input) {
+  var p = origFetch.apply(this, arguments);
+  try {
+    var u = abs((input && input.url) || input);
+    if (u && !seen[u] && wanted(u)) seen[u] = 1;
+    p.then(function (res) {
+      try {
+        if (res.ok) watch(res.url || u, res.headers.get('content-type'), function () { return res.clone().text(); }, u);
+      } catch (e) { }
+    }, function () { });
+  } catch (e) { }
+  return p;
+};
+XMLHttpRequest.prototype.open = function (method, u) {
+  try {
+    this.__brainCapUrl = abs(u);
+    if (this.__brainCapUrl && !seen[this.__brainCapUrl] && wanted(this.__brainCapUrl)) seen[this.__brainCapUrl] = 1;
+  } catch (e) { }
+  return origOpen.apply(this, arguments);
+};
+XMLHttpRequest.prototype.send = function () {
+  var x = this;
+  try {
+    x.addEventListener('load', function () {
+      try {
+        if (x.status < 200 || x.status > 299) return;
+        watch(x.responseURL || x.__brainCapUrl, x.getResponseHeader('content-type'), function () {
+          if (x.responseType === '' || x.responseType === 'text') return x.responseText;
+          if (x.responseType === 'arraybuffer') return new TextDecoder().decode(x.response);
+          if (x.responseType === 'json') return JSON.stringify(x.response);
+        }, x.__brainCapUrl);
+      } catch (e) { }
+    });
+  } catch (e) { }
+  return origSend.apply(this, arguments);
+};
+function fromTimeline(entries) {
+  entries.forEach(function (e) {
+    try {
+      var u = e.name;
+      if (seen[u] || /^(img|image|css|script|link|iframe|frame|beacon|font|navigation)$/.test(e.initiatorType) || !wanted(u)) return;
+      if (/\.m3u8/i.test(u) && lists++ >= MAX_PLAYLISTS) return;
+      seen[u] = 2;
+      fetchIt(u);
+    } catch (x) { }
+  });
+}
+try {
+  fromTimeline(performance.getEntriesByType('resource'));
+  new PerformanceObserver(function (l) { fromTimeline(l.getEntries()); }).observe({ entryTypes: ['resource'] });
+} catch (e) { note('resource timeline unavailable: ' + e); }
+
+// <track> files and cues the page's own player created
+function scan() {
+  var again = false;
+  try {
+    document.querySelectorAll('track[src]').forEach(function (t) {
+      var u = abs(t.src);
+      if ((t.kind === 'subtitles' || t.kind === 'captions') && u && !seen[u]) { seen[u] = 2; fetchIt(u, { lang: t.srclang, label: t.label }); }
+    });
+    document.querySelectorAll('video').forEach(function (v) {
+      for (var i = 0; i < v.textTracks.length; i++) {
+        var tt = v.textTracks[i], n = tt.cues ? tt.cues.length : 0;
+        if ((tt.kind !== 'subtitles' && tt.kind !== 'captions') || !n || tt.__brainN === -1) continue;
+        if (tt.__brainN !== n) { tt.__brainN = n; again = true; continue; }   // still filling up
+        tt.__brainN = -1;
+        var cues = [];
+        for (var j = 0; j < n; j++) {
+          var txt = clean(tt.cues[j].text || '');
+          if (txt) cues.push({ s: tt.cues[j].startTime, e: tt.cues[j].endTime, t: txt });
+        }
+        add('textTrack:' + (tt.label || tt.language || i), 'textTrack', cues, { lang: tt.language, label: tt.label });
+      }
+    });
+  } catch (e) { note('scan: ' + e); }
+  if (again) later(1500);
+  draw();                                                            // the page may have changed since the chip was drawn
+}
+function later(ms) { clearTimeout(timer); timer = setTimeout(scan, ms); }
+['loadedmetadata', 'loadeddata', 'play', 'playing'].forEach(function (ev) {
+  document.addEventListener(ev, function () { later(600); }, true);
+});
+document.addEventListener('load', function (e) { if (e.target && e.target.tagName === 'TRACK') later(300); }, true);
+
+// ---- the CC chip
+function mk(tag, css, txt, click) {
+  var n = document.createElement(tag);
+  n.style.cssText = css;
+  if (txt != null) n.textContent = txt;
+  if (click) n.addEventListener('click', click);
+  return n;
+}
+function copy(s, b) {
+  var label = b.textContent;
+  function done(ok) { b.textContent = ok ? 'Copied' : 'Failed'; setTimeout(function () { b.textContent = label; }, 1200); }
+  function fallback() {
+    var ta = mk('textarea', 'position:fixed;opacity:0', null);
+    ta.value = s;
+    root.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { }
+    root.removeChild(ta);
+    done(ok);
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(s).then(function () { done(true); }, fallback); return; }
+  } catch (e) { }
+  fallback();
+}
+function draw() {
+  var cur = here(), tr = cur.filter(function (t) { return t.id === selId; })[0] || cur[cur.length - 1];
+  var want = API.ui === false || hidden || !tr ? '' : cur.map(function (t) { return t.id + ':' + t.cues.length; }).join() + '|' + tr.id;
+  if (want === drawn) return;
+  drawn = want;
+  if (!want) { if (host) host.style.display = 'none'; return; }
+  if (!host) {
+    host = mk('div', 'all:initial;position:fixed;left:14px;bottom:14px;z-index:2147483647');
+    root = host.attachShadow({ mode: 'open' });
+    (document.body || document.documentElement).appendChild(host);
+  }
+  host.style.display = '';
+  while (root.firstChild) root.removeChild(root.firstChild);
+  var bar = mk('div', 'display:flex;align-items:center;gap:8px;padding:6px 8px 6px 10px;border-radius:999px;background:rgba(24,24,27,.92);color:#fff;font:12px/1 -apple-system,system-ui,sans-serif;box-shadow:0 4px 18px rgba(0,0,0,.35)');
+  var btn = 'border:0;border-radius:999px;padding:5px 9px;background:rgba(255,255,255,.16);color:#fff;font:inherit;cursor:pointer';
+  function name(t) { return (t.label || t.lang || 'captions') + (t.auto ? ' (auto)' : '') + ' · ' + t.cues.length + ' lines'; }
+  bar.appendChild(mk('b', 'background:#fff;color:#111;border-radius:4px;padding:2px 4px;font-size:10px', 'CC'));
+  if (cur.length > 1) {
+    var pick = mk('select', 'border:0;border-radius:6px;padding:3px;background:rgba(255,255,255,.16);color:#fff;font:inherit;max-width:220px');
+    cur.forEach(function (t) {
+      var o = mk('option', 'color:#000', name(t));
+      o.value = t.id; o.selected = t === tr;
+      pick.appendChild(o);
+    });
+    pick.addEventListener('change', function () { selId = +pick.value; draw(); });
+    bar.appendChild(pick);
+  } else bar.appendChild(mk('span', '', name(tr)));
+  var b1 = mk('button', btn, 'Copy text'), b2 = mk('button', btn, 'Copy SRT');
+  b1.addEventListener('click', function () { copy(API.text(tr.id), b1); });
+  b2.addEventListener('click', function () { copy(API.srt(tr.id), b2); });
+  bar.appendChild(b1); bar.appendChild(b2);
+  bar.appendChild(mk('button', btn + ';padding:5px 8px', '×', function () { hidden = true; draw(); }));
+  root.appendChild(bar);
+}
+
+var API = window.__brainCaptions = {
+  ui: true, tracks: tracks, notes: notes, scan: scan,
+  list: function () {
+    var k = pageKey(location.href);
+    return tracks.map(function (t) { return { id: t.id, lang: t.lang, label: t.label, auto: t.auto, format: t.format, lines: t.cues.length, url: t.url, page: t.page, current: t.key === k }; });
+  },
+  get: function (id) { return id == null ? here().pop() : tracks.filter(function (t) { return t.id === id; })[0]; },
+  text: function (id) { var t = API.get(id); return t ? t.cues.map(function (c) { return c.t; }).join('\n') : ''; },
+  srt: function (id) {
+    var t = API.get(id);
+    return t ? t.cues.map(function (c, i) { return (i + 1) + '\n' + stamp(c.s, ',') + ' --> ' + stamp(c.e, ',') + '\n' + c.t + '\n'; }).join('\n') : '';
+  },
+  vtt: function (id) {
+    var t = API.get(id);
+    return t ? 'WEBVTT\n\n' + t.cues.map(function (c) { return stamp(c.s, '.') + ' --> ' + stamp(c.e, '.') + '\n' + c.t + '\n'; }).join('\n') : '';
+  }
+};
+scan();
+later(2500);
 """;
 }

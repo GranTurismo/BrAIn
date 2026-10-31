@@ -248,7 +248,7 @@ scripts that BrAIn runs automatically every time a matching site loads.
   code runs once per page load after the DOM is ready, with full DOM access.
 - **Quick tweaks** — one-click templates: auto-reject cookie banners, remove
   newsletter pop-ups, un-stick fixed bars, stop autoplaying video, unlock
-  copy & right-click, dark mode, YouTube cleanup.
+  copy & right-click, dark mode, YouTube cleanup, grab video captions.
 - **Let an agent write it** — `userscript_create` saves a script an agent wrote.
   Agent scripts are **drafts**: nothing an AI writes runs until you review the code
   and switch it on. Agents can test with `userscript_run`, debug with
