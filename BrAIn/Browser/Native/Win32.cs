@@ -264,6 +264,34 @@ internal static class Win32
         finally { CloseClipboard(); }
     }
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint RegisterClipboardFormatW(string name);
+
+    /// <summary>Replaces the clipboard with a PNG picture (the registered "PNG" format that browsers,
+    /// Office and most editors read). Serves "Copy image" in the page menu.</summary>
+    internal static bool SetClipboardPng(byte[] png)
+    {
+        const uint GmemMoveable = 0x2;
+        if (png.Length == 0) return false;
+        var fmt = RegisterClipboardFormatW("PNG");
+        if (fmt == 0) return false;
+        var h = GlobalAlloc(GmemMoveable, (UIntPtr)png.Length);
+        if (h == IntPtr.Zero) return false;
+        var p = GlobalLock(h);
+        if (p == IntPtr.Zero) { GlobalFree(h); return false; }
+        try { Marshal.Copy(png, 0, p, png.Length); }
+        finally { GlobalUnlock(h); }
+        if (!OpenClipboard(IntPtr.Zero)) { GlobalFree(h); return false; }
+        try
+        {
+            EmptyClipboard();
+            if (SetClipboardData(fmt, h) != IntPtr.Zero) return true;
+            GlobalFree(h);
+            return false;
+        }
+        finally { CloseClipboard(); }
+    }
+
     // ---------------- consent prompt (password-vault unlock) ----------------
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

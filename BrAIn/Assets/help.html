@@ -92,10 +92,37 @@
       bookmarks, print, view-source, fullscreen and always-on-top.
       Bookmarks and history persist between launches.</p>
       <p><b>Copy as Markdown:</b> <kbd>Ctrl+Shift+M</kbd> (or <b>⋮ → Copy page as Markdown</b>, or right-click selected text) puts the page — or just your selection — on the clipboard as clean Markdown: headings, links, lists, tables and code, without menus, banners or scripts. Paste it straight into an AI chat or your notes.</p>
+      <p><b>Copy or save a picture:</b> right-click it → <b>Copy image</b> (paste it into a chat, a document or an image editor) or <b>Save image to Downloads</b> (the original file, listed on the downloads shelf). Also <i>Open image in new tab</i> and <i>Copy image address</i>. It works on pictures, canvases and CSS backgrounds, even when something transparent lies on top.</p>
       <p><b>Ask before risky actions:</b> when an AI agent is about to click something that looks like paying, deleting, sending or agreeing (or submit a card form), BrAIn holds the action and asks you: <b>Deny</b>, <b>Allow once</b>, or <b>Allow this site for 10 minutes</b>. No answer in 90 seconds counts as no. Search, login and add-to-cart are never interrupted. Turn it on or off in <b>⋮ → Agent asks before risky actions</b>. Flows you approved run without asking at each step. It cannot see inside scripts the agent runs with <i>evaluate</i>, so keep the agent paused (<kbd>Ctrl+Shift+.</kbd>) if you need a hard stop.</p>
       <p><b>Full control (use with care):</b> <b>⋮ → AI agent → Full control mode…</b> lets an AI agent connected over MCP act as you <b>without asking first</b>: Ask before risky actions stops asking, site scripts it writes run right away (and it can change or delete yours), flows it saves are active without review, and it can turn Ghost mode off. A warning explains the risks — it uses your signed-in accounts, a website can hide instructions that mislead an agent, and what it does may not be reversible — and you choose when it ends: after 15 minutes, after an hour, or when BrAIn closes. It is never remembered across launches and no agent can switch it on. While it is on, a red <b>Full control</b> pill in the toolbar counts down; click it to turn it off at once. Saved passwords stay out of the agent's reach, and pausing or cancelling the agent still works.</p>
       <p><b>Your turn:</b> when an AI agent reaches a step only you can do — logging in, a CAPTCHA, a 2FA code — it asks for you. BrAIn brings the tab forward and shows a card; do the step in the page yourself (the agent never sees what you type), then press <b>Done</b>, or <b>I can&rsquo;t do this</b> to tell it to stop. If you don&rsquo;t answer, the agent is told so after a few minutes.</p>
       <p><b>Record a flow:</b> <b>⋮ → Record a flow…</b>, do the task once by hand, then press <b>Stop</b>. Name it, tick any typed value you want callers to be able to change, and save. It appears in <b>Flows</b> as a pending flow; approve it and every AI agent can run it as a single tool. Passwords and card numbers are never recorded: they become arguments you supply each run. It starts from the page you were on and records clicks, typing, choices, checkboxes and Enter in this tab.</p></div>
+
+    <h2>Site APIs — every website becomes an API</h2>
+    <div class="card"><p>
+      BrAIn can learn how a website talks to its own backend and give your AI agent
+      <b>tools that call it directly</b> &mdash; no clicking through pages, and it works on sites
+      with no public API. The calls run <b>as you, inside a tab on the site</b>, so you are already
+      signed in.</p>
+      <p><b>Learn a site:</b> open it, then <b>⋮ → AI agent → Learn this site&rsquo;s API</b> (or the command
+      palette). The page reloads and BrAIn watches the data requests the site&rsquo;s own scripts make. Use the
+      site normally &mdash; open the lists and views you would want an agent to read.</p>
+      <p><b>Review and approve:</b> <b>⋮ → AI agent → Site APIs</b> (<code>about:apis</code>) lists what was found as
+      <i>drafts</i>. Click one to rename it, adjust its arguments, and read the masked example answer; switch it on to
+      let agents use it. Each approved endpoint becomes a tool called <code>api_&lt;site&gt;_&lt;name&gt;</code>. The
+      <b>Agents may use it</b> switch on a site turns all of its tools off at once.</p>
+      <p><b>Safe by design:</b> nothing is callable until you approve it, and only that page can approve. Calls that
+      <b>change data</b> (anything but a read) or touch something sensitive ask you every time in the Seatbelt card.
+      Sign-in and token endpoints, analytics and anything with a secret in its address are never learned; tokens and CSRF
+      values are never stored (only their names &mdash; the values stay in the page&rsquo;s memory). Nothing is learned in
+      Ghost mode or private tabs. Stored in <code>apis/&lt;site&gt;.json</code>; <b>Forget site</b> removes it.</p>
+      <p><b>Export documentation (optional):</b> every site has an <b>Export docs…</b> button. Tick what you want &mdash;
+      an <b>OpenAPI 3 file</b> (<code>&lt;site&gt;-openapi.json</code>, with a summary and description for every endpoint,
+      argument and field; import it into Postman, Insomnia, Swagger UI or Redoc) and/or a <b>full Markdown reference</b>
+      (<code>&lt;site&gt;-api.md</code>: overview, every endpoint with its arguments, example tool calls and <code>curl</code>,
+      GraphQL documents, response fields) &mdash; choose approved endpoints only or drafts too, and the files are saved in
+      your Downloads folder. They contain no token, cookie or password, but they do describe the site&rsquo;s private API,
+      so treat them as private.</p></div>
 
     <h2>Rewind — time travel for pages</h2>
     <div class="card"><p>
@@ -117,27 +144,29 @@
     <h2>Ghost mode</h2>
     <div class="card"><p>
       One switch for “leave no trace”: the <b>ghost button</b> in the toolbar,
-      <code>Ctrl+Shift+X</code>, or <b>⋮ → Ghost mode</b>. While it is on,
-      nothing is saved — no history, no password saving or autofill, no Rewind
-      snapshots, no session restore and no AI-call log on disk. Tabs you open
-      meanwhile are private tabs, and their cookies and site data vanish when
-      they close. Turn it off and the browser goes back to remembering as usual.</p>
-      <p>Tabs that were already open keep their normal site data, so open a new
-      tab after switching on for a fully clean session. Ghost mode is never
-      remembered — every launch starts with it off.</p>
-      <p><b>Cookies &amp; logins:</b> by default a ghost tab starts empty, so every
-      site sees a visitor who is not signed in. If you want to stay signed in,
-      turn on <b>⋮ → Tabs → Ghost: cookies &amp; logins</b> (or find it in the
-      command palette). Then new ghost tabs start with a <i>copy</i> of your
-      cookies, so your signed-in sites open signed in, and saved passwords can be
-      autofilled (after the usual confirmation). It only goes one way:
-      nothing a ghost tab sets or changes ever reaches your real profile, and no
-      new passwords are offered for saving — it all disappears when the last ghost
-      tab closes. Only cookies are copied, so a site that keeps its sign-in
-      elsewhere (some store it in local storage) still asks you to sign in. Tabs
-      you open with <b>Private</b> (<code>Ctrl+Shift+N</code>) always start clean.
-      The choice is remembered between launches, and applies to tabs opened
-      afterwards.</p></div>
+      <code>Ctrl+Shift+X</code>, or <b>⋮ → Tabs → Ghost mode</b>. While it is on,
+      nothing is saved — no history, no password saving, no Rewind snapshots, no
+      session restore and no AI-call log on disk — and <b>you are logged out of
+      every account</b>. Tabs you open meanwhile are private tabs whose cookies
+      and site data vanish when they close.</p>
+      <p><b>Tabs you already had open</b> leave their accounts too: the one you are
+      looking at reloads logged out right away, and each of the others does the
+      same when you switch to it (so a tab with something half-typed is not touched
+      until you look at it). When you turn Ghost mode off, every one of those tabs
+      goes back to the page it was on before — nothing you browsed in Ghost is put
+      into history — and you are logged in again.</p>
+      <p><b>Stay logged in:</b> click the <b>Ghost</b> pill next to the address bar
+      (it says <i>Logged out</i> or <i>Logged in</i>) for the switch. With it on, ghost
+      tabs start with a <i>copy</i> of your cookies, so your accounts open logged in,
+      and saved passwords can be autofilled (after the usual confirmation). It only
+      goes one way: nothing a ghost tab sets or changes ever reaches your real
+      profile, and no new passwords are offered for saving — it all disappears when
+      the last ghost tab closes. Only cookies are copied, so a site that keeps its
+      sign-in elsewhere (some store it in local storage) still asks you to log in.
+      Flipping the switch while Ghost mode is on reloads your ghost tabs to match.
+      Tabs you open with <b>Private</b> (<code>Ctrl+Shift+N</code>) always start clean.
+      The switch is remembered between launches; Ghost mode itself is never — every
+      launch starts with it off.</p></div>
 
     <h2>Keyboard shortcuts</h2>
     <div class="card keys">

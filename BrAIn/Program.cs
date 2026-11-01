@@ -90,6 +90,7 @@ public static class Program
         builder.Services.AddSingleton(controller.Tabs);
         builder.Services.AddSingleton(controller.Activity);
         builder.Services.AddSingleton(controller.Flows);
+        builder.Services.AddSingleton(controller.Apis);
         builder.Services.AddSingleton(controller.Scripts);
         builder.Services
             .AddMcpServer()
@@ -98,6 +99,7 @@ public static class Program
             .WithTools<ProfileTools>()
             .WithTools<FlowTools>()
             .WithTools<UserScriptTools>()
+            .WithTools<ApiTools>()
             // Record every tool call (primitives and flow_* alike) in calls.jsonl.
             .WithRequestFilters(f => f.AddCallToolFilter(ActivityRecorder.Create(controller, controller.Activity)));
 
@@ -111,6 +113,7 @@ public static class Program
             var mcpOptions = host.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<ModelContextProtocol.Server.McpServerOptions>>().Value;
             mcpOptions.ToolCollection ??= new ModelContextProtocol.Server.McpServerPrimitiveCollection<ModelContextProtocol.Server.McpServerTool>();
             controller.Flows.Attach(mcpOptions.ToolCollection);
+            controller.Apis.Attach(mcpOptions.ToolCollection);
         }
         catch (Exception ex) { Console.Error.WriteLine($"[BrAIn] flows unavailable: {ex.Message}"); }
 

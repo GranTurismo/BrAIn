@@ -47,7 +47,7 @@ internal static partial class WkTabs
         if (Interlocked.Decrement(ref _seedLeft) <= 0) _seedTcs?.TrySetResult();
     }
 
-    private static unsafe IntPtr GlobalBlock(void* invoke)
+    internal static unsafe IntPtr GlobalBlock(void* invoke)
     {
         var lib = NativeLibrary.Load("/usr/lib/libSystem.B.dylib");
         var isa = NativeLibrary.GetExport(lib, "_NSConcreteGlobalBlock");

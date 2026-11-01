@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Site APIs — BrAIn</title>
+<script>
+  // Served via LoadRawString — flags itself so the host maps the tab to about:apis
+  // instead of the literal about:blank that location.href reports.
+  window.__brainApis = 1;
+  // Snapshot baked in by the host; live updates arrive as b:100 pushes (b:101 = a notice) that
+  // chrome.js forwards to us via the 'brain-msg' document event.
+  window.__brainApisData = __BRAIN_APIS_JSON__;
+</script>
+<style>
+/*@THEME*/
+  body { padding: 84px 24px 90px; }
+  .wrap { max-width: 1020px; }
+  .head { display: flex; align-items: center; gap: 18px; margin-bottom: 8px; flex-wrap: wrap; }
+  .logo { font-size: 30px; flex: none; }
+  .spacer { flex: 1; }
+  .lede { color: var(--mut); font-size: 13.5px; line-height: 1.7; margin: 0 0 20px; max-width: 800px; }
+  .lede b { color: #e9e3de; font-weight: 600; }
+  code { font: 12px var(--mono); padding: 1px 6px; border-radius: 6px; background: rgba(255,255,255,.07); color: #f3d9c4; }
+
+  .btn2 { height: 36px; padding: 0 14px; border-radius: 11px; cursor: pointer; border: 1px solid rgba(255,255,255,.1);
+    background: var(--glass); color: #e8e3df; font: 600 12.5px var(--font); transition: all .15s; white-space: nowrap; }
+  .btn2:hover { background: var(--glass-hi); border-color: hsl(var(--h) 100% 74% / .45); color: #fff; }
+  .btn2.pri { background: linear-gradient(120deg, hsl(var(--h) 80% 60%), hsl(calc(var(--h) - 40) 70% 52%)); border-color: transparent; color: #fff; }
+  .btn2.pri:hover { filter: brightness(1.12); }
+  .btn2.sm { height: 30px; padding: 0 11px; font-size: 12px; border-radius: 9px; }
+  .btn2.dng:hover, .btn2.dng.armed { background: rgba(232,17,35,.2); border-color: rgba(232,80,90,.55); color: #ffd7da; }
+  .btn2[disabled] { opacity: .4; pointer-events: none; }
+
+  .notice { margin: 0 0 18px; padding: 12px 16px; border-radius: 13px; font-size: 13px; line-height: 1.55; white-space: pre-wrap;
+    background: rgba(80,200,150,.1); border: 1px solid rgba(80,200,150,.35); color: #bff0da; display: flex; gap: 12px; align-items: flex-start; }
+  .notice.bad { background: rgba(232,17,35,.1); border-color: rgba(232,80,90,.45); color: #ffc9cd; }
+  .notice .x { margin-left: auto; cursor: pointer; opacity: .7; flex: none; }
+  .warn { margin: 0 0 18px; padding: 11px 16px; border-radius: 13px; font-size: 12.5px; line-height: 1.55;
+    background: rgba(255,170,90,.09); border: 1px solid rgba(255,170,90,.4); color: #ffd9b3; }
+
+  /* the site you are on */
+  .here { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-radius: 16px; margin-bottom: 22px; flex-wrap: wrap;
+    background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03)); border: 1px solid hsl(var(--h) 100% 74% / .28); }
+  .here .t { flex: 1; min-width: 220px; font-size: 13px; line-height: 1.55; color: #cbc5c0; }
+  .here .t b { color: #fff; font: 700 14px var(--mono); }
+
+  /* a site */
+  .site { margin-bottom: 22px; border-radius: 18px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.03)); border: 1px solid var(--line);
+    box-shadow: 0 14px 40px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.05); }
+  .site.off { opacity: .8; }
+  .shead { display: flex; align-items: center; gap: 12px; padding: 16px 18px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  .sname { font: 800 17px var(--mono); color: #fff; }
+  .live { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+    color: #ffd0a0; padding: 3px 10px; border-radius: 99px; background: hsl(var(--h) 100% 70% / .14); border: 1px solid hsl(var(--h) 100% 74% / .35); }
+  .live i { width: 7px; height: 7px; border-radius: 50%; background: hsl(var(--h) 100% 72%); box-shadow: 0 0 9px hsl(var(--h) 100% 72%); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; transform: scale(.8); } }
+  .counts { color: var(--dim); font-size: 12px; }
+  .sw { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--mut); cursor: pointer; user-select: none; }
+  .sw .s { width: 34px; height: 19px; border-radius: 99px; background: rgba(255,255,255,.16); position: relative; transition: background .15s; flex: none; }
+  .sw .s::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; transition: transform .16s; }
+  .sw.on .s { background: hsl(var(--h) 80% 58%); } .sw.on .s::after { transform: translateX(15px); }
+  .sw.on { color: #f3efeb; }
+
+  /* endpoints */
+  .ep { border-bottom: 1px solid var(--line); }
+  .ep:last-child { border-bottom: 0; }
+  .eline { display: flex; align-items: center; gap: 12px; padding: 11px 18px; min-height: 48px; cursor: pointer; transition: background .12s; }
+  .eline:hover { background: rgba(255,255,255,.035); }
+  .m { font: 700 10.5px var(--mono); letter-spacing: .6px; padding: 3px 7px; border-radius: 6px; flex: none; width: 52px; text-align: center;
+    background: rgba(110,220,170,.14); color: #8fe6c0; border: 1px solid rgba(110,220,170,.3); }
+  .m.w { background: rgba(255,170,90,.14); color: #ffc28a; border-color: rgba(255,170,90,.35); }
+  .tn { font: 600 13px var(--mono); color: #f6f2ee; flex: none; max-width: 330px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tn.draft { color: #a9a29b; }
+  .pth { font: 12px var(--mono); color: #8d867f; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .risk { font-size: 10.5px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; padding: 2px 8px; border-radius: 99px; flex: none; }
+  .risk.r { color: #8fe6c0; background: rgba(110,220,170,.1); }
+  .risk.w { color: #ffc28a; background: rgba(255,170,90,.13); }
+  .risk.s { color: #ff9aa5; background: rgba(255,107,122,.13); }
+  .seen { color: var(--dim); font-size: 11.5px; flex: none; width: 54px; text-align: right; font-variant-numeric: tabular-nums; }
+  .chev { color: var(--dim); flex: none; width: 14px; text-align: center; transition: transform .15s; }
+  .ep.open .chev { transform: rotate(90deg); }
+
+  /* the editor of one endpoint */
+  .ed { padding: 4px 18px 18px 18px; background: rgba(0,0,0,.18); }
+  .ed label { display: block; font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--dim); margin: 14px 0 5px; }
+  .ed .pre { display: flex; align-items: center; }
+  .ed .pre span { padding: 9px 4px 9px 12px; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.1); border-right: 0;
+    border-radius: 10px 0 0 10px; font: 13px var(--mono); color: var(--ac); white-space: nowrap; }
+  .ed .pre input { border-radius: 0 10px 10px 0; font-family: var(--mono); }
+  input[type=text], input:not([type]), select, textarea {
+    width: 100%; min-width: 0; padding: 9px 12px; border-radius: 10px; outline: none; color: #f9f6f3;
+    background: var(--glass); border: 1px solid rgba(255,255,255,.1); font: 13px var(--font);
+    transition: border-color .15s, box-shadow .2s, background .15s; }
+  textarea { resize: vertical; min-height: 54px; line-height: 1.5; }
+  select { appearance: none; padding-right: 22px; }
+  select option { background: #1c1a18; color: #eee; }
+  input:focus, select:focus, textarea:focus { background: var(--glass-hi); border-color: hsl(var(--h) 100% 74% / .55); box-shadow: 0 0 0 4px hsl(var(--h) 100% 74% / .13); }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: hsl(var(--h) 100% 74%); cursor: pointer; flex: none; }
+  .call { font: 12px var(--mono); color: #c9c2bb; padding: 9px 12px; border-radius: 10px; background: rgba(0,0,0,.28); border: 1px solid var(--line); word-break: break-all; }
+  .call b { color: #ffc28a; font-weight: 700; }
+  .prow { display: grid; grid-template-columns: 1.1fr .7fr .8fr .5fr 2fr; gap: 8px; align-items: center; margin-bottom: 7px; }
+  .prow.hd { color: var(--dim); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+  .prow .from { font: 12px var(--mono); color: #9e968f; }
+  .shape { font: 12px/1.55 var(--mono); color: #cbc5c0; padding: 10px 12px; border-radius: 10px; background: rgba(0,0,0,.28); border: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
+  .shape.sample { max-height: 220px; overflow: auto; color: #a9a29b; }
+  .edfoot { display: flex; gap: 10px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+  .err { color: #ff9aa5; font-size: 13px; flex: 1 1 100%; white-space: pre-wrap; }
+  .hint { color: var(--dim); font-size: 12px; line-height: 1.6; margin-top: 6px; }
+  .none { padding: 22px 18px; color: #6f6862; font-size: 13px; line-height: 1.7; }
+  .none b { color: #938c86; }
+
+  /* export panel */
+  .exp { padding: 16px 18px 18px; border-bottom: 1px solid var(--line); background: rgba(0,0,0,.2); }
+  .exp .et { font-size: 13px; color: #cbc5c0; margin-bottom: 12px; }
+  .exp .et b { color: #fff; font-family: var(--mono); }
+  .xk { display: flex; gap: 12px; align-items: flex-start; padding: 11px 13px; margin-bottom: 8px; border-radius: 12px; cursor: pointer;
+    background: var(--glass); border: 1px solid var(--line); transition: border-color .15s, background .15s; }
+  .xk:hover { background: var(--glass-hi); }
+  .xk:has(input:checked) { border-color: hsl(var(--h) 100% 74% / .5); background: hsl(var(--h) 100% 74% / .08); }
+  .xk input { margin-top: 3px; }
+  .xk b { color: #f3efeb; font-size: 13.5px; font-weight: 650; }
+  .xk code { margin-left: 6px; }
+  .xk i { display: block; font-style: normal; color: var(--mut); font-size: 12.5px; line-height: 1.6; margin-top: 3px; }
+  .xs { display: flex; gap: 20px; flex-wrap: wrap; margin: 12px 2px 14px; color: var(--mut); font-size: 12.5px; }
+  .xs label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+  .xs input { width: 15px; height: 15px; accent-color: hsl(var(--h) 100% 74%); }
+  .xf { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .xf .hint { flex: 1; min-width: 240px; margin: 0; }
+  .notice .files { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .notice .col { flex: 1; min-width: 0; }
+
+  .empty { padding: 36px 20px; text-align: center; color: #7d766f; font-size: 14px; line-height: 1.9; }
+  .empty b { color: #b3aca5; font-weight: 600; }
+  .steps { display: grid; gap: 12px; max-width: 640px; margin: 24px auto 0; text-align: left; counter-reset: s; }
+  .steps div { counter-increment: s; display: flex; gap: 14px; align-items: flex-start; padding: 12px 16px; border-radius: 14px; background: var(--glass); border: 1px solid var(--line); color: #cbc5c0; font-size: 13.5px; line-height: 1.6; }
+  .steps div::before { content: counter(s); flex: none; width: 24px; height: 24px; border-radius: 8px; display: grid; place-items: center;
+    background: hsl(var(--h) 100% 74% / .16); color: #fff; font: 700 12px var(--font); }
+  .safe { margin-top: 30px; padding: 16px 20px; border-radius: 16px; border: 1px solid var(--line); background: rgba(255,255,255,.025); color: #9e968f; font-size: 12.5px; line-height: 1.75; }
+  .safe b { color: #d7d0c9; }
+  .foot { margin-top: 36px; text-align: center; color: #635d57; font-size: 12.5px; line-height: 1.8; }
+  @media (max-width: 760px) { .prow { grid-template-columns: 1fr 1fr; } .prow.hd { display: none; } .pth, .seen { display: none; } }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <div class="logo">Site APIs</div>
+      <span class="spacer"></span>
+    </div>
+    <p class="lede">BrAIn can learn how a website talks to its own backend and turn that into <b>tools your AI agent calls directly</b> &mdash;
+      no clicking, no screenshots. It watches the data requests the site&rsquo;s own scripts make while you use it, groups them into
+      <b>endpoints</b>, and shows them here as drafts. Nothing is callable until <b>you</b> approve it; approved endpoints appear to agents as
+      tools named <code>api_&lt;site&gt;_&lt;name&gt;</code>, and run as you, inside a tab on the site.</p>
+    <div id="notice"></div>
+    <div id="warn"></div>
+    <div id="here"></div>
+    <div id="sites"></div>
+    <div class="safe"><b>What stays private.</b> Sign-in and token endpoints, analytics, and anything with a secret in its address are never learned.
+      Tokens and CSRF headers are never stored &mdash; only their names; the values stay in the page&rsquo;s memory. Sample answers are trimmed and
+      masked (emails, tokens). Nothing is learned in Ghost mode or in private tabs. Calls that <b>change data</b> (or touch something sensitive)
+      ask you every time, in the Seatbelt card.</div>
+    <div class="foot">Internal page &middot; <a href="#" id="back">&larr; Back to new tab</a></div>
+  </div>
+<script>
+(function () {
+  'use strict';
+  var S = window.__brainApisData || {};
+  S.sites = S.sites || []; S.tools = S.tools || {};
+  var ui = { open: {}, edit: {}, armed: {}, busy: {}, err: {}, dirty: false, exp: {}, expOpen: {} };
+
+  function send(cmd) { try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { } }
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function slug(site) {
+    var s = String(site).split('.')[0].toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (!s) s = 'site'; if (/^\d/.test(s)) s = 's' + s;
+    return s.length > 12 ? s.slice(0, 12) : s;
+  }
+  function toolName(site, name) { var n = 'api_' + slug(site) + '_' + name; return n.length > 60 ? n.slice(0, 60) : n; }
+  function findSite(name) { for (var i = 0; i < S.sites.length; i++) if (S.sites[i].site === name) return S.sites[i]; return null; }
+  function findEp(site, id) { var s = findSite(site); if (!s) return null; for (var i = 0; i < s.endpoints.length; i++) if (s.endpoints[i].id === id) return s.endpoints[i]; return null; }
+  function disarmLater(k) { setTimeout(function () { if (ui.armed[k]) { delete ui.armed[k]; render(); } }, 3500); }
+  function risk(e) { return e.sensitive ? ['s', 'sensitive'] : e.write ? ['w', 'changes data'] : ['r', 'read-only']; }
+
+  function render() {
+    renderNotice(); renderWarn(); renderHere();
+    var box = $('sites');
+    if (!S.sites.length) {
+      box.innerHTML = '<div class="empty"><b>Nothing learned yet.</b>' +
+        '<div class="steps">' +
+        '<div><span>Open a website you use &mdash; your code host, a dashboard, a bank, an internal tool.</span></div>' +
+        '<div><span>Open the BrAIn menu <code>&#8942;</code> and choose <b>Learn this site&rsquo;s API</b> (or type &ldquo;learn&rdquo; in the command palette). The page reloads so its first requests are seen.</span></div>' +
+        '<div><span>Use the site normally: open the lists and views you would want an agent to read. BrAIn watches the data calls its scripts make.</span></div>' +
+        '<div><span>Come back here, look at the drafts, and switch on the ones you want agents to have.</span></div>' +
+        '</div></div>';
+      return;
+    }
+    box.innerHTML = S.sites.map(siteHtml).join('');
+  }
+
+  function renderNotice() {
+    var n = S.notice, box = $('notice');
+    if (!n || !n.text || (Date.now() - (n.t || 0)) > 120000 || ui.noticeGone === n.t) { box.innerHTML = ''; return; }
+    var files = (n.files || []).map(function (f) {
+      return '<button class="btn2 sm" data-a="reveal" data-id="' + esc(f.id) + '">Show ' + esc(f.name) + '</button>' +
+        '<button class="btn2 sm" data-a="openfile" data-id="' + esc(f.id) + '">Open</button>';
+    }).join('');
+    box.innerHTML = '<div class="notice' + (n.ok ? '' : ' bad') + '"><span class="col">' + esc(n.text) + (files ? '<span class="files">' + files + '</span>' : '') +
+      '</span><span class="x" data-a="dismiss">&#10005;</span></div>';
+  }
+  function renderWarn() {
+    $('warn').innerHTML = S.belt === 'auto'
+      ? '<div class="warn"><b>The Seatbelt is off</b> (full control mode): calls that change data will run without asking you.</div>' : '';
+  }
+  function renderHere() {
+    var a = S.active, box = $('here');
+    if (!a) { box.innerHTML = ''; return; }
+    var s = findSite(a), on = !!(s && s.learn);
+    box.innerHTML = '<div class="here"><div class="t">The site in your last tab: <b>' + esc(a) + '</b><br>' +
+      (S.ghost ? 'Ghost mode is on &mdash; nothing is learned in Ghost mode.'
+        : on ? 'BrAIn is learning it. Use the site, then review the drafts below.' : 'Not being learned. Turn learning on, then use the site.') + '</div>' +
+      '<button class="btn2 ' + (on ? '' : 'pri') + '" data-a="learn" data-site="' + esc(a) + '" data-on="' + (on ? 0 : 1) + '"' + (S.ghost && !on ? ' disabled' : '') + '>' +
+      (on ? 'Stop learning' : 'Learn ' + esc(a)) + '</button></div>';
+  }
+
+  function siteHtml(s) {
+    var appr = s.endpoints.filter(function (e) { return e.approved; }), drafts = s.endpoints.filter(function (e) { return !e.approved; });
+    var h = '<div class="site' + (s.enabled ? '' : ' off') + '" data-site="' + esc(s.site) + '"><div class="shead"><span class="sname">' + esc(s.site) + '</span>' +
+      (s.learn ? '<span class="live"><i></i>Learning</span>' : '') +
+      '<span class="counts">' + appr.length + ' approved &middot; ' + drafts.length + ' to review</span><span class="spacer"></span>' +
+      '<span class="sw' + (s.enabled ? ' on' : '') + '" data-a="siteon" data-site="' + esc(s.site) + '" title="Agents may call this site\'s approved endpoints"><span class="s"></span>Agents may use it</span>' +
+      '<button class="btn2 sm" data-a="learn" data-site="' + esc(s.site) + '" data-on="' + (s.learn ? 0 : 1) + '"' + (S.ghost && !s.learn ? ' disabled' : '') + '>' + (s.learn ? 'Stop learning' : 'Learn') + '</button>' +
+      (s.endpoints.length ? '<button class="btn2 sm" data-a="export" data-site="' + esc(s.site) + '">' + (ui.expOpen[s.site] ? 'Hide export' : 'Export docs…') + '</button>' : '') +
+      (drafts.length ? '<button class="btn2 sm dng' + (ui.armed['cd' + s.site] ? ' armed' : '') + '" data-a="cleardrafts" data-site="' + esc(s.site) + '">' + (ui.armed['cd' + s.site] ? 'Click again' : 'Clear drafts') + '</button>' : '') +
+      '<button class="btn2 sm dng' + (ui.armed['ds' + s.site] ? ' armed' : '') + '" data-a="delsite" data-site="' + esc(s.site) + '">' + (ui.armed['ds' + s.site] ? 'Click again to forget' : 'Forget site') + '</button></div>';
+    if (ui.expOpen[s.site] && s.endpoints.length) h += exportHtml(s, appr.length, drafts.length);
+    if (!s.endpoints.length) h += '<div class="none"><b>Nothing found yet.</b> ' + (s.learn ? 'Use the site (and reload the page once) &mdash; endpoints appear here as it makes data requests.' : 'Turn learning on, then use the site.') + '</div>';
+    var list = appr.concat(drafts);
+    h += list.map(function (e) { return epHtml(s, e); }).join('');
+    return h + '</div>';
+  }
+
+  function exportHtml(s, nApproved, nDrafts) {
+    var ex = ui.exp[s.site] || (ui.exp[s.site] = { openapi: false, markdown: false, drafts: false });
+    var any = ex.openapi || ex.markdown;
+    return '<div class="exp"><div class="et">Export documentation for <b>' + esc(s.site) + '</b> &mdash; tick what you want:</div>' +
+      '<label class="xk"><input type="checkbox" data-x="openapi"' + (ex.openapi ? ' checked' : '') + '><span><b>OpenAPI 3 file</b><code>' + esc(s.site) + '-openapi.json</code>' +
+      '<i>A machine-readable description with a summary and a description for every endpoint, argument and field, the server addresses, the credentials each call needs, and masked example answers. Import it into Postman, Insomnia, Swagger UI or Redoc.</i></span></label>' +
+      '<label class="xk"><input type="checkbox" data-x="markdown"' + (ex.markdown ? ' checked' : '') + '><span><b>Full documentation (Markdown)</b><code>' + esc(s.site) + '-api.md</code>' +
+      '<i>A readable reference: an overview, then every endpoint with its arguments, example calls (as an agent tool call and as curl), the GraphQL documents, and the answer&rsquo;s fields with an example.</i></span></label>' +
+      '<div class="xs"><label><input type="radio" name="sc-' + esc(s.site) + '" data-x="scope" value="0"' + (ex.drafts ? '' : ' checked') + '> Approved endpoints only (' + nApproved + ')</label>' +
+      '<label><input type="radio" name="sc-' + esc(s.site) + '" data-x="scope" value="1"' + (ex.drafts ? ' checked' : '') + '> Approved and drafts (' + (nApproved + nDrafts) + ')</label></div>' +
+      '<div class="xf"><button class="btn2 pri" data-a="doexport"' + (any ? '' : ' disabled') + '>Export</button>' +
+      '<span class="hint">Saved to your Downloads folder. The files describe this site&rsquo;s private API and hold masked example answers, so treat them as private. No token, cookie or password is ever included.</span></div></div>';
+  }
+
+  function epHtml(s, e) {
+    var r = risk(e), open = !!ui.open[e.id];
+    var h = '<div class="ep' + (open ? ' open' : '') + '" data-site="' + esc(s.site) + '" data-id="' + esc(e.id) + '"><div class="eline" data-a="toggle">' +
+      '<span class="sw' + (e.approved ? ' on' : '') + '" data-a="approve" title="' + (e.approved ? 'Approved: agents can call it' : 'Draft: approve it so agents can call it') + '"><span class="s"></span></span>' +
+      '<span class="m' + (e.write ? ' w' : '') + '">' + esc(e.gqlOp ? (e.write ? 'MUT' : 'GQL') : e.method) + '</span>' +
+      '<span class="tn' + (e.approved ? '' : ' draft') + '">' + esc(S.tools[e.id] || toolName(s.site, e.name)) + '</span>' +
+      '<span class="pth">' + esc(e.gqlOp ? 'GraphQL ' + e.gqlOp : e.path) + '</span>' +
+      '<span class="risk ' + r[0] + '">' + r[1] + '</span><span class="seen">' + e.count + '&times;</span><span class="chev">&#9656;</span></div>';
+    if (open) h += editorHtml(s, e);
+    return h + '</div>';
+  }
+
+  function editorHtml(s, e) {
+    var d = ui.edit[e.id] || (ui.edit[e.id] = clone(e));
+    var err = ui.err[e.id];
+    var h = '<div class="ed">';
+    h += '<label>Tool name</label><div class="pre"><span>api_' + esc(slug(s.site)) + '_</span><input type="text" data-f="name" value="' + esc(d.name) + '" maxlength="36" spellcheck="false"></div>';
+    h += '<label>What it does (shown to the agent)</label><textarea data-f="description" rows="3">' + esc(d.description) + '</textarea>';
+    h += '<label>The request</label><div class="call"><b>' + esc(e.method) + '</b> ' + esc((e.origin.indexOf('http://') === 0 ? 'http://' : 'https://') + e.host) +
+      (e.gqlOp ? ' &mdash; GraphQL ' + esc(e.write ? 'mutation ' : 'query ') + esc(e.gqlOp) : '') + '</div>';
+    if (!e.gqlOp) h += '<div class="pre" style="margin-top:8px"><span>path</span><input type="text" data-f="path" value="' + esc(d.path) + '" spellcheck="false"></div>' +
+      '<div class="hint">Put <code>{name}</code> where the URL changes (an id, a slug). Each one needs a matching path argument below.</div>';
+    h += '<label>Arguments the agent can pass</label>';
+    if (!d.params.length) h += '<div class="hint">None: this call always asks for the same thing.</div>';
+    else {
+      h += '<div class="prow hd"><span>Name</span><span>From</span><span>Type</span><span>Needed</span><span>Meaning</span></div>';
+      d.params.forEach(function (p, i) {
+        h += '<div class="prow"><input type="text" data-p="' + i + '" data-f="name" value="' + esc(p.name) + '" spellcheck="false" maxlength="32">' +
+          '<span class="from">' + esc(({ path: 'in the path', query: '?' + p.key, body: 'body.' + p.key, 'var': 'variable ' + p.key })[p['in']] || p['in']) + '</span>' +
+          '<select data-p="' + i + '" data-f="type">' + ['string', 'number', 'boolean', 'object', 'array'].map(function (t) { return '<option' + (p.type === t ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>' +
+          '<span><input type="checkbox" data-p="' + i + '" data-f="required"' + (p.required ? ' checked' : '') + (p['in'] === 'path' ? ' disabled' : '') + '></span>' +
+          '<input type="text" data-p="' + i + '" data-f="description" value="' + esc(p.description || '') + '" placeholder="' + esc(p['default'] != null ? 'default ' + JSON.stringify(p['default']) : '') + '"></div>';
+      });
+    }
+    if (e.shape) h += '<label>It returns</label><div class="shape">' + esc(e.shape) + '</div>';
+    if (e.sample != null) h += '<label>Example answer (trimmed, masked)</label><div class="shape sample">' + esc(JSON.stringify(e.sample, null, 2)) + '</div>';
+    if (e.live && e.live.length) h += '<div class="hint">Sent with live values from the page (never stored): <code>' + e.live.map(esc).join('</code> <code>') + '</code></div>';
+    h += '<div class="edfoot">' + (err ? '<div class="err">' + esc(err) + '</div>' : '') +
+      '<button class="btn2 pri" data-a="save"' + (ui.busy[e.id] ? ' disabled' : '') + '>' + (ui.busy[e.id] ? 'Saving…' : 'Save changes') + '</button>' +
+      '<button class="btn2" data-a="close">Close</button><span class="spacer"></span>' +
+      '<button class="btn2 dng' + (ui.armed['de' + e.id] ? ' armed' : '') + '" data-a="delep">' + (ui.armed['de' + e.id] ? 'Click again to delete' : 'Delete') + '</button></div></div>';
+    return h;
+  }
+
+  // ------------------------------------------------------------ events
+  function ctx(el) {
+    var ep = el.closest('.ep'), st = el.closest('.site');
+    return { site: ep ? ep.getAttribute('data-site') : st ? st.getAttribute('data-site') : null, id: ep ? ep.getAttribute('data-id') : null };
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-a]'); if (!t) return;
+    var a = t.getAttribute('data-a'), c = ctx(t);
+    if (a === 'dismiss') { ui.noticeGone = S.notice && S.notice.t; render(); return; }
+    if (a === 'learn') { send('apisetlearn:' + JSON.stringify({ site: t.getAttribute('data-site'), on: t.getAttribute('data-on') === '1' })); return; }
+    if (a === 'export') { var sn = t.getAttribute('data-site'); ui.expOpen[sn] = !ui.expOpen[sn]; render(); return; }
+    if (a === 'doexport') {
+      var ex = ui.exp[c.site]; if (!ex || !(ex.openapi || ex.markdown)) return;
+      send('apiexport:' + JSON.stringify({ site: c.site, openapi: !!ex.openapi, markdown: !!ex.markdown, drafts: !!ex.drafts }));
+      return;
+    }
+    if (a === 'reveal') { send('dlreveal:' + t.getAttribute('data-id')); return; }
+    if (a === 'openfile') { send('dlopen:' + t.getAttribute('data-id')); return; }
+    if (a === 'siteon') { var s = findSite(c.site); if (s) { s.enabled = !s.enabled; send('apisite:' + JSON.stringify({ site: s.site, on: s.enabled })); render(); } return; }
+    if (a === 'cleardrafts') {
+      var k = 'cd' + t.getAttribute('data-site');
+      if (ui.armed[k]) { delete ui.armed[k]; send('apicleardrafts:' + JSON.stringify({ site: t.getAttribute('data-site') })); } else { ui.armed[k] = 1; disarmLater(k); render(); }
+      return;
+    }
+    if (a === 'delsite') {
+      var k2 = 'ds' + t.getAttribute('data-site');
+      if (ui.armed[k2]) { delete ui.armed[k2]; send('apisitedel:' + JSON.stringify({ site: t.getAttribute('data-site') })); } else { ui.armed[k2] = 1; disarmLater(k2); render(); }
+      return;
+    }
+    if (!c.id) return;
+    var ep = findEp(c.site, c.id); if (!ep) return;
+    if (a === 'approve') {
+      e.stopPropagation();
+      ep.approved = !ep.approved;
+      send('apiapprove:' + JSON.stringify({ site: c.site, id: c.id, on: ep.approved }));
+      render(); return;
+    }
+    if (a === 'toggle') { ui.open[c.id] = !ui.open[c.id]; if (!ui.open[c.id]) { delete ui.edit[c.id]; delete ui.err[c.id]; } render(); return; }
+    if (a === 'close') { ui.open[c.id] = false; delete ui.edit[c.id]; delete ui.err[c.id]; render(); return; }
+    if (a === 'save') {
+      var d = ui.edit[c.id]; if (!d) return;
+      ui.busy[c.id] = true; delete ui.err[c.id];
+      send('apisave:' + JSON.stringify({ site: c.site, ep: d }));
+      render(); return;
+    }
+    if (a === 'delep') {
+      var k3 = 'de' + c.id;
+      if (ui.armed[k3]) { delete ui.armed[k3]; send('apidel:' + JSON.stringify({ site: c.site, id: c.id })); delete ui.open[c.id]; delete ui.edit[c.id]; }
+      else { ui.armed[k3] = 1; disarmLater(k3); render(); }
+      return;
+    }
+  });
+
+  // edits go into the local copy; nothing is sent until Save
+  function onEdit(e) {
+    var t = e.target, f = t.getAttribute && t.getAttribute('data-f'); if (!f) return;
+    var c = ctx(t), d = c.id && ui.edit[c.id]; if (!d) return;
+    var p = t.getAttribute('data-p');
+    if (p != null) {
+      var prm = d.params[+p]; if (!prm) return;
+      if (f === 'name') {
+        var old = prm.name; prm.name = t.value;
+        // keep the path in step with a renamed path argument
+        if (prm['in'] === 'path' && old && t.value && d.path.indexOf('{' + old + '}') >= 0) d.path = d.path.split('{' + old + '}').join('{' + t.value + '}');
+        var pathBox = t.closest('.ed').querySelector('[data-f=path]'); if (pathBox && !pathBox.matches(':focus')) pathBox.value = d.path;
+      }
+      else if (f === 'required') prm.required = t.checked;
+      else prm[f] = t.value;
+    } else d[f] = t.value;
+  }
+  document.addEventListener('change', function (e) {
+    var t = e.target, x = t.getAttribute && t.getAttribute('data-x'); if (!x) return;
+    var c = ctx(t), ex = ui.exp[c.site]; if (!ex) return;
+    if (x === 'scope') ex.drafts = t.value === '1'; else ex[x] = t.checked;
+    var btn = t.closest('.exp').querySelector('[data-a=doexport]'); if (btn) btn.disabled = !(ex.openapi || ex.markdown);
+  });
+  document.addEventListener('input', onEdit);
+  document.addEventListener('change', onEdit);
+  document.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) e.stopPropagation();
+  }, true);
+
+  $('back').addEventListener('click', function (e) { e.preventDefault(); send('navigate:about:newtab'); });
+
+  // ------------------------------------------------------------ host pushes
+  document.addEventListener('brain-msg', function (e) {
+    var j = e.detail; if (!j) return;
+    if (j.b === 100) {
+      var keep = S.notice;
+      S = j; S.sites = j.sites || []; S.tools = j.tools || {};
+      if (!S.notice && keep && (Date.now() - keep.t) < 5000) S.notice = keep;
+      var a = document.activeElement;
+      // re-rendering while the user types in an editor would eat keystrokes
+      if (a && a.closest && a.closest('.ed') && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { renderNotice(); renderHere(); return; }
+      render();
+    } else if (j.b === 101) {
+      S.notice = { ok: !!j.ok, text: j.text, t: j.t || Date.now(), files: j.files || null };
+      Object.keys(ui.busy).forEach(function (id) {
+        if (!ui.busy[id]) return;
+        ui.busy[id] = false;
+        if (j.ok) { ui.open[id] = false; delete ui.edit[id]; delete ui.err[id]; } else ui.err[id] = j.text;
+      });
+      render();
+    }
+  });
+
+  send('apiget');
+  render();
+})();
+</script>
+</body>
+</html>

@@ -201,11 +201,12 @@ public sealed class ProfileTools(BrowserController browser)
 
     [McpServerTool(Name = "browser_ghost"), Description(
         "Ghost mode = browse without leaving a trace. While it is on nothing is saved: no history, no password saving or autofill, " +
-        "no Rewind snapshots, no session restore, and your tool calls stay out of the on-disk activity log; new tabs open as private " +
-        "tabs whose site data is wiped on close. Tabs that were already open keep their normal site data, so open a new tab after " +
-        "turning it on. The user can choose (a setting only they can change) whether those ghost tabs start clean or with a copy of " +
-        "their cookies and logins, so they open signed in and can autofill saved passwords; status tells you which. Either way " +
-        "nothing the tab does is saved back. action: status | on | off | toggle. You can turn it on whenever a task is sensitive; you can turn it off only if you " +
+        "no Rewind snapshots, no session restore, and your tool calls stay out of the on-disk activity log; every tab is private, " +
+        "its site data wiped on close, and the user is LOGGED OUT of every account while it is on — tabs that were already open are " +
+        "reloaded logged out the next time they are shown or used (and go back to their previous page when Ghost mode ends). The user " +
+        "can choose (\"Stay logged in\", a setting only they can change) to keep their accounts: ghost tabs then start with a copy of " +
+        "their cookies and can autofill saved passwords; status tells you which. Either way nothing the tab does is saved back. " +
+        "action: status | on | off | toggle. You can turn it on whenever a task is sensitive; you can turn it off only if you " +
         "turned it on yourself — if the user switched it on, leave it on (use browser_ask_human if you truly need it off). " +
         "It always starts off when BrAIn launches.")]
     public Task<string> Ghost(
@@ -222,7 +223,7 @@ public sealed class ProfileTools(BrowserController browser)
             case "on":
                 if (browser.GhostMode) return Task.FromResult("Ghost mode is already on");
                 browser.SetGhost(true, byAgent: true);
-                return Task.FromResult("Ghost mode is on: nothing is saved and new tabs are private (" + GhostTabs() + "). Tabs already open keep their normal site data — open a new tab (browser_new_tab) for a ghost one.");
+                return Task.FromResult("Ghost mode is on: nothing is saved and new tabs are private (" + GhostTabs() + "). Tabs that were already open reload that way the next time they are shown or used.");
             case "off":
                 if (!browser.GhostMode) return Task.FromResult("Ghost mode is already off");
                 if (!browser.GhostByAgent && !browser.FullControl)
@@ -235,8 +236,8 @@ public sealed class ProfileTools(BrowserController browser)
     }
 
     private string GhostTabs() => browser.GhostLoginsOn
-        ? "new tabs start with a copy of the user's cookies and can autofill their saved passwords, so they open signed in; nothing new is saved back"
-        : "new tabs start clean: no cookies, signed out";
+        ? "tabs are logged in with a copy of the user's cookies and can autofill their saved passwords; nothing new is saved back"
+        : "tabs are logged out of every account: no cookies";
 
     // ========================================================== CLIPBOARD
 

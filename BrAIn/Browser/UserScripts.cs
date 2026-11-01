@@ -60,6 +60,43 @@ public sealed class UserScriptStore
                 _items = JsonSerializer.Deserialize<List<UserScript>>(File.ReadAllText(_file), FileJson) ?? [];
         }
         catch { _items = []; }
+        UpgradeTemplateCopies();
+    }
+
+    /// <summary>Earlier versions of a template that are safe to replace, by the id of the template: the
+    /// fingerprint of their source (see <see cref="Fingerprint"/>) and the descriptions they shipped with.
+    /// A copy the user edited no longer matches, so it is never touched.</summary>
+    private static readonly Dictionary<string, (string[] Sources, string[] Descriptions)> Superseded = new()
+    {
+        ["cookies"] = (["b01d6794aa534b2c"],
+            ["Clicks \"Reject all\" / \"Necessary only\" on cookie and consent pop-ups. Knows OneTrust, Cookiebot, Didomi, Usercentrics and more, plus a text-based fallback in many languages."]),
+    };
+
+    /// <summary>First 16 hex characters of the SHA-256 of the source with line endings and trailing space ignored.</summary>
+    internal static string Fingerprint(string js)
+    {
+        var norm = (js ?? "").Replace("\r\n", "\n").TrimEnd();
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(norm)))[..16].ToLowerInvariant();
+    }
+
+    /// <summary>A template that got rebuilt reaches the copies people installed earlier — but only the copies
+    /// that are still exactly an old version of it. Name, sites, on/off and approval stay as they were.</summary>
+    private void UpgradeTemplateCopies()
+    {
+        var changed = false;
+        foreach (var s in _items)
+        {
+            if (s.Source != "template" || s.Template is null || !Superseded.TryGetValue(s.Template, out var old)) continue;
+            var t = Templates.FirstOrDefault(x => x.Id == s.Template);
+            if (t is null) continue;
+            var fp = Fingerprint(s.Js);
+            if (fp == Fingerprint(t.Js) || !old.Sources.Contains(fp)) continue;
+            s.Js = t.Js;
+            if (old.Descriptions.Contains(s.Description)) s.Description = t.Description;
+            s.Updated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            changed = true;
+        }
+        if (changed) Persist();
     }
 
     public List<UserScript> All()
@@ -303,7 +340,7 @@ public sealed class UserScriptStore
     public static readonly ScriptTemplate[] Templates =
     [
         new("cookies", "Auto-reject cookie banners",
-            "Clicks \"Reject all\" / \"Necessary only\" on cookie and consent pop-ups. Knows OneTrust, Cookiebot, Didomi, Usercentrics and more, plus a text-based fallback in many languages.",
+            "Says no to cookie and consent pop-ups for you: presses \"Reject all\" / \"Necessary only\", or opens \"Settings\", switches every optional category off and saves. Knows OneTrust, Cookiebot, Didomi, Usercentrics, Quantcast and more, reads many languages, and never presses \"Accept\".",
             "shield", ["*"], TplCookies),
         new("popups", "Remove newsletter pop-ups",
             "Hides \"subscribe to our newsletter\" overlays and gives you back page scrolling.",
@@ -330,39 +367,256 @@ public sealed class UserScriptStore
 
     private const string TplCookies = """
 // Auto-reject cookie banners
-var REJECT = /^(reject all|reject|reject non-essential|decline all|decline|deny all|deny|refuse all|refuse|only necessary|necessary only|only essential|essential only|use necessary cookies only|continue without accepting|disagree|no, thanks|no thanks|ablehnen|alle ablehnen|nur notwendige|refuser|tout refuser|continuer sans accepter|rechazar|rechazar todo|rifiuta|rifiuta tutto|rejeitar|recusar|weigeren|alles weigeren|odmítnout|odrzuć wszystko|отклонить|отклонить все|უარყოფა)$/i;
-var SELECTORS = [
-  '#onetrust-reject-all-handler', '#CybotCookiebotDialogBodyButtonDecline',
-  '#CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll', '#didomi-notice-disagree-button',
-  '[data-testid="uc-deny-all-button"]', '.fc-cta-do-not-consent', '#sp-cc-rejectall-link',
-  '#truste-consent-required', '.osano-cm-denyAll', '.cn-decline', '.cky-btn-reject', '.cmplz-deny',
-  '._brlbs-refuse-btn', 'button[data-cookiefirst-action="reject"]', '.cc-deny', '#cookie-consent-decline'
-];
-var done = false;
-function visible(el) {
-  var r = el.getBoundingClientRect();
-  return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+// Finds a cookie / consent pop-up and presses its "reject" button. A pop-up that only offers "settings" is
+// opened, every optional category is switched off, and the choice is saved. An "accept" button is never
+// pressed, and nothing outside something that looks like a consent pop-up (it must talk about cookies) is
+// touched. Sees through shadow DOM and same-site iframes; knows the big consent tools plus the wording used
+// in many languages. A pop-up the visitor opened themselves (it appeared right after a real click or key press)
+// is left alone. What it did is listed in window.__brainCookies.
+var LOG = window.__brainCookies = { clicks: [], state: 'looking' };
+var DEADLINE = Date.now() + 30000, MAX_CLICKS = 8, lastClick = 0, settingsOpened = 0, rejectedAt = 0;
+var timer = 0, tick = 0, mo = null, seen = new WeakMap(), born = new WeakMap(), lastInput = 0;
+
+// ---------------------------------------------------------------- words (lowercase)
+function lc(t) { return String(t == null ? '' : t).replace(/[←-⇿»›✕×▶]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase(); }
+function has(t, list) { for (var i = 0; i < list.length; i++) if (t.indexOf(list[i]) >= 0) return true; return false; }
+
+var REJ = ['reject', 'decline', 'deny', 'refuse', 'disagree', 'do not accept', "don't accept", 'don’t accept', 'do not agree', "don't agree",
+  'no thanks', 'no, thanks', 'opt out', 'opt-out', 'without accepting', 'without agreeing', 'without consent', 'i do not consent',
+  'ablehnen', 'nicht zustimmen', 'widerspreche', 'verweigern', 'refuser', 'je refuse', 'continuer sans', 'rechazar', 'denegar', 'no acepto',
+  'continuar sin aceptar', 'rifiuta', 'rifiuto', 'non accetto', 'continua senza', 'rejeitar', 'recusar', 'não aceito', 'continuar sem aceitar',
+  'weigeren', 'afwijzen', 'niet akkoord', 'doorgaan zonder', 'odrzuć', 'nie zgadzam', 'bez akceptacji', 'odmítnout', 'nesouhlasím', 'odmietnuť',
+  'elutasít', 'respinge', 'refuză', 'avvisa', 'avvis', 'afvis', 'hylkää', 'reddet', 'отклонить', 'отказаться',
+  'не принимаю', 'не согласен', 'без согласия', 'відхилити', 'відмовитися',
+  'უარყოფ', 'უარი', 'არ ვეთანხმები', 'არ ვეთანხმებით',
+  'απόρριψη', 'απορρίπτω', '拒否', '拒绝', '拒絕', '거부', 'رفض'];
+var ONLY_RX = [/only\s+(the\s+)?(strictly\s+|absolutely\s+)?(necessary|essential|required|mandatory)/, /(necessary|essential|required|mandatory)\s+(cookies\s+)?only/,
+  /(use|allow|accept|continue with|keep|save|confirm)\s+(only\s+)?(the\s+)?(strictly\s+)?(necessary|essential|required|mandatory)\s*(cookies)?(\s|$)/];
+var ONLY_PH = ['nur notwendige', 'nur erforderliche', 'nur essenzielle', 'nur technisch', 'ausschließlich notwendige', 'uniquement nécessaires', 'cookies nécessaires uniquement',
+  'seulement les cookies nécessaires', 'solo necesarias', 'solo las necesarias', 'solo esenciales', 'solo necessari', 'solo i necessari', 'soltanto necessari',
+  'apenas necessários', 'somente necessários', 'só necessários', 'alleen noodzakelijke', 'alleen essentiële', 'tylko niezbędne', 'tylko wymagane',
+  'pouze nezbytné', 'pouze nutné', 'только необходимые', 'только обязательные',
+  'лише необхідні', 'тільки необхідні',
+  'მხოლოდ აუცილებელ', 'მხოლოდ საჭირო', 'მხოლოდ აუცილ',
+  'endast nödvändiga', 'kun nødvendige', 'vain välttämättömät', 'sadece gerekli', 'yalnızca gerekli', 'μόνο τα απαραίτητα',
+  '必要なもののみ', '仅必要', '仅限必要', '필수만'];
+var SET = ['manage', 'customize', 'customise', 'settings', 'preferences', 'more options', 'options', 'choices', 'show purposes', 'details', 'configure', 'personalize', 'personalise',
+  'einstellungen', 'anpassen', 'verwalten', 'paramètres', 'paramétrer', 'personnaliser', 'gérer', 'configurar', 'personalizar', 'gestionar', 'más opciones',
+  'impostazioni', 'personalizza', 'gestisci', 'configurações', 'gerir', 'instellingen', 'beheren', 'aanpassen', 'ustawienia', 'dostosuj', 'zarządzaj', 'nastavení',
+  'přizpůsobit', 'настройки', 'настроить', 'управление', 'параметры',
+  'პარამეტრ', 'მართვა', 'ayarlar', 'inställningar', 'innstillinger', 'indstillinger', 'asetukset'];
+var SAVE = ['save', 'confirm', 'apply', 'submit', 'done', 'allow selection', 'allow selected', 'accept selected', 'accept selection', 'accept current',
+  'speichern', 'bestätigen', 'auswahl', 'übernehmen', 'enregistrer', 'confirmer', 'valider', 'guardar', 'confirmar', 'aplicar', 'salva', 'conferma', 'salvar',
+  'opslaan', 'bevestigen', 'zapisz', 'potwierdź', 'uložit', 'potvrdit', 'сохранить', 'подтвердить', 'применить',
+  'შენახვა', 'დადასტურება', 'kaydet', 'onayla', 'spara', 'bekräfta', 'gem', 'tallenna'];
+// pressing any of these accepts everything: they are never pressed, and they veto a settings / save match
+var ALL = ['accept all', 'allow all', 'agree to all', 'accept and', 'accept cookies', 'accept everything', 'i accept', 'i agree', 'alle akzeptieren', 'alles akzeptieren',
+  'alle zulassen', 'tout accepter', 'accepter et', 'aceptar todo', 'aceptar todas', 'accetta tutto', 'accetta tutti', 'aceitar tudo', 'aceitar todos', 'alles accepteren',
+  'akceptuję wszystko', 'zaakceptuj wszystkie', 'přijmout vše', 'принять все', 'принять и', 'прийняти всі',
+  'ყველას მიღება', 'ვეთანხმები'];
+// an accept button is what makes a pop-up a consent prompt (a footer "Cookie settings" link has none)
+var ACCEPTISH = ['accept', 'allow', 'agree', 'got it', 'understood', 'i understand', 'okay', 'akzept', 'zulassen', 'zustimm', 'einverstanden', 'accepter', 'autoriser', 'aceptar',
+  'permitir', 'accetta', 'consenti', 'aceitar', 'accepteren', 'toestaan', 'akceptuj', 'zgadzam', 'přijmout', 'принять', 'согласен', 'разрешить', 'прийняти', 'მიღება', 'ვეთანხმ',
+  'kabul', 'godkänn', 'tillad', 'hyväksy', '同意', '許可', '허용', 'موافق'];
+var MIXED = /(necessar|essential|required|notwendig|nécessaire)[a-z]*\s*(,|and|&|\+|und|et|y|e)\s*(analytic|statistic|marketing|advertis|performance|functional|preference|personali|targeting|social|werbung|analyse)|(analytic|statistic|marketing|advertis|performance|functional|preference|personali|targeting|social)[a-z]*\s*(,|and|&|\+)\s*(necessar|essential|required)/;
+var NECESSARY = /necessar|essential|required|mandatory|strictly|always|notwendig|erforderlich|nécessaire|necesari|necessari|noodzakelijk|niezbędn|nezbytn|необходим|обязательн|აუცილებელ|საჭირო|zorunlu|nödvändig|nødvendig/i;
+
+function isReject(t) { return !!t && t.length <= 80 && !MIXED.test(t) && (has(t, REJ) || has(t, ONLY_PH) || ONLY_RX.some(function (r) { return r.test(t); })); }
+function isSettings(t) { return !!t && t.length <= 60 && has(t, SET) && !isReject(t) && !has(t, ALL) && !has(t, SAVE); }
+function isAcceptish(t) { return !!t && t.length <= 60 && (t === 'ok' || has(t, ACCEPTISH)); }
+function isSave(t) { return !!t && t.length <= 60 && has(t, SAVE) && !has(t, ALL); }
+
+// ---------------------------------------------------------------- finding things
+// every element, through open shadow roots and same-site iframes, in one pass
+function flat() {
+  var out = [];
+  (function walk(root, depth) {
+    if (depth > 6) return;
+    var all; try { all = root.querySelectorAll('*'); } catch (e) { return; }
+    for (var i = 0; i < all.length; i++) {
+      var n = all[i];
+      out.push(n);
+      if (n.shadowRoot) walk(n.shadowRoot, depth + 1);
+      else if (n.tagName === 'IFRAME') { try { var d = n.contentDocument; if (d && d.documentElement) walk(d, depth + 1); } catch (e) { } }
+    }
+  })(document, 0);
+  return out;
 }
-function press(el) { try { el.click(); done = true; } catch (e) { } return done; }
-function scan() {
-  if (done) return;
-  for (var i = 0; i < SELECTORS.length; i++) {
-    var el = document.querySelector(SELECTORS[i]);
-    if (el && visible(el) && press(el)) return;
+function visible(el) {
+  if (!el || !el.isConnected) return false;
+  var r = el.getBoundingClientRect();
+  if (r.width < 2 || r.height < 2) return false;
+  var cs = (el.ownerDocument.defaultView || window).getComputedStyle(el);
+  return cs.visibility !== 'hidden' && cs.display !== 'none' && parseFloat(cs.opacity || '1') > 0.05;
+}
+function label(el) {
+  var t = lc((el.tagName === 'INPUT' && /^(button|submit)$/i.test(el.type) && el.value) ? el.value : (el.innerText || el.textContent || ''));
+  if (!t) t = lc(el.getAttribute('aria-label') || el.getAttribute('title') || '');   // icon-only buttons (a bare cross or tick)
+  return t;
+}
+var FAST = ['#onetrust-reject-all-handler', '.ot-pc-refuse-all-handler', '#CybotCookiebotDialogBodyButtonDecline', '#CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll',
+  '#didomi-notice-disagree-button', '.didomi-continue-without-agreeing', '[data-testid="uc-deny-all-button"]', '#uc-btn-deny-banner', '.fc-cta-do-not-consent', '#sp-cc-rejectall-link',
+  '#truste-consent-required', '.osano-cm-denyAll', '.cn-decline', '.cm-btn-decline', '.cky-btn-reject', '.cmplz-deny', '._brlbs-refuse-btn', 'button[data-cookiefirst-action="reject"]',
+  '.cc-deny', '#cookie-consent-decline', '#cn-refuse-cookie', '.iubenda-cs-reject-btn', '[data-tid="banner-decline"]', '#cookiescript_reject', '#axeptio_btn_dismiss',
+  '[data-cookiebanner="accept_only_essential_button"]', '#ccc-reject-settings', '.ccc-reject-button'];
+var FAST_SEL = FAST.join(',');
+var ROOTS = '#onetrust-consent-sdk,#onetrust-banner-sdk,#onetrust-pc-sdk,#CybotCookiebotDialog,#didomi-host,#usercentrics-root,.qc-cmp2-container,#qc-cmp2-ui,.fc-consent-root,' +
+  '#cookie-law-info-bar,#cmplz-cookiebanner-container,.cky-consent-container,._brlbs-box-wrap,.cc-window,.osano-cm-window,.iubenda-cs-container,#iubenda-cs-banner,' +
+  '.cookiefirst-root,#truste-consent-track,.klaro,#cmpbox,#axeptio_overlay,#cookiescript_injected,[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog';
+var NAMED = /cookie|consent|gdpr|ccpa|cmp|privacy|banner|notice|overlay|modal|popup/i;
+var NAMED_CC = /cookie|consent|gdpr|ccpa|cmp|privacy/i;
+var STRONG = /cookie|consent|gdpr|ccpa|tracking|datenschutz|einwillig|zustimm|куки|ქუქი|çerez|cookies/i;
+var WEAK = /privacy|personali[sz]|advertis|partners|vendors|confidential|privacidad|vie privée|конфиденц|კონფიდენც/i;
+
+// the consent pop-up this element belongs to, or null
+function popup(el) {
+  var n = el, hops = 0;
+  while (n && hops < 18) {
+    if (n.nodeType === 1) {
+      var known = false;
+      try { known = n.matches(ROOTS); } catch (e) { }
+      var idc = (n.id || '') + ' ' + (typeof n.className === 'string' ? n.className : '');
+      var named = !known && NAMED.test(idc), ccNamed = known || NAMED_CC.test(idc);
+      var fixed = false;
+      if (!known && !named) { try { var p = (n.ownerDocument.defaultView || window).getComputedStyle(n).position; fixed = p === 'fixed' || p === 'sticky'; } catch (e) { } }
+      if (known || named || fixed) {
+        var txt = n.textContent || '';
+        if (!txt && n.tagName === 'IFRAME') { try { txt = n.contentDocument.documentElement.textContent || ''; } catch (e) { } }
+        if (txt.length < 9000) {
+          var head = txt.slice(0, 2500);
+          if (STRONG.test(head) || (ccNamed && WEAK.test(head))) return n;
+        }
+      }
+    }
+    n = up(n);
+    hops++;
   }
-  var roots = document.querySelectorAll('[id*="cookie" i],[class*="cookie" i],[id*="consent" i],[class*="consent" i],[id*="gdpr" i],[class*="gdpr" i],[id*="privacy" i],[role="dialog"],[aria-modal="true"]');
-  for (var r = 0; r < roots.length; r++) {
-    var btns = roots[r].querySelectorAll('button,a,[role="button"],input[type="button"],input[type="submit"]');
-    for (var b = 0; b < btns.length; b++) {
-      var t = (btns[b].innerText || btns[b].value || btns[b].getAttribute('aria-label') || '').trim();
-      if (t.length && t.length < 40 && REJECT.test(t) && visible(btns[b]) && press(btns[b])) return;
+  return null;
+}
+
+function up(n) { return n.parentElement || (n.getRootNode && n.getRootNode().host) || (n.ownerDocument && n.ownerDocument.defaultView && n.ownerDocument.defaultView.frameElement) || null; }
+function inside(host, el) { for (var n = el, i = 0; n && i < 40; n = up(n), i++) if (n === host) return true; return false; }
+// the consent pop-up this visible element belongs to, unless the visitor opened it themselves. The moment it is
+// first seen on screen decides: a pop-up that shows up right after a real click / key press was asked for.
+function owner(el) {
+  var h = popup(el);
+  if (!h) return null;
+  var mine = born.get(h);
+  if (mine === undefined) { mine = Date.now() - lastInput > 2500; born.set(h, mine); }
+  return mine ? h : null;
+}
+function shown(sw) {                                             // custom switches hide the real checkbox: look at what draws it
+  for (var n = sw, i = 0; n && i < 3; n = n.parentElement, i++) if (visible(n)) return true;
+  return false;
+}
+
+function pressable(el, kind) {
+  if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+  if (el.tagName === 'A') {
+    var h = el.getAttribute('href');
+    var real = !!h && !/^(#|javascript:)/i.test(h.trim());
+    if (real) {
+      if (kind !== 'reject') return false;                // a link that goes somewhere is never "settings" or "save"
+      try { if (new URL(h, location.href).origin !== location.origin) return false; } catch (e) { return false; }
     }
   }
+  return (seen.get(el) || 0) < 2;
 }
+function press(el, what) {
+  try {
+    var o = { bubbles: true, cancelable: true, composed: true, view: el.ownerDocument.defaultView || window, button: 0 };
+    ['pointerdown', 'mousedown', 'pointerup', 'mouseup'].forEach(function (t) {
+      try { el.dispatchEvent(t.indexOf('pointer') === 0 && window.PointerEvent ? new PointerEvent(t, o) : new MouseEvent(t, o)); } catch (e) { }
+    });
+    el.click();
+    seen.set(el, (seen.get(el) || 0) + 1);
+    lastClick = Date.now();
+    LOG.clicks.push({ what: what, label: label(el).slice(0, 60), at: lastClick - T0 });
+    return true;
+  } catch (e) { return false; }
+}
+var T0 = Date.now();
+
+// ---------------------------------------------------------------- switches (second layer)
+function isOn(el) { return el.tagName === 'INPUT' ? !!el.checked : el.getAttribute('aria-checked') === 'true'; }
+function toggleText(el) {
+  var t = '';
+  try {
+    var l = el.closest('label') || (el.id && el.ownerDocument.querySelector('label[for="' + el.id.replace(/"/g, '') + '"]'));
+    if (l) t = l.textContent || '';
+  } catch (e) { }
+  t = t || el.getAttribute('aria-label') || '';
+  for (var p = el.parentElement, i = 0; !t && p && i < 3; p = p.parentElement, i++) if ((p.textContent || '').length < 160) t = p.textContent;
+  return lc(t);
+}
+
+function scan() {
+  tick++;
+  if (Date.now() > DEADLINE || LOG.clicks.length >= MAX_CLICKS) return stop('finished');
+  if (Date.now() - lastClick < 600) return;                    // give the pop-up a moment to react to the last click
+  var els = flat();
+  var pick = null, save = null, fast = null, settingsList = [], accepts = [];
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    var tag = el.tagName;
+    if (!fast) { try { if (el.matches(FAST_SEL) && pressable(el, 'reject')) fast = el; } catch (e) { } }
+    var clickable = tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY' || (tag === 'INPUT' && /^(button|submit)$/i.test(el.type)) ||
+      el.getAttribute('role') === 'button' || el.hasAttribute('onclick') || (el.hasAttribute('tabindex') && tag !== 'INPUT' && (el.textContent || '').length < 80);
+    if (!clickable && (tag === 'DIV' || tag === 'SPAN' || tag === 'LI' || tag === 'P' || tag === 'LABEL') && el.childElementCount < 4 && (el.textContent || '').length < 40) {
+      try { clickable = (el.ownerDocument.defaultView || window).getComputedStyle(el).cursor === 'pointer'; } catch (e) { }   // a div wired up with a click listener
+    }
+    if (!clickable) continue;
+    var t = label(el);
+    if (!t) continue;
+    if (!pick && isReject(t) && pressable(el, 'reject') && owner(el)) pick = el;
+    else if (isSettings(t) && pressable(el, 'settings')) { var sh = owner(el); if (sh) settingsList.push({ el: el, host: sh }); }
+    else if (!save && isSave(t) && pressable(el, 'save') && owner(el)) save = el;
+    if (isAcceptish(t) && !pick) accepts.push(el);
+  }
+  if (fast && owner(fast)) return act(fast, 'reject (known)');
+  if (pick) { rejectedAt = Date.now(); return act(pick, 'reject'); }
+
+  // a pop-up that is showing its category switches: optional ones off, then save
+  var changed = false, panel = null;
+  for (var k = 0; k < els.length; k++) {
+    var sw = els[k];
+    var isSwitch = (sw.tagName === 'INPUT' && sw.type === 'checkbox') || sw.getAttribute('role') === 'switch' || sw.getAttribute('role') === 'checkbox';
+    if (!isSwitch || sw.disabled || sw.getAttribute('aria-disabled') === 'true') continue;
+    if (!shown(sw)) continue;
+    var host = owner(sw);
+    if (!host) continue;
+    if (!settingsOpened && Date.now() - T0 > 8000) continue;     // a preferences panel that turned up late and that we did not open: leave it
+    panel = host;
+    var tt = toggleText(sw);
+    if (isOn(sw) && !NECESSARY.test(tt) && (seen.get(sw) || 0) < 2) { press(sw, 'switch off: ' + tt.slice(0, 40)); changed = true; }
+  }
+  if (changed) return;                                            // the next scan finds the save button once the switches settled
+  if (panel && save && panel.contains(save)) return act(save, 'save choices');
+  if (settingsOpened < 2) {
+    for (var q = 0; q < settingsList.length; q++) {                // only in a pop-up that also offers to accept: a real consent prompt
+      var sh2 = settingsList[q].host, ok = false;
+      for (var a = 0; a < accepts.length && !ok; a++) ok = inside(sh2, accepts[a]);
+      if (ok) { settingsOpened++; return act(settingsList[q].el, 'open settings'); }
+    }
+  }
+  // right after rejecting, a pop-up may ask to confirm
+  if (save && Date.now() - rejectedAt < 8000) return act(save, 'confirm');
+}
+function act(el, what) { LOG.state = what; return press(el, what); }
+function stop(why) {
+  LOG.state = LOG.clicks.length ? 'done' : 'nothing found';
+  if (mo) { mo.disconnect(); mo = null; }
+  if (timer) { clearInterval(timer); timer = 0; }
+}
+
+['pointerdown', 'mousedown', 'keydown', 'touchstart'].forEach(function (t) {
+  try { document.addEventListener(t, function (e) { if (e.isTrusted) lastInput = Date.now(); }, true); } catch (e) { }
+});
 scan();
-var timer, mo = new MutationObserver(function () { clearTimeout(timer); timer = setTimeout(scan, 150); });
-mo.observe(document.documentElement, { childList: true, subtree: true });
-setTimeout(function () { mo.disconnect(); }, 20000);
+var soon = 0;
+mo = new MutationObserver(function () { clearTimeout(soon); soon = setTimeout(scan, 250); });
+mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'open'] });
+timer = setInterval(scan, 800);
 """;
 
     private const string TplPopups = """

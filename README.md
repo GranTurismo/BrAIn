@@ -99,10 +99,11 @@ To open on a specific page at startup, add `"args": ["https://example.com"]`.
 | Diagnostics | `browser_evaluate`, `browser_console_log`, `browser_network_requests`, `browser_cookies` |
 | Browser data | `browser_bookmark` (add / remove / toggle / check / list), `browser_history` (list / search / delete / clear), `browser_downloads` (list / wait / cancel / reveal / clear), `browser_import` (bookmarks + history from other browsers) |
 | Tab chrome | `browser_tab` (pin / mute / duplicate / move / reopen closed) |
-| Privacy | `browser_ghost` (status / on / off / toggle — Ghost mode: nothing saved, new tabs private, clean or with a copy of the user's cookies as the user chose; the agent can turn it off only if it turned it on, and cannot change that choice) |
+| Privacy | `browser_ghost` (status / on / off / toggle — Ghost mode: nothing saved, every tab private and logged out of all accounts — or, if the user chose "Stay logged in", with a copy of their cookies; the agent can turn it off only if it turned it on, and cannot change that choice) |
 | Clipboard, find, save | `browser_clipboard` (read / write), `browser_find_in_page` (Ctrl+F style), `browser_save_page` (DOM to .html) |
 | Emulation | `browser_emulate` (user agent, light/dark, offline, geolocation; Windows full, macOS user agent + colour scheme) |
 | Page history | `browser_rewind` (list / read / search the tab's past states — opt-in, see Rewind below) |
+| Site APIs | `browser_api_list`, `browser_api_learn` (on / off / status), `browser_api_run`, and one `api_<site>_<name>` tool per endpoint the user approved (see "Site APIs" below) |
 | Site scripts | `userscript_create`, `userscript_install_template`, `userscript_run`, `userscript_errors`, `userscript_get`, `userscript_list`, `userscript_templates`, `userscript_update`, `userscript_delete` (see Site scripts below) |
 
 Element selectors accept: snapshot refs (`e5`), CSS (`css:#id` or bare
@@ -156,7 +157,12 @@ Notes on the design:
   `Ctrl+Shift+Y` Rewind.
   Middle-click a tab or link closes it / opens it in a new tab; right-click a
   tab for the tab menu (reload, duplicate, close others/right); drag tabs to
-  reorder them; scroll the strip with the wheel.
+  reorder them; scroll the strip with the wheel. Right-click a picture to
+  copy it, save it to Downloads (original bytes), open it in a tab or copy its
+  address — also for canvases, CSS backgrounds and pictures under an overlay.
+  Pictures are identified from their bytes (PNG, JPEG, GIF, WebP, BMP, AVIF),
+  the page's own request is limited to the active tab and ten per half minute,
+  and the host-side download refuses addresses on your own network.
 - **`[STAThread]` matters** — `Main` must be a synchronous STA entry point;
   WebView2 environment creation fails with `RPC_E_CHANGED_MODE` on an MTA
   thread, and `[STAThread]` on `async Main` is silently ignored.
@@ -228,6 +234,43 @@ scroll_to, wait_for, text, evaluate, new_tab, switch_tab, upload. Cookies and
 screenshots are deliberately excluded. Because an approved flow can run
 `browser_evaluate`, only approve flows you have read.
 
+### Site APIs — every website becomes an API
+
+BrAIn can learn how a website talks to its own backend and turn that into tools an
+agent calls directly: no clicking, no screenshots, and it works on sites with no
+public API, because the calls run **as you, inside a tab on the site**.
+
+1. **Learn.** Open the site, then **⋮ → Learn this site's API** (or `browser_api_learn`).
+   The page reloads and BrAIn watches the JSON `fetch`/XHR requests the site's own
+   scripts make, including GraphQL. Only while you let it learn that site, never in
+   Ghost mode or a private tab.
+2. **Compile.** Requests are grouped into endpoints: ids in the path become
+   arguments, query strings, JSON bodies and GraphQL variables become typed
+   arguments, and the answer's shape is recorded. Sign-in/token endpoints, analytics,
+   third-party hosts and anything with a secret in the URL are never learned.
+3. **Review.** Drafts appear in `about:apis` (⋮ → Site APIs). Nothing is callable until
+   you approve it there: rename it, edit the description, path and arguments, read the
+   masked example answer. Only that internal page can approve; a web page cannot.
+4. **Use.** Approved endpoints are live MCP tools named `api_<site>_<name>` (clients are
+   notified via `tools/list_changed`; otherwise agents can use `browser_api_run`).
+   Calls that change data, and endpoints with a sensitive-looking path, **ask you every
+   time** through the Seatbelt card.
+
+5. **Document (optional).** **Export docs…** on a site in `about:apis` writes, for the boxes you tick,
+   an **OpenAPI 3** file (`<site>-openapi.json`) with a summary and description on every
+   operation, argument, field and security scheme, and/or a **full Markdown reference**
+   (`<site>-api.md`: overview, a table of endpoints, per endpoint the arguments, an example
+   agent tool call and `curl`, the GraphQL document, and the response fields with a masked
+   example). Approved endpoints only, or drafts too. Files go to Downloads; they never
+   contain a token or cookie value.
+
+What is stored (`apis/<site>.json`, plain JSON you can read): URL templates, argument
+types, harmless header values, and a trimmed, masked example answer. What is not: tokens,
+CSRF values and cookies. Of a credential-like header only the *name* is kept; its value
+stays in the page's memory, and a call made from that page sends the value the site
+itself sent. If a call needs a token the page has not sent yet, BrAIn loads the site in a
+helper tab (closed afterwards) so the site's own start-up requests provide it.
+
 ### Agent indicator & pause
 
 Once an agent calls a tool, an **Agent** button appears in the toolbar. It pulses
@@ -246,7 +289,9 @@ scripts that BrAIn runs automatically every time a matching site loads.
 - **Write your own** — a name, URL patterns (`example.com` covers subdomains,
   `*.site.com/blog/*`, `https://x.com/*`, or `*` for every site) and JavaScript. The
   code runs once per page load after the DOM is ready, with full DOM access.
-- **Quick tweaks** — one-click templates: auto-reject cookie banners, remove
+- **Quick tweaks** — one-click templates: auto-reject cookie banners (rejects,
+  or opens *Settings*, switches the optional categories off and saves; never
+  presses Accept; leaves a panel you opened yourself alone), remove
   newsletter pop-ups, un-stick fixed bars, stop autoplaying video, unlock
   copy & right-click, dark mode, YouTube cleanup, grab video captions.
 - **Let an agent write it** — `userscript_create` saves a script an agent wrote.

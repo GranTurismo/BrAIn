@@ -3,7 +3,7 @@
  * Windows, or on-demand eval on macOS). Exposes window.__brain.
  * Element refs are data-brain-ref attributes assigned during snapshots. */
 (function () {
-    if (window.__brain && window.__brain.v === 5) return;
+    if (window.__brain && window.__brain.v === 6) return;
 
     var REF = 'data-brain-ref';
     // Continue after the highest ref already on the page, so re-injecting this script never hands out a ref twice.
@@ -1876,8 +1876,232 @@
         return r.md || ('(' + (r.empty || 'nothing to convert') + ')');
     }
 
+
+    // ---------------- site APIs: learning and calls ("every website becomes an API") ----------------
+    // While the user lets BrAIn learn this site, every JSON request the site's own scripts make is reported to the
+    // host, which compiles them into endpoint drafts. Credentials never leave the page: of a token or CSRF header
+    // only the NAME is reported; its value stays in this closure (apiLive) so that a later call, made from this
+    // same page by apiCall(), can send what the site itself would send. Nothing here is exposed on window except
+    // the two functions on window.__brain.
+    var API_SLD = { co: 1, com: 1, org: 1, net: 1, gov: 1, edu: 1, ac: 1, or: 1, ne: 1, go: 1, gob: 1, nom: 1, mil: 1 };
+    var API_SECRET = /(auth|token|csrf|xsrf|secret|session|cookie|api-?key|key|signature|nonce|bearer|jwt)/i;
+    var API_TOKENISH = /^[A-Za-z0-9_\-+\/=.]{28,}$/;
+    var API_HARMLESS = { 'accept': 1, 'accept-language': 1, 'content-type': 1, 'x-requested-with': 1, 'apollo-require-preflight': 1,
+        'x-apollo-operation-name': 1, 'x-graphql-operation-name': 1, 'x-api-version': 1, 'x-client-version': 1 };
+    var API_IGNORE = { 'cache-control': 1, 'pragma': 1, 'if-none-match': 1, 'if-modified-since': 1, 'range': 1, 'priority': 1,
+        'content-length': 1, 'host': 1, 'origin': 1, 'referer': 1, 'user-agent': 1, 'accept-encoding': 1, 'connection': 1, 'cookie': 1 };
+    var apiOn = { learn: false, use: false };
+    var apiLive = {};       // 'host|header' -> value (memory only)
+    var apiKeys = {};       // how many reports per kind of request this page load
+    var apiSent = 0;
+    var apiPatched = false;
+    var apiFetch = window.fetch;
+
+    // same rule as ApiSite.KeyOf on the host: the registrable domain
+    function apiSite(host) {
+        host = String(host || '').toLowerCase();
+        if (!host) return '';
+        if (/^[\d.]+$/.test(host) || host.indexOf(':') >= 0) return host;
+        var l = host.split('.');
+        if (l.length <= 2) return host.indexOf('www.') === 0 ? host.slice(4) : host;
+        var take = (l[l.length - 1].length === 2 && API_SLD[l[l.length - 2]]) ? 3 : 2;
+        return l.slice(l.length - take).join('.');
+    }
+
+    function apiIsLive(k, v) {
+        if (API_SECRET.test(k)) return true;
+        return !(API_HARMLESS[k] || (k.indexOf('x-') === 0 && String(v).length <= 60 && !API_TOKENISH.test(v)));
+    }
+
+    function apiConfig(learn, use) {
+        apiOn.learn = !!learn; apiOn.use = !!use;
+        if (apiOn.learn || apiOn.use) apiInstall();
+    }
+
+    // The host puts the sites it cares about in a document-start global (read once, then removed).
+    (function () {
+        var b = null;
+        try { b = window.__brainApi; delete window.__brainApi; } catch (e) { }
+        if (!b || typeof b !== 'object') return;
+        try {
+            var me = apiSite(location.hostname);
+            apiConfig((b.l || []).indexOf(me) >= 0, (b.u || []).indexOf(me) >= 0);
+        } catch (e) { }
+    })();
+
+    function apiHeaders(input, init) {
+        var out = {};
+        function add(h) {
+            if (!h) return;
+            try {
+                if (typeof Headers !== 'undefined' && h instanceof Headers) h.forEach(function (v, k) { out[String(k).toLowerCase()] = String(v); });
+                else if (Array.isArray(h)) h.forEach(function (p) { if (p && p.length >= 2) out[String(p[0]).toLowerCase()] = String(p[1]); });
+                else if (typeof h === 'object') Object.keys(h).forEach(function (k) { out[k.toLowerCase()] = String(h[k]); });
+            } catch (e) { }
+        }
+        if (input && typeof input === 'object' && input.headers) add(input.headers);
+        if (init && init.headers) add(init.headers);
+        return out;
+    }
+
+    function apiNormalize(m, u, hdr, body) {
+        var abs;
+        try { abs = new URL(String(u), location.href); } catch (e) { return null; }
+        if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return null;
+        var req = { m: String(m || 'GET').toUpperCase(), u: abs.href, host: abs.host, h: hdr || {}, b: null, bt: null };
+        if (body != null) {
+            if (typeof body === 'string') {
+                var ct = req.h['content-type'] || '';
+                req.b = body;
+                req.bt = /json/i.test(ct) ? 'json' : /urlencoded/i.test(ct) ? 'form' : (/^\s*[\[{]/.test(body) ? 'json' : 'other');
+            } else if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) { req.b = body.toString(); req.bt = 'form'; }
+            else req.bt = 'other'; // FormData, Blob, buffers: not learned
+        }
+        return req;
+    }
+
+    // remember the live (credential-like) header values the site itself sends, for apiCall
+    function apiTap(req) {
+        if (!(apiOn.learn || apiOn.use)) return;
+        for (var k in req.h) {
+            if (API_IGNORE[k]) continue;
+            if (apiIsLive(k, req.h[k])) { apiLive[req.host + '|' + k] = req.h[k]; apiLive['*|' + k] = req.h[k]; }
+        }
+    }
+
+    function apiTrimValue(v, d) {
+        if (d > 6) return null;
+        if (Array.isArray(v)) return v.slice(0, 3).map(function (x) { return apiTrimValue(x, d + 1); });
+        if (v && typeof v === 'object') {
+            var o = {}, n = 0;
+            for (var k in v) { if (++n > 40) break; o[k] = apiTrimValue(v[k], d + 1); }
+            return o;
+        }
+        if (typeof v === 'string') return v.length > 160 ? v.slice(0, 160) : v;
+        return v;
+    }
+
+    function apiTrim(text) {
+        if (typeof text !== 'string' || text.length === 0 || text.length > 2000000) return null;
+        try { return JSON.stringify(apiTrimValue(JSON.parse(text), 0)); } catch (e) { return null; }
+    }
+
+    function apiReport(req, status, ct, text) {
+        if (!apiOn.learn) return;
+        var key = req.m + ' ' + req.host + req.u.split('?')[0].replace(/\d+/g, '#');
+        apiKeys[key] = (apiKeys[key] || 0) + 1;
+        if (apiKeys[key] > 3 || apiSent >= 400) return;
+        apiSent++;
+        var st = {}, live = [];
+        for (var k in req.h) {
+            if (API_IGNORE[k]) continue;
+            if (apiIsLive(k, req.h[k])) live.push(k); else st[k] = req.h[k];
+        }
+        var rec = { m: req.m, u: req.u, o: location.origin, h: st, l: live, b: req.b && req.b.length <= 30000 ? req.b : null, bt: req.bt, s: status, ct: ct };
+        var t = apiTrim(text);
+        if (t != null) rec.r = t;
+        try { window.external.sendMessage('brain:apirec:' + JSON.stringify(rec)); } catch (e) { }
+    }
+
+    function apiWatchFetch(input, init, promise) {
+        var isReq = typeof Request !== 'undefined' && input instanceof Request;
+        var url = isReq ? input.url : String(input && input.href ? input.href : input);
+        var req = apiNormalize((init && init.method) || (isReq ? input.method : 'GET'), url, apiHeaders(input, init), init && init.body);
+        if (!req) return;
+        if (isReq && req.m !== 'GET' && req.m !== 'HEAD' && !(init && init.body)) req.bt = 'other'; // a Request's body cannot be read without consuming it
+        apiTap(req);
+        if (!apiOn.learn || req.bt === 'other') return;
+        promise.then(function (res) {
+            try {
+                if (!res || res.status < 200 || res.status > 299) return;
+                var ct = res.headers.get('content-type') || '';
+                if (/json/i.test(ct)) {
+                    if (parseInt(res.headers.get('content-length') || '0', 10) > 3000000) { apiReport(req, res.status, ct, null); return; }
+                    res.clone().text().then(function (t) { apiReport(req, res.status, ct, t); }, function () { });
+                } else if (res.status === 204 || !ct) apiReport(req, res.status, ct, null);
+            } catch (e) { }
+        }, function () { });
+    }
+
+    function apiWatchXhr(x, info, body) {
+        if (!info) return;
+        var req = apiNormalize(info.m, info.u, info.h, body);
+        if (!req) return;
+        apiTap(req);
+        if (!apiOn.learn || req.bt === 'other') return;
+        x.addEventListener('loadend', function () {
+            try {
+                if (x.status < 200 || x.status > 299) return;
+                var ct = x.getResponseHeader('content-type') || '';
+                var text = null;
+                if (x.responseType === '' || x.responseType === 'text') text = x.responseText;
+                else if (x.responseType === 'json') text = JSON.stringify(x.response);
+                if (/json/i.test(ct) && text != null) apiReport(req, x.status, ct, text);
+                else if (x.status === 204 || !ct) apiReport(req, x.status, ct, null);
+            } catch (e) { }
+        });
+    }
+
+    function apiInstall() {
+        if (apiPatched) return;
+        apiPatched = true;
+        try {
+            var nativeStr = Function.prototype.toString;
+            if (typeof apiFetch === 'function') {
+                var wrapped = function fetch(input, init) {
+                    var p = apiFetch.apply(this, arguments);
+                    try { apiWatchFetch(input, init, p); } catch (e) { }
+                    return p;
+                };
+                try { Object.defineProperty(wrapped, 'toString', { value: function () { return nativeStr.call(apiFetch); } }); } catch (e) { }
+                window.fetch = wrapped;
+            }
+            var XP = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+            if (XP) {
+                var xo = XP.open, xs = XP.send, xh = XP.setRequestHeader, infos = new WeakMap();
+                XP.open = function (m, u) { try { infos.set(this, { m: String(m), u: String(u), h: {} }); } catch (e) { } return xo.apply(this, arguments); };
+                XP.setRequestHeader = function (k, v) { try { var i = infos.get(this); if (i) i.h[String(k).toLowerCase()] = String(v); } catch (e) { } return xh.apply(this, arguments); };
+                XP.send = function (body) { try { apiWatchXhr(this, infos.get(this), body); } catch (e) { } return xs.apply(this, arguments); };
+            }
+        } catch (e) { }
+    }
+
+    // Makes one learned request from this page, the way the site's own scripts would: same origin, the user's
+    // cookies, and the live token headers the page has been seen to send. Uses the page's real fetch, so the
+    // call is not recorded as something to learn.
+    async function apiCall(spec) {
+        var out = { ok: false, status: 0, ct: '', text: '', truncated: false, missing: [] };
+        try {
+            var h = {}, k;
+            for (k in (spec.headers || {})) h[k] = spec.headers[k];
+            var target = new URL(spec.url);
+            // the page's live tokens only ever go to the site they belong to: a script on the page cannot aim this at another host
+            if (apiSite(target.hostname) !== apiSite(location.hostname)) { out.error = 'refused: not a request to this site'; return out; }
+            var host = target.host;
+            (spec.live || []).forEach(function (n) {
+                var v = apiLive[host + '|' + n];
+                if (v == null) v = apiLive['*|' + n];
+                if (v != null) h[n] = v; else out.missing.push(n);
+            });
+            var init = { method: spec.method, headers: h, credentials: 'include', redirect: 'follow' };
+            if (spec.body != null) init.body = spec.body;
+            var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            var timer = ctl ? setTimeout(function () { ctl.abort(); }, 30000) : 0;
+            if (ctl) init.signal = ctl.signal;
+            try {
+                var res = await apiFetch.call(window, spec.url, init);
+                var text = await res.text();
+                var max = spec.max || 400000;
+                out.ok = res.ok; out.status = res.status; out.ct = res.headers.get('content-type') || '';
+                if (text.length > max) { text = text.slice(0, max); out.truncated = true; }
+                out.text = text;
+            } finally { if (timer) clearTimeout(timer); }
+        } catch (e) { out.error = String((e && e.message) || e); }
+        return out;
+    }
+
     window.__brain = {
-        v: 5,
+        v: 6,
         snapshot: snapshot, resolve: resolve, queryAll: queryAll, clickWatch: clickWatch, clickResult: clickResult, focusInfo: focusInfo,
         click: click, clickAt: clickAt, dblclick: dblclick, hover: hover,
         fill: fill, insertText: insertText, pressKey: pressKey,
@@ -1893,6 +2117,7 @@
         recStart: recStart, recStop: recStop,
         listeners: listeners, listenerSummary: listenerSummary, listenersText: listenersText, rawOn: rawOn,
         markdown: markdown, markdownInfo: markdownInfo,
+        apiConfig: apiConfig, apiCall: apiCall,
         // toolbar() is attached by toolbar.js
     };
 

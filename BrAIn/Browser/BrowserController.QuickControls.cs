@@ -120,7 +120,7 @@ public sealed partial class BrowserController
         url ??= QcUrl(tab);
         QcApplyMute(tab, url);
         var page = QcPageIds.ToDictionary(id => id, id => QcOn(tab, id, url));
-        var json = JsonSerializer.Serialize(new { b = 97, qc = page });
+        var json = JsonSerializer.Serialize(new { b = 97, qc = page, api = ApiPageState(tab, url) });
         try
         {
             if (PerTab)
@@ -229,7 +229,7 @@ public sealed partial class BrowserController
                 s = _qcSites.Select(kv => (kv.Key, V: Page(kv.Value))).Where(x => x.V.Count > 0).ToDictionary(x => x.Key, x => x.V),
                 a = Page(_qcAll),
             });
-        return "window.__brainQc=" + json.Replace("<", "\\u003c") + ";";
+        return "window.__brainQc=" + json.Replace("<", "\\u003c") + ";" + ApiBootScript(tab);
     }
 
     // ---------------- prefs.json ----------------

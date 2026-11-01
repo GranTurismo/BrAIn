@@ -26,6 +26,10 @@ internal static partial class ObjC
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
     internal static partial IntPtr Send(IntPtr recv, IntPtr sel, IntPtr a, IntPtr b);
 
+    /// Four object args (-[NSNotificationCenter addObserverForName:object:queue:usingBlock:]).
+    [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
+    internal static partial IntPtr Send(IntPtr recv, IntPtr sel, IntPtr a, IntPtr b, IntPtr c, IntPtr d);
+
     /// NSString* + NSInteger + BOOL args (WKUserScript init).
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
     internal static partial IntPtr SendStrIntBool(IntPtr recv, IntPtr sel, IntPtr a, nint b, byte c);

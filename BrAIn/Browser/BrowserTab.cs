@@ -78,6 +78,31 @@ public sealed class BrowserTab
     /// sites open signed in, and saved passwords may be autofilled. Nothing flows back to the real profile.</summary>
     public bool GhostLogins { get; set; }
 
+    /// <summary>Belongs to the Ghost session: opened while Ghost mode was on, or a tab that was already
+    /// open and got moved into it. While Ghost mode is on its site data follows the "Stay logged in"
+    /// switch (empty and logged out, or a copy of the user's cookies). Tabs the user opened as Private
+    /// themselves are not part of it.</summary>
+    public bool InGhost { get; set; }
+
+    /// <summary>Picture-in-picture, as the tab's own page reports it: 0 no video, 1 a video that can float,
+    /// 2 floating now. macOS split mode draws the PiP button in the toolbar view, which cannot see the page's
+    /// videos itself.</summary>
+    public volatile int PipState;
+
+    /// <summary>A normal tab that was open when Ghost mode went on: where it was. It is logged out
+    /// (moved to an empty private store) the first time it is shown or driven; turning Ghost mode off
+    /// puts it back exactly here, so nothing browsed in between reaches history or the session file.</summary>
+    public GhostOrigin? GhostFrom { get; set; }
+
+    public sealed class GhostOrigin
+    {
+        public string Url = "";
+        public string? Title, Icon;
+        public int? ScrollX, ScrollY;
+        /// <summary>The tab already has its ghost view (the original view is gone).</summary>
+        public bool Moved;
+    }
+
     /// <summary>Pinned tab: compact icon-only pill pinned to the strip's left
     /// edge; immune to close/middle-click until unpinned.</summary>
     public bool IsPinned { get; set; }

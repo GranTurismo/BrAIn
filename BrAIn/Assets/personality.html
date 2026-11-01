@@ -259,11 +259,19 @@
         <span class="go">Open Flows &amp; activity &rarr;</span>
       </article>
 
+      <article class="fc live" style="--c:200" id="c-apis">
+        <span class="tag on">Live</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.7 2.6 15.3 0 18"/><path d="M12 3c-2.6 2.7-2.6 15.3 0 18"/></svg></div>
+        <h4>Every website becomes an API</h4>
+        <p>BrAIn learns the requests a site makes behind the scenes and turns them into tools your agent calls directly &mdash; as you, with no clicking. You approve each one.</p>
+        <span class="go">Open Site APIs &rarr;</span>
+      </article>
+
       <article class="fc live" style="--c:42" id="c-roadmap">
         <span class="tag soon">Coming</span>
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V4"/><path d="M4 4h12l-2 4 2 4H4"/></svg></div>
         <h4>What's coming next</h4>
-        <p>Websites as APIs, swarm mode, a dark-pattern bodyguard and more &mdash; everything we're building or planning.</p>
+        <p>Session hub, swarm mode, a dark-pattern bodyguard and more &mdash; everything we're building or planning.</p>
         <span class="go">Open Planned features &rarr;</span>
       </article>
 
@@ -440,6 +448,9 @@
   send('usget');
   document.getElementById('c-flows').addEventListener('click', function () {
     send('navigate:about:flows');
+  });
+  document.getElementById('c-apis').addEventListener('click', function () {
+    send('navigate:about:apis');
   });
   document.getElementById('c-roadmap').addEventListener('click', function () {
     send('navigate:about:roadmap');

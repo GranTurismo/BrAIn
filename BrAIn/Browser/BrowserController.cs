@@ -363,6 +363,9 @@ public sealed partial class BrowserController : IAsyncDisposable
         Flows = new BrAIn.Mcp.FlowService(this, Activity);
         Activity.Changed += ScheduleFlowsPush;
         Flows.Changed += ScheduleFlowsPush;
+        Apis = new BrAIn.Mcp.ApiService(this);
+        Apis.Changed += ScheduleApisPush;
+        Apis.ConfigChanged += () => ApiLearnChanged("");
         Flows.PausedCheck = () => _agPaused;
         Scripts = new UserScriptStore(_storeDir);
         Scripts.Changed += ScheduleScriptsPush;
@@ -586,6 +589,15 @@ public sealed partial class BrowserController : IAsyncDisposable
                 Native.Win32.ApplyBorderlessChrome(window.WindowHandle);
                 Native.Win32.RoundCorners(window.WindowHandle);
             }
+            // macOS opens straight into fullscreen: the window is invisible from now until fullscreen is
+            // reached (MacOpenFullScreen), then fades in already full screen — instead of sitting there at
+            // 1440×900 first. The watchdog makes sure it can never stay invisible whatever goes wrong.
+            if (IsMac && !_noFullscreen)
+            {
+                try { Mac.WkLaunch.Hide(); }
+                catch (Exception ex) { Log("hiding the window for launch failed: " + ex.Message); }
+                _ = Task.Delay(6000).ContinueWith(_ => MacRevealWindow(), TaskScheduler.Default);
+            }
             // Open fullscreen by default (macOS does this after the inline
             // titlebar is applied, in InitializeMainDriverAsync).
             if (IsWindows && !_noFullscreen)
@@ -705,23 +717,8 @@ public sealed partial class BrowserController : IAsyncDisposable
                 try { InvokeOnUi(() => StartSplitBar(tab)); }
                 catch (Exception ex) { Log("split bar failed: " + ex.Message); }
             }
-            if (IsMac && !_noFullscreen && tab.MacWindowNumber != 0)
-            {
-                // Open in real Space-based fullscreen (same path as ⌃⌘F) — but only
-                // once the first page has finished loading. Entering the Space while
-                // WKWebView is still mid-load could leave the view blank until a
-                // manual reload (seen when launched unbundled via `dotnet run`).
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        for (var i = 0; i < 40 && (IsLoading || tab.LastUrl is null); i++) await Task.Delay(100);
-                        await Task.Delay(450);
-                        InvokeOnUi(() => SetWindowState(tab, "fullscreen"));
-                    }
-                    catch (Exception ex) { Log("auto fullscreen failed: " + ex.Message); }
-                });
-            }
+            if (IsMac && !_noFullscreen && tab.MacWindowNumber != 0) MacOpenFullScreen(tab);
+            else MacRevealWindow(); // no fullscreen to wait for
             _driverTab = tab;
             tab.Bound.TrySetResult();
             _driverReady.TrySetResult();
@@ -743,6 +740,61 @@ public sealed partial class BrowserController : IAsyncDisposable
     // ------------------------------------------------------------------
     // Per-tab views (macOS split mode)
     // ------------------------------------------------------------------
+
+    /// <summary>macOS: open in real Space-based fullscreen (the same path as ⌃⌘F) once the first page has
+    /// settled — entering the Space while WKWebView is still mid-load could leave the view blank. The
+    /// window has been invisible since it was created, so none of the waiting shows; it fades in the moment
+    /// macOS says fullscreen is reached (or after a moment, whatever happens).
+    /// A window silently ignores the request until it has been up for about half a second (measured: asked
+    /// at +480 ms nothing happens, at +610 ms it works), so it is simply asked again until it takes.</summary>
+    private void MacOpenFullScreen(BrowserTab tab)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                for (var i = 0; i < 40 && (IsLoading || tab.LastUrl is null); i++) await Task.Delay(100);
+                await Task.Delay(100);
+                Mark("fullscreen requested");
+                var w = IntPtr.Zero;
+                var watch = Task.CompletedTask;
+                InvokeOnUi(() =>
+                {
+                    w = Mac.MacWindow.NsWindowForTab(tab);
+                    if (w != IntPtr.Zero) watch = Mac.WkLaunch.WatchFullScreen(w);
+                });
+                var accepted = false;
+                for (var i = 0; i < 16 && w != IntPtr.Zero; i++) // ~2.4 s at most
+                {
+                    // the flag flips a few tens of ms after a request that was taken, so check before asking again
+                    if (InvokeOnUi(() => Mac.MacWindow.IsFullScreen(w))) { accepted = true; break; }
+                    InvokeOnUi(() => SetWindowState(tab, "fullscreen"));
+                    await Task.Delay(150);
+                }
+                if (accepted)
+                {
+                    Mark("fullscreen accepted");
+                    await Task.WhenAny(watch, Task.Delay(1500));
+                    Mark("fullscreen settled");
+                }
+                else Log("fullscreen was not accepted; opening as a window");
+            }
+            catch (Exception ex) { Log("auto fullscreen failed: " + ex.Message); }
+            finally { MacRevealWindow(); }
+        });
+    }
+
+    private bool _welcomeWaiting;
+
+    /// <summary>Fade the launch window in (idempotent) and let anything that waited for it go ahead.</summary>
+    private void MacRevealWindow()
+    {
+        if (!IsMac || !Mac.WkLaunch.Hidden) return;
+        try { InvokeOnUi(() => Mac.WkLaunch.Reveal()); }
+        catch (Exception ex) { Log("revealing the window failed: " + ex.Message); }
+        Mark("window revealed");
+        if (_welcomeWaiting) { _welcomeWaiting = false; MaybeShowWelcome(); }
+    }
 
     /// <summary>Per-tab startup: find the window Photino made, dress it (inline
     /// titlebar, toolbar view, dark background), hide Photino's own web view —
@@ -808,22 +860,8 @@ public sealed partial class BrowserController : IAsyncDisposable
                 catch (Exception ex) { Log("first load failed: " + ex.Message); }
             });
 
-            if (!_noFullscreen)
-            {
-                // Real Space-based fullscreen, but only once the first page has settled:
-                // entering the Space mid-load could leave a view blank.
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        for (var i = 0; i < 40 && (IsLoading || first.LastUrl is null); i++) await Task.Delay(100);
-                        await Task.Delay(450);
-                        Mark("fullscreen requested");
-                        InvokeOnUi(() => SetWindowState(first, "fullscreen"));
-                    }
-                    catch (Exception ex) { Log("auto fullscreen failed: " + ex.Message); }
-                });
-            }
+            if (!_noFullscreen) MacOpenFullScreen(first);
+            else MacRevealWindow();
             _ = Task.Delay(400).ContinueWith(_ =>
             {
                 GC.Collect(2, GCCollectionMode.Aggressive, blocking: false, compacting: true);
@@ -1128,6 +1166,8 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// callers share one creation).</summary>
     private Task<IBrowserDriver> EnsureTabViewAsync(BrowserTab tab)
     {
+        // a tab that was open before Ghost mode: its original (logged-in) view is replaced first
+        if (_ghost && PerTab && tab.GhostFrom is { Moved: false }) return RehomeThenEnsureAsync(tab);
         if (tab.Driver is { } existing && tab.HasView) return Task.FromResult(existing);
         return _viewTasks.GetOrAdd(tab.Id, _ => WinPerTab ? CreateWinTabViewAsync(tab) : CreateTabViewAsync(tab));
     }
@@ -1367,7 +1407,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         // so an agent can drive a background tab without stealing the screen.
         if (!PerTab && Tabs.Active?.Id != tab.Id) Tabs.Activate(tab.Id);
         url = NormalizeUrl(url);
-        if (url is "about:newtab" or "about:help" or "about:shortcuts" or "about:history" or "about:import" or "about:passwords" or "about:flows" or "about:personality" or "about:roadmap" or "about:ollama")
+        if (url is "about:newtab" or "about:help" or "about:shortcuts" or "about:history" or "about:import" or "about:passwords" or "about:flows" or "about:personality" or "about:roadmap" or "about:ollama" or "about:apis")
             return await LoadInternalPageAsync(tab, url);
         if (PerTab) return await NavigatePerTabAsync(tab, url, ct);
         // materialize:false — a virtual new tab navigating away must not
@@ -1399,6 +1439,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     private async Task<NavigateResult> NavigatePerTabAsync(BrowserTab tab, string url, CancellationToken ct)
     {
         var driver = await EnsureTabViewAsync(tab);
+        tab.Evicted = false; // this navigation replaces whatever a pending restore would have loaded
         // Record where this tab is going right away so the strip shows it immediately.
         if (SiteKey(url) != SiteKey(tab.LastUrl)) tab.LastTitle = null;
         SetTabUrl(tab, url);
@@ -1426,6 +1467,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             "about:import" => (Assets.ImportHtml, "Import browser data"),
             "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
             "about:flows" => (BuildFlowsHtml(), "Flows & activity"),
+            "about:apis" => (BuildApisHtml(), "Site APIs"),
             "about:personality" => (BuildPersonalityHtml(), "Personality"),
             "about:roadmap" => (Assets.RoadmapHtml, "Planned features"),
             "about:ollama" => (BuildOllamaHtml(), "Ollama"),
@@ -1447,6 +1489,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     private async Task<NavigateResult> LoadInternalPagePerTabAsync(BrowserTab tab, string url)
     {
         var driver = await EnsureTabViewAsync(tab);
+        tab.Evicted = false;
         var (page, title) = url switch
         {
             "about:help" => (Assets.HelpHtml, "How to use"),
@@ -1455,6 +1498,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             "about:import" => (Assets.ImportHtml, "Import browser data"),
             "about:passwords" => (BuildPasswordsHtml(tab.IsPrivate), "Passwords"),
             "about:flows" => (BuildFlowsHtml(), "Flows & activity"),
+            "about:apis" => (BuildApisHtml(), "Site APIs"),
             "about:personality" => (BuildPersonalityHtml(), "Personality"),
             "about:roadmap" => (Assets.RoadmapHtml, "Planned features"),
             "about:ollama" => (BuildOllamaHtml(), "Ollama"),
@@ -1584,7 +1628,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         // private as ever, but its site data starts as a copy of the user's cookies. A duplicate of
         // such a tab passes ghostLogins to stay the same kind.
         var gl = ghostLogins ?? (!priv && _ghost && _ghostLogins);
-        var tab = new BrowserTab { Id = Guid.NewGuid(), IsMain = false, Window = main, IsPrivate = priv || _ghost || gl, GhostLogins = gl };
+        var tab = new BrowserTab { Id = Guid.NewGuid(), IsMain = false, Window = main, IsPrivate = priv || _ghost || gl, GhostLogins = gl, InGhost = gl || (_ghost && !priv) };
         if (PerTab) return await NewTabPerTabAsync(tab, url, ct);
         var overlay = url is null && await CanOverlayAsync();
         Tabs.Add(tab);
@@ -1675,6 +1719,9 @@ public sealed partial class BrowserController : IAsyncDisposable
                 // Windows: let the target page's own toolbar take the new state while it is still hidden,
                 // so the reveal shows a finished toolbar instead of a stale one that then re-renders
                 if (WinPerTab) { _lastPushedStateJson = null; PushChromeStateAll(); }
+                // macOS: a tab whose view was re-created (Ghost mode) loads its page first, so the
+                // switch never shows an empty white view; slow loads give up waiting after a moment
+                if (!WinPerTab && tab.Evicted) await Task.WhenAny(RestoreIfNeededAsync(tab), Task.Delay(900));
                 ShowTabView(tab);
                 if (WinPerTab) Log($"switch to {tab.Id.ToString("N")[..8]}: ensure {ensureMs} ms, show {swSw.ElapsedMilliseconds - ensureMs} ms");
                 SetWindowTitleFor(tab);
@@ -2022,7 +2069,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         if (!json.StartsWith(p, StringComparison.Ordinal)) return false;
         var i = p.Length; var n = 0;
         while (i < json.Length && char.IsDigit(json[i]) && n < 1000) n = n * 10 + (json[i++] - '0');
-        return n is >= 10 and <= 15 or >= 22 and <= 26 or >= 70 and <= 79 or 97;
+        return n is >= 10 and <= 15 or >= 22 and <= 26 or >= 70 and <= 79 or 97 or 102;
     }
 
     /// <summary>Starts the split-toolbar bar view (main thread).</summary>
@@ -2159,8 +2206,17 @@ public sealed partial class BrowserController : IAsyncDisposable
                             break;
                         case "home": await NavigateAsync("newtab", active); break;
                         case "newtab": await NewTabAsync(string.IsNullOrEmpty(arg) ? null : arg, default); break;
+                        case "imgcopy": case "imgsave": await ImageAsync(PerTab ? tab : active, verb == "imgsave", arg); break;
                         case "newprivtab": await NewTabAsync(string.IsNullOrEmpty(arg) ? null : arg, default, priv: true); break;
                         case "ghost": SetGhost(arg == "" ? !_ghost : arg == "1"); break;
+                        case "pipst":
+                            // the page view reports whether it has a video to float (the toolbar view cannot see it)
+                            if (int.TryParse(arg, out var pipN) && pipN is >= 0 and <= 2 && tab.PipState != pipN)
+                            {
+                                tab.PipState = pipN;
+                                if (Tabs.Active?.Id == tab.Id) PushChromeStateAll();
+                            }
+                            break;
                         case "ghostlogins": SetGhostLogins(arg == "" ? !_ghostLogins : arg == "1"); break;
                         case "welcome": ShowWelcome(); break;
                         case "welcomed": MarkWelcomed(); break;
@@ -2254,15 +2310,19 @@ public sealed partial class BrowserController : IAsyncDisposable
                             break;
                         case "shot": _ = SaveScreenshotAsync(active, true); break;
                         case "shotview": _ = SaveScreenshotAsync(active, false); break;
-                        case "updatecheck": _ = Updater.CheckAsync(force: true, CancellationToken.None); break;
+                        case "updatecheck": _ = Updater.CheckAsync(force: true, CancellationToken.None, user: true); break;
                         case "updateapply":
-                            // One click does the whole dance: fetch if needed, then swap + relaunch.
+                            // One click does the whole dance: check if needed, fetch, then swap + relaunch —
+                            // with the toolbar's update card showing every step.
                             _ = Task.Run(async () =>
                             {
-                                await Updater.DownloadAsync(CancellationToken.None);
-                                Updater.ApplyAndRelaunch();
+                                try { await Updater.UpdateAsync(CancellationToken.None); }
+                                catch (Exception ex) { Log("update failed: " + ex.Message); }
                             });
                             break;
+                        case "updateshow": Updater.Show(); break;
+                        case "updatecancel": Updater.Cancel(); break;
+                        case "updatedismiss": Updater.Dismiss(); break;
                         case "zoomin": ZoomBy(+1); break;
                         case "zoomout": ZoomBy(-1); break;
                         case "zoomreset": SetZoomLevel(100); break;
@@ -2452,6 +2512,11 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "olsend": AgentResume(); _ = Ollama.SendAsync(arg); break;
                         case "olstop": case "agcancel": AgentCancelAll(); break;
                         case "olclear": Ollama.Clear(); await PushOllamaStateAsync(); break;
+                        case "apirec": ApiOnReport(tab, arg); break;
+                        case "apilearn": ApiUiToggleLearn(tab); break;
+                        case "apiget": case "apisave": case "apiapprove": case "apidel": case "apisite":
+                        case "apisetlearn": case "apisitedel": case "apicleardrafts": case "apiexport":
+                            ApiUiVerb(tab, verb, arg); break;
                         case "flowget": PushFlowsState(tab); break;
                         case "flowsave": FlowUiSave(tab, arg); break;
                         case "flowdel": Flows.Delete(arg); PushFlowsState(tab); break;
@@ -2504,7 +2569,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         var tabs = Tabs.All.Where(t => !t.IsClosed).Select(t => new
         {
             id = t.Id.ToString("N")[..8],
-            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:shortcuts" ? "Shortcuts" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl == "about:flows" ? "Flows & activity" : t.LastUrl == "about:personality" ? "Personality" : t.LastUrl == "about:roadmap" ? "Planned features" : t.LastUrl == "about:ollama" ? "Ollama" : t.LastUrl),
+            title = t.LastTitle ?? (t.LastUrl is "about:newtab" or "app://newtab" or "about:blank" ? "New Tab" : t.LastUrl == "about:help" ? "How to use" : t.LastUrl == "about:shortcuts" ? "Shortcuts" : t.LastUrl == "about:history" ? "History" : t.LastUrl == "about:import" ? "Import" : t.LastUrl == "about:passwords" ? "Passwords" : t.LastUrl == "about:flows" ? "Flows & activity" : t.LastUrl == "about:apis" ? "Site APIs" : t.LastUrl == "about:personality" ? "Personality" : t.LastUrl == "about:roadmap" ? "Planned features" : t.LastUrl == "about:ollama" ? "Ollama" : t.LastUrl),
             url = t.LastUrl,
             icon = t.LastIcon,
             active = t.Id == activeId,
@@ -2569,6 +2634,8 @@ public sealed partial class BrowserController : IAsyncDisposable
             privActive = Tabs.Active?.IsPrivate == true,
             ghost = _ghost,
             gl = _ghostLogins,
+            pip = Tabs.Active?.PipState ?? 0,
+            api = ApiUiState(Tabs.Active),
             us = UsBadge(Tabs.Active?.LastUrl),
             qc = QcState(Tabs.Active),
             se = _engine.Id,
@@ -2938,10 +3005,12 @@ public sealed partial class BrowserController : IAsyncDisposable
     // Ghost mode — one switch for "leave no trace". While on: no history, no
     // password capture or autofill, no Rewind snapshots, no session restore
     // state and no MCP call log on disk; tabs opened meanwhile are private
-    // tabs (ephemeral site data). Never persisted — every launch starts off.
-    // Tabs already open keep their normal site-data store. Optionally ("Keep my
-    // cookies & logins", see _ghostLogins) those private tabs start with a copy of
-    // the user's cookies instead of empty — still nothing written back.
+    // tabs (ephemeral site data) and the user is logged out of every account.
+    // Never persisted — every launch starts off. Tabs that were already open are
+    // moved into the same empty store when they are next shown or driven, and put
+    // back on their previous page when Ghost goes off (see GhostSessionChanged).
+    // Optionally ("Stay logged in", see _ghostLogins) the private tabs start with a
+    // copy of the user's cookies instead of empty — still nothing written back.
     // ------------------------------------------------------------------
     private volatile bool _ghost;
     public bool GhostMode => _ghost;
@@ -2957,6 +3026,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     private void MaybeShowWelcome()
     {
         if (_welcomed || _welcomeShown || _noToolbar) return;
+        if (IsMac && Mac.WkLaunch.Hidden) { _welcomeWaiting = true; return; } // the first scene should play where it can be seen
         _welcomeShown = true;
         ShowWelcome();
     }
@@ -3002,12 +3072,13 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// <summary>True when the AI agent (browser_ghost) switched Ghost mode on — only then may it switch it off.</summary>
     public bool GhostByAgent => _ghostByAgent;
 
-    // Ghost mode, "Keep my cookies & logins" — a preference (kept in prefs.json, off by default). On:
-    // tabs opened in Ghost mode start with a copy of the user's cookies, so signed-in sites open
-    // signed in, and saved passwords can be autofilled. Nothing new is saved either way, and nothing
-    // flows back to the real profile: what the tab sets lives in memory until the last ghost tab closes.
-    // Off: ghost tabs start empty. Only the user can change it (no MCP tool does). Applies to tabs
-    // opened afterwards; tabs already open keep what they have.
+    // Ghost mode, "Stay logged in" — a preference (kept in prefs.json, off by default). Off: while
+    // Ghost mode is on the user is logged out of every account (ghost tabs start empty). On: ghost
+    // tabs start with a copy of the user's cookies, so their accounts open logged in, and saved
+    // passwords can be autofilled. Nothing new is saved either way, and nothing flows back to the
+    // real profile: what a ghost tab sets lives in memory until the last ghost tab closes. Only the
+    // user can change it (no MCP tool does; web pages are refused, see MessageTrust). Changing it
+    // while Ghost mode is on re-creates the ghost tabs to match (GhostStoresChanged).
     private volatile bool _ghostLogins;
     public bool GhostLoginsOn => _ghostLogins;
 
@@ -3016,7 +3087,144 @@ public sealed partial class BrowserController : IAsyncDisposable
         if (_ghostLogins == on) return;
         _ghostLogins = on;
         SavePrefs();
+        // While Ghost mode is on the switch is immediate: the tabs of the ghost session reload
+        // logged out / logged in (the page being looked at now, the others when they are shown).
+        if (_ghost) GhostStoresChanged();
         PushChromeStateAll();
+    }
+
+    // ---- Ghost session: the tabs that were already open --------------------------------------
+    // While Ghost mode is on the user is logged out of every account. New tabs start in an empty
+    // private store; tabs that were already open (normal store, signed in) are moved into one too:
+    // marked when Ghost goes on, and re-created in their ghost store when they are next shown or
+    // driven, so a background tab with something half-typed is not touched until it is looked at.
+    // Turning Ghost off puts each moved tab back on the page it was on before (never on what it
+    // showed in Ghost, which would put that page into history). Per-tab views only: the shared-view
+    // fallback has one site-data store for everything and cannot isolate tabs.
+
+    private readonly SemaphoreSlim _ghostGate = new(1, 1);
+
+    private static BrowserTab.GhostOrigin GhostOriginOf(BrowserTab t) =>
+        new() { Url = t.LastUrl, Title = t.LastTitle, Icon = t.LastIcon, ScrollX = t.ScrollX, ScrollY = t.ScrollY };
+
+    private void GhostSessionChanged(bool on)
+    {
+        if (!PerTab) return;
+        var back = new List<BrowserTab>();
+        foreach (var t in Tabs.All.ToList())
+        {
+            if (t.IsClosed) continue;
+            if (on)
+            {
+                if (!t.IsPrivate && t.GhostFrom is null) t.GhostFrom = GhostOriginOf(t);
+            }
+            else if (t.GhostFrom is { } o)
+            {
+                t.GhostFrom = null;
+                if (!o.Moved) continue; // never left its original view: nothing to undo
+                t.IsPrivate = false; t.GhostLogins = false; t.InGhost = false;
+                t.LastUrl = o.Url; t.LastTitle = o.Title; t.LastIcon = o.Icon; t.ScrollX = o.ScrollX; t.ScrollY = o.ScrollY;
+                back.Add(t);
+            }
+        }
+        var sync = on ? GhostSyncStoreFlags() : [];
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                foreach (var t in back.Concat(sync)) await RecycleViewAsync(t);
+                await GhostRebuildActiveAsync();
+            }
+            catch (Exception ex) { Log("ghost session change failed: " + ex.Message); }
+        });
+    }
+
+    /// <summary>The "Stay logged in" switch changed while Ghost mode is on.</summary>
+    private void GhostStoresChanged()
+    {
+        if (!PerTab) return;
+        var sync = GhostSyncStoreFlags();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                foreach (var t in sync) await RecycleViewAsync(t);
+                await GhostRebuildActiveAsync();
+            }
+            catch (Exception ex) { Log("ghost store switch failed: " + ex.Message); }
+        });
+    }
+
+    /// <summary>Ghost-session tabs whose store no longer matches the switch (flags updated; their views must be re-created).</summary>
+    private List<BrowserTab> GhostSyncStoreFlags()
+    {
+        var list = new List<BrowserTab>();
+        foreach (var t in Tabs.All.ToList())
+            if (t.InGhost && !t.IsClosed && t.GhostLogins != _ghostLogins)
+            {
+                t.GhostLogins = _ghostLogins;
+                if (t.HasView || t.Evicted) list.Add(t);
+            }
+        return list;
+    }
+
+    private async Task<IBrowserDriver> RehomeThenEnsureAsync(BrowserTab tab)
+    {
+        await GhostRehomeAsync(tab);
+        return await EnsureTabViewAsync(tab);
+    }
+
+    /// <summary>Moves a tab that was open before Ghost mode into the ghost session: it gets an empty
+    /// (or, with Stay logged in, copied) private store and loads its page again, logged out.</summary>
+    private async Task GhostRehomeAsync(BrowserTab tab)
+    {
+        await _ghostGate.WaitAsync();
+        try
+        {
+            if (!_ghost || tab.IsClosed || tab.GhostFrom is not { Moved: false } o) return;
+            o.Moved = true;
+            // the page may have moved on since it was marked (it was only being looked at, not driven)
+            o.Url = tab.LastUrl; o.Title = tab.LastTitle; o.Icon = tab.LastIcon; o.ScrollX = tab.ScrollX; o.ScrollY = tab.ScrollY;
+            tab.IsPrivate = true; tab.InGhost = true; tab.GhostLogins = _ghostLogins;
+            await RecycleViewAsync(tab);
+            Log($"ghost: tab {tab.Id.ToString("N")[..8]} moved into the ghost session");
+        }
+        finally { _ghostGate.Release(); }
+    }
+
+    /// <summary>Throws a tab's page view away, keeping its URL, title and scroll, so that its next view is
+    /// built with whatever site data the tab's flags ask for and loads the page again (<see cref="RestoreIfNeededAsync"/>).</summary>
+    private async Task RecycleViewAsync(BrowserTab tab)
+    {
+        if (tab.IsClosed || !PerTab) return;
+        tab.Evicted = true;
+        var drv = tab.Driver; var view = tab.NativeView; var wv = tab.WinView as Win.WinTabs.View;
+        // all of this runs before the first await: a concurrent caller never sees half a teardown
+        tab.Driver = null; tab.NativeView = IntPtr.Zero; tab.WinView = null;
+        tab.Loading = false; tab.IsAudible = false;
+        _viewTasks.TryRemove(tab.Id, out _);
+        try { if (drv is not null) await drv.DisposeAsync(); } catch { }
+        if (wv is not null) try { _winTabs?.Destroy(wv); } catch { }
+        if (view != IntPtr.Zero) try { InvokeOnUi(() => Mac.WkTabs.Destroy(view)); } catch { }
+        PushChromeStateAll();
+    }
+
+    /// <summary>After a Ghost change, the tab being looked at gets its new view and page at once.</summary>
+    private async Task GhostRebuildActiveAsync()
+    {
+        var a = Tabs.ActiveExact;
+        if (a is null || a.IsClosed || !PerTab) return;
+        if (!a.Evicted && !(_ghost && a.GhostFrom is { Moved: false })) return; // already in the right store
+        await EnsureTabViewAsync(a); // a tab still waiting to move is moved here
+        var restore = RestoreIfNeededAsync(a);
+        // macOS: show the page once it has content (or after a moment), not an empty white view
+        if (!WinPerTab) await Task.WhenAny(restore, Task.Delay(900));
+        if (!a.IsClosed && Tabs.ActiveExact?.Id == a.Id && a.HasView)
+        {
+            ShowTabView(a);
+            SetWindowTitleFor(a);
+        }
+        _ = RefreshNavStateAsync(a);
     }
 
     /// <summary>Whether password autofill is off for this tab. Ghost and private tabs never fill,
@@ -3048,7 +3256,8 @@ public sealed partial class BrowserController : IAsyncDisposable
         _ghostByAgent = on && byAgent; // any change from the user takes the switch back
         Activity.Ghost = on;
         _favicons.FetchEnabled = !on;
-        if (!on) SaveSessionSoon(); // catch session.json up with what is open now
+        GhostSessionChanged(on);
+        if (!on) SaveSessionSoon(); // catch session.json up with what is open now (after the tabs went back)
         PushChromeStateAll();
     }
 
@@ -3881,7 +4090,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                 JSON.stringify({
                   u: location.href, t: document.title,
                   n: !!window.__brainNewTab, h: !!window.__brainHelp, y: !!window.__brainHist,
-                  p: !!window.__brainImport, w: !!window.__brainPw, f: !!window.__brainFlows,
+                  p: !!window.__brainImport, w: !!window.__brainPw, f: !!window.__brainFlows, k: !!window.__brainApis,
                   s: !!window.__brainShortcuts, x: !!window.__brainPersonality, o: !!window.__brainOllama, r: !!window.__brainRoadmap,
                   i: (document.querySelector("link[rel~='icon']") || document.querySelector("link[rel='shortcut icon']") || {}).href ||
                      (/^https?:$/.test(location.protocol) ? location.origin + '/favicon.ico' : '')
@@ -3906,8 +4115,9 @@ public sealed partial class BrowserController : IAsyncDisposable
                 var isPers = root.TryGetProperty("x", out var xx) && xx.GetBoolean();
                 var isOll = root.TryGetProperty("o", out var oo) && oo.GetBoolean();
                 var isRoad = root.TryGetProperty("r", out var rr) && rr.GetBoolean();
-                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isSc ? "about:shortcuts" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : isFlows ? "about:flows" : isPers ? "about:personality" : isRoad ? "about:roadmap" : isOll ? "about:ollama" : root.GetProperty("u").GetString() ?? tab.LastUrl);
-                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isSc ? "Keyboard shortcuts" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : isFlows ? "Flows & activity" : isPers ? "Personality" : isRoad ? "Planned features" : isOll ? "Ollama" : root.GetProperty("t").GetString();
+                var isApis = root.TryGetProperty("k", out var kk) && kk.GetBoolean();
+                SetTabUrl(tab, isNt ? "about:newtab" : isHelp ? "about:help" : isSc ? "about:shortcuts" : isHist ? "about:history" : isImp ? "about:import" : isPw ? "about:passwords" : isFlows ? "about:flows" : isApis ? "about:apis" : isPers ? "about:personality" : isRoad ? "about:roadmap" : isOll ? "about:ollama" : root.GetProperty("u").GetString() ?? tab.LastUrl);
+                tab.LastTitle = isNt ? "New Tab" : isHelp ? "How to use" : isSc ? "Keyboard shortcuts" : isHist ? "History" : isImp ? "Import browser data" : isPw ? "Passwords" : isFlows ? "Flows & activity" : isApis ? "Site APIs" : isPers ? "Personality" : isRoad ? "Planned features" : isOll ? "Ollama" : root.GetProperty("t").GetString();
                 // u and i come from the same document — always reassign so a
                 // cross-site navigation can never keep the old site's icon.
                 var iRaw = root.GetProperty("i").GetString();
@@ -4730,7 +4940,9 @@ public sealed partial class BrowserController : IAsyncDisposable
             // Every tab has its own view; operating on a background tab does not switch to it.
             if (tab.IsClosed) throw new InvalidOperationException("Tab is closed");
             await _driverReady.Task.WaitAsync(TimeSpan.FromSeconds(25), ct);
-            var pd = tab.Driver ?? await EnsureTabViewAsync(tab);
+            // (a tab still waiting to move into the Ghost session is moved before anything drives it)
+            var pd = tab.Driver is null || (_ghost && tab.GhostFrom is { Moved: false }) ? await EnsureTabViewAsync(tab) : tab.Driver;
+            if (!WinPerTab) await RestoreIfNeededAsync(tab); // macOS: a view re-created by Ghost mode loads its page now
             if (WinPerTab)
             {
                 tab.LastActiveUtc = DateTime.UtcNow; // in use by an agent: not an eviction candidate
@@ -4812,6 +5024,9 @@ public sealed partial class BrowserController : IAsyncDisposable
         if (url.Equals("flows", StringComparison.OrdinalIgnoreCase) ||
             url.Equals("activity", StringComparison.OrdinalIgnoreCase))
             return "about:flows";
+        if (url.Equals("apis", StringComparison.OrdinalIgnoreCase) ||
+            url.Equals("api", StringComparison.OrdinalIgnoreCase))
+            return "about:apis";
         if (url.Equals("passwords", StringComparison.OrdinalIgnoreCase) ||
             url.Equals("password", StringComparison.OrdinalIgnoreCase))
             return "about:passwords";
@@ -4945,6 +5160,7 @@ internal static class Assets
     private static readonly Lazy<string> _roadmap = new(() => Themed("BrAIn.Assets.roadmap.html"));
     private static readonly Lazy<string> _ollama = new(() => Themed("BrAIn.Assets.ollama.html"));
     private static readonly Lazy<string> _flows = new(() => Themed("BrAIn.Assets.flows.html"));
+    private static readonly Lazy<string> _apis = new(() => Themed("BrAIn.Assets.apis.html"));
     private static readonly Lazy<string> _combinedLib = new(() => BrainJs + "\n" + ChromeJs);
 
     public static string BrainJs => _brainJs.Value;
@@ -4957,10 +5173,11 @@ internal static class Assets
     public static string ShortcutsHtml => _sc.Value;
     public static string HistoryHtml => _hist.Value;
     public static string FlowsHtml => _flows.Value;
+    public static string ApisHtml => _apis.Value;
     public static string PersonalityHtml => _pers.Value;
     public static string RoadmapHtml => _roadmap.Value;
     public static string OllamaHtml => _ollama.Value;
     public static string ImportHtml => _imp.Value;
     public static string PasswordsHtml => _pw.Value;
-    public const int BrainJsVersion = 5;
+    public const int BrainJsVersion = 6;
 }

@@ -63,7 +63,7 @@
     var lastScrollReport = 0;
     state.tbh = []; state.tbx = [];
     state.bmarks = []; state.bm = false; state.zoom = 100; state.topmost = false;
-    state.sess = 0; state.privActive = false; state.ghost = false; state.gl = false;
+    state.sess = 0; state.privActive = false; state.ghost = false; state.gl = false; state.pip = 0; state.api = null;
     state.rw = false; state.rwa = false; state.rwk = 30; state.rwm = 128; state.rws = [];
     state.ag = { p: false, n: 0, t: '', s: false, k: 0 }; // agent: paused / busy count / tool / ever seen / blocked count
     state.se = 'google'; state.sel = []; // search engine id + [{i,n}] list
@@ -109,6 +109,7 @@
         wmin: '<svg viewBox="0 0 16 16"><path d="M3.6 8h8.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
         wmax: '<svg viewBox="0 0 16 16"><rect x="3.6" y="3.6" width="8.8" height="8.8" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
         wres: '<svg viewBox="0 0 16 16"><rect x="4.8" y="4.8" width="7.2" height="7.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.6 4.8v-.6a1 1 0 0 1 1-1h3.6a1 1 0 0 1 1 1v3.6a1 1 0 0 1-1 1h-.6" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>',
+        key: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.3" cy="10.7" r="2.7"/><path d="M7.3 8.7 13.2 2.8M10.9 5.1l1.7 1.7M9.2 6.8l1.3 1.3"/></svg>',
         chk: '<svg viewBox="0 0 16 16"><path d="m3.2 8.4 3 3 6.6-6.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
         key: '<svg viewBox="0 0 16 16"><circle cx="5.4" cy="10.2" r="3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7.7 7.9 13.2 2.4M10.4 5.2l2.2 2.2M12.2 3.4l2.2 2.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
         ghost: '<svg viewBox="0 0 16 16"><path d="M3.2 14V7.2a4.8 4.8 0 0 1 9.6 0V14l-1.6-1.3-1.6 1.3-1.6-1.3-1.6 1.3-1.6-1.3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="6.1" cy="7.4" r=".9" fill="currentColor"/><circle cx="9.9" cy="7.4" r=".9" fill="currentColor"/></svg>',
@@ -658,6 +659,7 @@
         if (!strip) return;
         applyAccent();
         paintGhost(sh);
+        paintUpd(sh);
         // Signature check: state pushes arrive on every load event; reconcile
         // only when tab data actually changed.
         var sig = ((state.loading && loadSlow) ? 'L' : '.');
@@ -1074,13 +1076,20 @@
     // contextmenu, so our preventDefault fully replaces it. Editable fields
     // are left alone — the native cut/copy/paste menu belongs there.
 
-    function showPageMenu(sh, x, y, link, hasSel, target) {
+    function showPageMenu(sh, x, y, link, hasSel, target, im) {
         var m = sh.getElementById('pmenu');
         pgMenuTarget = target;
         var items = [];
         if (link) {
             items.push(['olink', 'Open link in new tab']);
             items.push(['clink', 'Copy link address']);
+            items.push(null);
+        }
+        if (im) {
+            if (im.web) items.push(['oimg', 'Open image in new tab']);
+            items.push(['cimg', 'Copy image']);
+            items.push(['simg', 'Save image to Downloads']);
+            if (im.web) items.push(['cimgurl', 'Copy image address']);
             items.push(null);
         }
         if (hasSel) { items.push(['copy', 'Copy']); items.push(['mdsel', 'Copy as Markdown']); items.push(null); }
@@ -1112,6 +1121,10 @@
                 var c = el.getAttribute('data-c');
                 if (c === 'olink') send('newtab:' + link);
                 else if (c === 'clink') copyText(link);
+                else if (c === 'oimg') send('newtab:' + im.url);
+                else if (c === 'cimgurl') copyText(im.url);
+                else if (c === 'cimg') imgAct(im, false);
+                else if (c === 'simg') imgAct(im, true);
                 else if (c === 'copy') copyText((getSelection() || '').toString());
                 else if (c === 'mdsel') copyMd(sh, 'sel');
                 else if (c === 'markdown') copyMd(sh, 'page');
@@ -1130,6 +1143,93 @@
     }
 
     var pgMenuTarget = null;
+
+    // ---------------- images: copy / save ----------------
+    // The picture under the pointer — also when something transparent lies on top of it (galleries do that) —
+    // is an <img>, a <canvas>, or a CSS background on something that is not a page-sized wrapper.
+    // Bytes: the page's own fetch (original file, with the site's cookies) first, a canvas copy of what is on
+    // screen second, and as the last resort the browser downloads the address itself (imgcopy / imgsave).
+    var IMG_OK = /^image\/(png|jpeg|gif|webp|bmp|avif)$/;
+    function imgName(url, el) {
+        if (/^https?:/i.test(url || '')) {
+            try { var p = new URL(url).pathname.split('/').filter(Boolean).pop(); if (p) return decodeURIComponent(p); } catch (x) { }
+        }
+        try { var a = el && el.getAttribute && (el.getAttribute('alt') || el.getAttribute('title')); if (a) return String(a).trim().slice(0, 60); } catch (x2) { }
+        return 'image';
+    }
+    function mkImg(el, kind, url) { return { el: el, kind: kind, url: url, web: /^https?:/i.test(url), name: imgName(url, el) }; }
+    function imageAt(e) {
+        var stack = [];
+        try { stack = document.elementsFromPoint(e.clientX, e.clientY) || []; } catch (x) { }
+        if (e.target && stack.indexOf(e.target) < 0) stack.unshift(e.target);
+        var screenArea = window.innerWidth * window.innerHeight;
+        for (var i = 0; i < stack.length && i < 14; i++) {
+            var el = stack[i];
+            if (!el || el.nodeType !== 1 || el.id === HOST_ID || el === document.documentElement || el === document.body) continue;
+            var tag = el.tagName;
+            if (tag === 'IMG') { var u = el.currentSrc || el.src; if (u && (el.naturalWidth !== 0 || !el.complete)) return mkImg(el, 'img', u); }
+            else if (tag === 'CANVAS') { if (el.width > 1 && el.height > 1) return mkImg(el, 'canvas', ''); }
+            else if (tag !== 'VIDEO' && tag !== 'IFRAME' && tag !== 'svg') {
+                var bg = '';
+                try { bg = getComputedStyle(el).backgroundImage || ''; } catch (x3) { }
+                var m = bg && /url\(\s*(["']?)(.*?)\1\s*\)/.exec(bg);
+                if (m && m[2]) {
+                    var r = el.getBoundingClientRect();
+                    if (r.width >= 24 && r.height >= 24 && r.width * r.height <= screenArea * 0.6) {
+                        var abs = ''; try { abs = new URL(m[2], location.href).href; } catch (x4) { }
+                        if (abs) return mkImg(el, 'bg', abs);
+                    }
+                }
+            }
+        }
+        return null;
+    }
+    // draws a picture (or an SVG, or any format the browser can show) onto a canvas and returns a PNG
+    function imgToPng(src, w, h) {
+        return new Promise(function (res) {
+            try {
+                var s = Math.min(1, 8000 / Math.max(w, h, 1));
+                var c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w * s)); c.height = Math.max(1, Math.round(h * s));
+                c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+                c.toBlob(function (b) { res(b); }, 'image/png');     // a canvas tainted by another site's picture throws here
+            } catch (x) { res(null); }
+        });
+    }
+    function blobToPng(b) {
+        return new Promise(function (res) {
+            var u = URL.createObjectURL(b), im = new Image();
+            im.onload = function () { imgToPng(im, im.naturalWidth || 512, im.naturalHeight || 512).then(function (o) { URL.revokeObjectURL(u); res(o); }); };
+            im.onerror = function () { URL.revokeObjectURL(u); res(null); };
+            im.src = u;
+        });
+    }
+    function imgBlob(im, wantPng) {
+        var MAX = 25 * 1024 * 1024;
+        if (im.kind === 'canvas') return imgToPng(im.el, im.el.width, im.el.height);
+        return fetch(im.url, { credentials: 'include' }).then(function (r) { return r.ok ? r.blob() : null; }).then(function (b) {
+            if (!b || b.size < 16 || b.size > MAX) return null;
+            return (wantPng && b.type !== 'image/png') || !IMG_OK.test(b.type) ? blobToPng(b) : b;     // SVG and friends become PNG
+        }).catch(function () { return null; }).then(function (b) {
+            if (b) return b;
+            var el = im.el;       // what is on screen, when the site allows reading it
+            return im.kind === 'img' && el.complete && el.naturalWidth ? imgToPng(el, el.naturalWidth, el.naturalHeight) : null;
+        });
+    }
+    function blobB64(b) {
+        return new Promise(function (res, rej) {
+            var fr = new FileReader();
+            fr.onload = function () { var s = String(fr.result); res(s.slice(s.indexOf(',') + 1)); };
+            fr.onerror = rej; fr.readAsDataURL(b);
+        });
+    }
+    function imgAct(im, save) {
+        var verb = save ? 'imgsave:' : 'imgcopy:';
+        imgBlob(im, !save && !IS_MAC).then(function (b) {
+            var meta = { u: im.web ? im.url : '', n: im.name };
+            if (!b) { send(verb + JSON.stringify(meta)); return; }              // the browser downloads it
+            return blobB64(b).then(function (d) { meta.d = d; send(verb + JSON.stringify(meta)); });
+        }).catch(function () { mdToast('Couldn\u2019t read that image', true); });
+    }
 
     // Right-click menu for password fields — generated-password fill plus
     // the editing essentials the native menu would have shown.
@@ -1661,7 +1761,7 @@
         if (a) { href = a.getAttribute('href'); try { href = new URL(href, location.href).href; } catch (e2) { href = null; } }
         var sel = '';
         try { sel = (getSelection() || '').toString().trim(); } catch (e3) { }
-        showPageMenu(sh, e.clientX, e.clientY, href, !!sel, t);
+        showPageMenu(sh, e.clientX, e.clientY, href, !!sel, t, imageAt(e));
     }
 
     // ---------------- link-hover status bubble ----------------
@@ -1833,10 +1933,18 @@
     // {fc:{on, until}} rides the b:9 state (until: unix ms, 0 = when BrAIn closes).
     var fcMins = 60;
     function fcOn() { return !!(state.fc && state.fc.on); }
-    // Ghost mode and the user's sign-ins: on = ghost tabs start with a copy of your cookies (and may
-    // autofill saved passwords); off = they start empty. Nothing new is saved either way.
+    // "Every website becomes an API": learn the site in the active tab, review what was learned in about:apis.
+    function apiLearnLabel() {
+        var a = state.api;
+        if (!a) return 'Learn this site\u2019s API';
+        return a.learn ? 'Stop learning ' + a.site + (a.n ? ' (' + a.n + ' found)' : '') : 'Learn ' + a.site + '\u2019s API';
+    }
+    function apiBadge() { var a = state.api; return a && a.t > 0 ? a.t + ' to review' : ''; }
+    // Ghost mode and the user's accounts: while Ghost mode is on you are logged out of every account.
+    // "Stay logged in" lets ghost tabs start with a copy of your cookies instead (and autofill saved
+    // passwords). Nothing new is saved either way.
     function ghostLoginsLabel() {
-        return state.gl ? 'Ghost: cookies & logins on — turn off' : 'Ghost: cookies & logins off — turn on';
+        return 'Ghost: stay logged in \u2014 ' + (state.gl ? 'turn off' : 'turn on');
     }
     function fcLeft() {
         var u = state.fc && state.fc.until;
@@ -2206,6 +2314,8 @@
                 ['agent', (state.ag && state.ag.p) ? 'Resume agent' : 'Pause agent', 'Ctrl+Shift+.'],
                 ['rec', recLabel(), 'Ctrl+Alt+R'],
                 ['flows', 'Flows & activity', 'Ctrl+Shift+F'],
+                ['apilearn', apiLearnLabel(), ''],
+                ['apis', 'Site APIs', apiBadge()],
                 ['belt', beltLabel(), ''],
                 ['fullctl', fcOn() ? 'Turn off full control' : 'Full control mode\u2026', ''],
             ]],
@@ -2231,6 +2341,8 @@
             case 'checking': return 'Checking for updates…';
             case 'available': return 'Update to v' + u.v;
             case 'downloading': return 'Downloading update… ' + (u.pct || 0) + '%';
+            case 'verifying': return 'Verifying update…';
+            case 'installing': return 'Installing update…';
             case 'ready': return 'Restart to update to v' + u.v;
             case 'uptodate': return 'BrAIn is up to date';
             case 'error': return 'Update failed — try again';
@@ -2242,6 +2354,116 @@
         var u = state.upd || {};
         if (u.ph === 'available' || u.ph === 'ready') return 'NEW';
         return 'v' + (u.cur || '');
+    }
+
+    // ---------------- update card ----------------
+    // The host raises it (u.show) for anything the user starts: Check for updates, Update now.
+    // It walks through checking → up to date / available → downloading (bytes, percent, cancel)
+    // → verifying → installing, and shows a failure with a retry. The structure is rebuilt only
+    // when the phase changes; download progress just moves the bar, so it animates smoothly.
+    var UPD_ICO = {
+        dl: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8M4.7 7.4 8 10.7l3.3-3.3M3 13.2h10"/></svg>',
+        ok: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3.2 8.4 3 3 6.6-6.8"/></svg>',
+        bad: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3.4v5.2M8 11.6v.1"/></svg>',
+        sp: '<i class="sp"></i>',
+        // the "working" orb: a morphing aurora blob, sonar rings and three orbiting sparks (CSS only)
+        orb: '<span class="orb" aria-hidden="true"><i class="o-glow"></i><i class="o-ring"></i><i class="o-ring r2"></i><i class="o-ring r3"></i>' +
+            '<i class="o-blob"></i><i class="o-core"></i><i class="o-dot d1"></i><i class="o-dot d2"></i><i class="o-dot d3"></i></span>',
+        // a small burst of sparks around the check mark
+        burst: (function () { var h = ''; for (var i = 0; i < 10; i++) h += '<i class="bs" style="--a:' + (i * 36) + 'deg"></i>'; return h; })()
+    };
+    var UPD_LINES = ['Waking the update oracle', 'Pinging GitHub\u2019s satellites', 'Counting release candidates', 'Consulting the changelog goblins',
+        'Sniffing out the freshest version', 'Comparing v{cur} with the universe', 'Asking the bits nicely'];
+    var UPD_GLYPHS = '!<>-_\\/[]{}=+*^?#abcdefghijklmnopqrstuvwxyz0123456789';
+    // The status line under "Checking for updates…": every moment a new line, each one decoding out of noise.
+    function updScanStop(b) { if (b._scn) { clearInterval(b._scn); b._scn = 0; } if (b._scr) { clearInterval(b._scr); b._scr = 0; } }
+    function updScan(b, cur) {
+        var el = b.querySelector('.scan'); if (!el) return;
+        var lines = UPD_LINES.map(function (l) { return l.replace('{cur}', cur || ''); }), i = 0, calm = reducedMotion();
+        var show = function (text) {
+            if (!b.isConnected) { updScanStop(b); return; }
+            if (calm) { el.textContent = text + '\u2026'; return; }
+            if (b._scr) clearInterval(b._scr);
+            var shown = 0;
+            b._scr = setInterval(function () {
+                shown += 1.5;
+                var out = '';
+                for (var k = 0; k < text.length; k++) {
+                    var c = text.charAt(k);
+                    out += (k < shown || c === ' ') ? c : UPD_GLYPHS.charAt(Math.floor(Math.random() * UPD_GLYPHS.length));
+                }
+                el.textContent = out;
+                if (shown >= text.length) { clearInterval(b._scr); b._scr = 0; el.textContent = text + '\u2026'; }
+            }, 26);
+        };
+        show(lines[0]);
+        b._scn = setInterval(function () { i = (i + 1) % lines.length; show(lines[i]); }, 1250);
+    }
+    function updMb(n) { return (n / 1048576).toFixed(n >= 104857600 ? 0 : 1); }
+    function updDetail(u) {
+        var s = u.size > 0 ? updMb(u.got || 0) + ' of ' + updMb(u.size) + ' MB \u00b7 ' + (u.pct || 0) + '%' : updMb(u.got || 0) + ' MB';
+        return s;
+    }
+    function paintUpd(sh) {
+        var b = sh && sh.getElementById('updcard'); if (!b) return;
+        var u = state.upd || {};
+        var ph = u.ph || 'idle';
+        if (!u.show || ph === 'idle') {
+            if (b.style.display !== 'none') { updScanStop(b); b.style.display = 'none'; b.innerHTML = H(''); b._usig = ''; }
+            return;
+        }
+        var sig = ph + '|' + (u.v || '') + '|' + (u.err || '');
+        if (b._usig !== sig) {
+            b._usig = sig;
+            updScanStop(b);
+            var ico = UPD_ICO.dl, cls = '', title = '', sub = '', bar = '', btns = '', close = true;
+            var ver = esc(u.v || ''), cur = esc(u.cur || '');
+            if (ph === 'checking') { ico = UPD_ICO.orb; cls = 'chk'; title = 'Checking for updates\u2026'; sub = '<span class="scan"></span>'; bar = '<span class="pbar ind"><i class="pf"></i></span>'; }
+            else if (ph === 'uptodate') { ico = UPD_ICO.ok + UPD_ICO.burst; cls = 'good'; title = 'BrAIn is up to date'; sub = 'You have the latest version, v' + cur + '.'; }
+            else if (ph === 'available') {
+                cls = 'avl'; title = 'BrAIn ' + ver + ' is available'; sub = 'You have v' + cur + '. It downloads in the background, then BrAIn restarts to install it.';
+                btns = '<button class="st later">Later</button><button class="ok go">Update now</button>';
+            }
+            else if (ph === 'downloading') {
+                title = 'Downloading BrAIn ' + ver;
+                bar = '<span class="pbar' + (u.size > 0 ? '' : ' ind') + '"><i class="pf"></i></span>';
+                sub = '<span class="pt"></span>';
+                btns = '<button class="st cancel">Cancel</button>';
+            }
+            else if (ph === 'verifying') { ico = UPD_ICO.orb; cls = 'chk'; title = 'Verifying the download\u2026'; sub = 'Checking the file is genuine before installing it.'; bar = '<span class="pbar ind"><i class="pf"></i></span>'; close = false; }
+            else if (ph === 'ready' || ph === 'installing') {
+                ico = UPD_ICO.orb; cls = 'chk'; title = 'Installing BrAIn ' + ver; close = false;
+                sub = IS_MAC ? 'BrAIn is restarting and will reopen by itself in a few seconds.'
+                    : 'BrAIn is closing to install. Windows may ask for permission, then BrAIn reopens by itself.';
+                bar = '<span class="pbar ind"><i class="pf"></i></span>';
+            }
+            else if (ph === 'error') {
+                ico = UPD_ICO.bad; cls = 'bad'; title = 'Update failed'; sub = esc(u.err || 'Something went wrong.');
+                btns = '<button class="st dismiss">Close</button><button class="ok retry">Try again</button>';
+            }
+            else { // disabled (dev build)
+                ico = UPD_ICO.bad; cls = 'bad'; title = 'Updates unavailable'; sub = esc(u.err || 'This build cannot update itself.');
+                btns = '<button class="st dismiss">Close</button>';
+            }
+            b.className = cls;
+            b.innerHTML = H('<span class="top"><span class="k">' + ico + '</span><span class="qt"><b>' + title + '</b><br><span class="sub">' + sub + '</span></span>' +
+                (close ? '<button class="x" title="Close" aria-label="Close">\u00d7</button>' : '') + '</span>' + bar +
+                (btns ? '<span class="btns">' + btns + '</span>' : ''));
+            var wire = function (q, cmd) {
+                var el = b.querySelector(q); if (!el) return;
+                el.addEventListener('click', function (e) { if (e.isTrusted) send(cmd); }); // script-made clicks never count
+            };
+            wire('.x', 'updatedismiss'); wire('.later', 'updatedismiss'); wire('.dismiss', 'updatedismiss');
+            wire('.go', 'updateapply'); wire('.cancel', 'updatecancel');
+            wire('.retry', u.v && u.v !== u.cur ? 'updateapply' : 'updatecheck');
+            b.style.display = 'flex';
+            if (ph === 'checking') updScan(b, u.cur);
+        }
+        if (ph === 'downloading') {
+            var pf = b.querySelector('.pf'), pt = b.querySelector('.pt');
+            if (pf && u.size > 0) pf.style.width = Math.max(2, u.pct || 0) + '%';
+            if (pt) pt.textContent = updDetail(u);
+        }
     }
 
     function menuMore() {
@@ -2438,6 +2660,7 @@
         if (c === 'history') { send('navigate:about:history'); return; }
         if (c === 'pw') { send('navigate:about:passwords'); return; }
         if (c === 'flows') { send('navigate:about:flows'); return; }
+        if (c === 'apis') { send('navigate:about:apis'); return; }
         if (c === 'personality') { send('navigate:about:personality'); return; }
         if (c === 'roadmap') { send('navigate:about:roadmap'); return; }
         if (c === 'ollama') { send('olside'); return; }
@@ -2455,7 +2678,10 @@
         if (c === 'help') { send('newtab:about:help'); return; }
         if (c === 'upd') {
             var uph = (state.upd || {}).ph;
-            send(uph === 'available' || uph === 'ready' ? 'updateapply' : 'updatecheck');
+            // something is already running: just bring its card back; otherwise act (the card follows)
+            send(uph === 'available' || uph === 'ready' ? 'updateapply'
+                : uph === 'checking' || uph === 'downloading' || uph === 'verifying' || uph === 'installing' ? 'updateshow'
+                : 'updatecheck');
             return;
         }
         if (c === 'shortcuts') { send('newtab:about:shortcuts'); return; }
@@ -2486,13 +2712,13 @@
             ['newtab', 'New tab', 'tab open blank', IS_MAC ? '\u2318T' : 'Ctrl+T'],
             ['newpriv', 'New private tab', 'incognito private tab', IS_MAC ? '\u21e7\u2318N' : 'Ctrl+Shift+N'],
             ['ghost', state.ghost ? 'Turn Ghost mode off' : 'Turn Ghost mode on', 'ghost mode private incognito no history trace temporary', IS_MAC ? '\u21e7\u2318X' : 'Ctrl+Shift+X'],
-            ['ghostlogins', ghostLoginsLabel(), 'ghost mode cookies logins sign in signed in sessions authorization passwords autofill keep clean', ''],
+            ['ghostlogins', ghostLoginsLabel(), 'ghost mode stay logged in log out logout sign in signed accounts cookies logins sessions authorization passwords autofill keep clean', ''],
             ['reopen', 'Reopen closed tab', 'undo close restore', IS_MAC ? '\u21e7\u2318T' : 'Ctrl+Shift+T'],
             ['dupe', 'Duplicate tab', 'copy clone same tab', IS_MAC ? '\u21e7\u2318D' : 'Ctrl+Shift+D'],
             ['pin', a && a.pin ? 'Unpin tab' : 'Pin tab', 'pin keep sticky tab', IS_MAC ? '\u2303\u2325P' : 'Ctrl+Alt+P'],
             ['closeothers', 'Close other tabs', 'close all tabs except this one', IS_MAC ? '\u2303\u2325W' : 'Ctrl+Alt+W'],
             ['personality', 'Personality', 'personality breaking features site scripts mcp labs', ''],
-            ['roadmap', 'Planned features', 'planned features roadmap coming soon future upcoming site api session hub swarm bodyguard goals', ''],
+            ['roadmap', 'Planned features', 'planned features roadmap coming soon future upcoming session hub swarm bodyguard goals', ''],
             ['fullctl', fcOn() ? 'Turn off full control' : 'Full control mode\u2026', 'full control ai agent mcp autonomous no confirmation seatbelt off drive', ''],
             ['agcancel', 'Cancel AI agent (stop and discard)', 'cancel stop kill abort ai agent task reject', ''],
             ['ollama', 'Ollama agent', 'ollama local llm ai agent chat model', ''],
@@ -2500,6 +2726,8 @@
             ['import', 'Import browser data', 'bookmarks passwords chrome safari edge firefox', ''],
             ['pw', 'Passwords', 'saved logins credentials vault autofill signin', IS_MAC ? '\u21e7\u2318O' : 'Ctrl+Shift+O'],
             ['flows', 'Flows & activity', 'flows macros automation agent mcp tool calls log history record replay', IS_MAC ? '\u21e7\u2318F' : 'Ctrl+Shift+F'],
+            ['apilearn', apiLearnLabel(), 'learn api site website endpoints requests backend tools mcp compile every website becomes an api', ''],
+            ['apis', 'Site APIs', 'api apis site learned endpoints tools approve website backend mcp', ''],
             ['agent', (state.ag && state.ag.p) ? 'Resume agent' : 'Pause agent', 'ai agent mcp stop halt pause resume continue', IS_MAC ? '\u21e7\u2318.' : 'Ctrl+Shift+.'],
             ['rec', recLabel(), 'record flow macro teach show once automation demonstrate steps learn', IS_MAC ? '\u2303\u2325R' : 'Ctrl+Alt+R'],
             ['belt', beltLabel(), 'ai agent mcp safety approve ask confirm risky pay delete send seatbelt permission', ''],
@@ -3069,6 +3297,7 @@
     }
 
     function pipActive() {
+        if (ROLE === 'bar') return !state.ov && state.pip === 2; // the toolbar view cannot see the page's videos
         var v = state.ov ? null : pipVideo();
         return !!(v && isPip(v));
     }
@@ -3080,21 +3309,26 @@
 
     // The button is always present on web pages so it can be found; it's
     // dimmed (and explains itself) when the page has no video to float.
+    // 0 = no video, 1 = a video that can float, 2 = floating now. In macOS split mode the button is drawn
+    // by the toolbar view, which has no videos of its own: the page view works the answer out and reports
+    // it to the host, which hands it back in the state push (state.pip).
+    var pipSent = -1;
     function updatePip() {
         var sh = sh0(); if (!sh) return;
         var p = sh.getElementById('pip'); if (!p) return;
         var web = !state.ov && /^(https?|file|blob):/.test(location.href);
-        var v = web ? pipVideo() : null;
-        p.style.display = web ? 'grid' : 'none';
-        p.classList.toggle('na', web && !v);
-        if (v) {
-            var on = isPip(v);
-            p.classList.toggle('yes', on);
-            setTip(p, on ? 'Exit picture-in-picture' : 'Picture-in-picture', 'Ctrl+Shift+P');
-        } else {
-            p.classList.remove('yes');
-            setTip(p, 'No video on this page', '');
+        var n;
+        if (ROLE === 'bar') n = web ? (state.pip | 0) : 0;
+        else {
+            var v = web ? pipVideo() : null;
+            n = v ? (isPip(v) ? 2 : 1) : 0;
+            if (SPLIT && n !== pipSent) { pipSent = n; send('pipst:' + n); }
         }
+        p.style.display = web ? 'grid' : 'none';
+        p.classList.toggle('na', web && n === 0);
+        p.classList.toggle('yes', n === 2);
+        if (n) setTip(p, n === 2 ? 'Exit picture-in-picture' : 'Picture-in-picture', 'Ctrl+Shift+P');
+        else setTip(p, 'No video on this page', '');
     }
 
     function wirePip() {
@@ -3466,7 +3700,7 @@
         dtconj:    function (e, sh) { toggleDt(sh, 'con'); },
         passwords: function () { send('navigate:about:passwords'); },
         bookmark:  function () { send('bm'); },
-        pip:       function () { if (pipVideo()) togglePip(); },
+        pip:       function () { if (ROLE === 'bar' ? state.pip > 0 : pipVideo()) togglePip(); },
         shot:      function () { send('shot'); },
         rewind:    function (e, sh) { menuCmd(sh, 'rewind'); },
         zoomin:    function () { send('zoomin'); },
@@ -4549,6 +4783,8 @@
         state.privActive = !!b.privActive;
         setGhostState(!!b.ghost);
         state.gl = !!b.gl;
+        state.pip = b.pip | 0;
+        state.api = b.api || null;
         paintGhostTip();
         if (b.se) state.se = b.se;
         if (Array.isArray(b.sel)) state.sel = b.sel;
@@ -5170,14 +5406,67 @@
         if (rw.open) { if (state.rw) send('rwlist'); rwRender(sh); }
     }
     function ghostTip(on) {
-        return on ? 'Ghost mode is ON — nothing is saved' + (state.gl ? '; new tabs start with your cookies & logins' : '; new tabs start clean') + '. Click to turn off'
-            : 'Ghost mode — browse without leaving a trace';
+        return on ? 'Ghost mode is ON \u2014 nothing is saved' + (state.gl ? '; you stay logged in' : '; you are logged out of every account') + '. Click to turn off'
+            : 'Ghost mode \u2014 browse without leaving a trace; logged out of every account';
     }
-    // The cookies & logins setting can change while Ghost mode stays as it is: refresh the tooltips.
+    // The label in the Ghost pill and the options panel follow the "Stay logged in" switch.
     function paintGhostTip() {
         var sh = sh0(); if (!sh) return;
         var b = sh.getElementById('ghb'); if (b) b.setAttribute('data-tip', ghostTip(!!state.ghost));
-        var p = sh.getElementById('gpill'); if (p) p.title = state.gl ? 'Ghost mode is on — nothing is saved. New tabs start with your cookies & logins. Click to turn off' : 'Ghost mode is on — nothing is saved. Click to turn off';
+        var st = sh.getElementById('gst'), lbl = state.gl ? 'Logged in' : 'Logged out';
+        if (st && st.textContent !== lbl) {
+            st.textContent = lbl;
+            var p = sh.getElementById('gpill');
+            if (p) p.title = state.gl ? 'Ghost mode is on \u2014 you stay logged in. Click for options' : 'Ghost mode is on \u2014 you are logged out of every account. Click for options';
+            gvGeo = null; if (gv > 0) ghostApply(); // the pill got wider or narrower: measure it again
+        }
+        var m = sh.getElementById('gpop');
+        if (m && m.classList.contains('on')) { if (state.ghost) fillGhostPop(m); else m.classList.remove('on'); }
+    }
+    // ---- Ghost options panel (opens from the pill) ----
+    function fillGhostPop(m) {
+        var gl = !!state.gl;
+        m.innerHTML = H('<div class="gph"><i class="gpi">' + SVG.ghost + '</i><div class="gpt"><b>Ghost mode is on</b>' +
+            '<span>Nothing is saved: no history, passwords or cookies.</span></div></div>' +
+            '<div class="gpr' + (gl ? ' on' : '') + '" data-gl="1" role="switch" aria-checked="' + gl + '" tabindex="0">' +
+            '<i class="gpk">' + SVG.key + '</i><div class="gpt"><b>Stay logged in</b><span>' +
+            (gl ? 'Your accounts open logged in. Nothing new is saved, and it is all forgotten when Ghost mode ends.'
+                : 'Off: you are logged out of every account until Ghost mode is turned off.') +
+            '</span></div><i class="qsw"></i></div>' +
+            '<div class="gpf"><button type="button" class="gpoff" data-goff="1">Turn off Ghost mode</button></div>');
+    }
+    function toggleGhostPop(sh) {
+        var m = sh.getElementById('gpop'), p = sh.getElementById('gpill');
+        if (!m || !p) return;
+        if (m.classList.contains('on')) { m.classList.remove('on'); return; }
+        fillGhostPop(m);
+        var r = p.getBoundingClientRect();
+        m.style.left = Math.max(8, Math.min(r.left, innerWidth - 318 - 8)) + 'px';
+        m.classList.add('on');
+        var off = function (e) {
+            if (pathIn(e, ['gpop', 'gpill'])) return;
+            m.classList.remove('on');
+            document.removeEventListener('mousedown', off, true);
+        };
+        setTimeout(function () { rawOn(document, 'mousedown', off, true); }, 0);
+    }
+    function wireGhostPop(sh) {
+        var m = sh.getElementById('gpop'); if (!m) return;
+        var flip = function () {
+            state.gl = !state.gl; // optimistic: the host's next push confirms it
+            fillGhostPop(m); paintGhostTip();
+            send('ghostlogins:' + (state.gl ? 1 : 0));
+        };
+        m.addEventListener('mousedown', function (e) {
+            e.preventDefault(); e.stopPropagation();
+            var t = e.target; if (!t || !t.closest) return;
+            if (t.closest('[data-goff]')) { m.classList.remove('on'); send('ghost'); return; }
+            if (t.closest('[data-gl]')) flip();
+        });
+        m.addEventListener('keydown', function (e) {
+            if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.closest && e.target.closest('[data-gl]')) { e.preventDefault(); flip(); }
+            else if (e.key === 'Escape') m.classList.remove('on');
+        });
     }
     function paintGhost(sh) {
         var b = sh.getElementById('ghb'); if (!b) return;
@@ -5190,6 +5479,7 @@
         var bar = sh.querySelector('.bar');
         if (bar) bar.classList.toggle('ghost', on);
         // A remount builds fresh (off-looking) elements — put them back where the transition is.
+        paintGhostTip(); // a remount builds a fresh pill: give it its label
         var mist = sh.getElementById('gmist');
         if (mist && !mist._gv) { mist._gv = 1; gvGeo = null; ghostApply(); }
     }
@@ -5365,7 +5655,7 @@
         } else {
             host.style.setProperty('height', '0', 'important');
             host.style.setProperty('pointer-events', 'none', 'important');
-            css.textContent = '.bar,#drops,#tmenu,#menu,#smenu,#usmenu,#qcmenu,#fcdlg,#dlp,#pal,#ttip,#agline,#prog,#askcard,#hocard{display:none!important}' +
+            css.textContent = '.bar,#drops,#tmenu,#menu,#smenu,#usmenu,#qcmenu,#gpop,#fcdlg,#dlp,#pal,#ttip,#agline,#prog,#askcard,#hocard,#updcard{display:none!important}' +
                 '#ntp{top:0!important}#fbar{top:6px!important}#pwsave,#askcard,#hocard{top:4px!important}#recpill,#reccard{top:8px!important}*{pointer-events:auto}';
         }
         sh.appendChild(css);
@@ -5373,7 +5663,7 @@
 
         var last = '';
         var raf = 0, lowTimer = 0;
-        var ids = ['drops', 'tmenu', 'menu', 'smenu', 'usmenu', 'qcmenu', 'fcdlg', 'dlp', 'pal', 'ttip', 'askcard', 'hocard'];
+        var ids = ['drops', 'tmenu', 'menu', 'smenu', 'usmenu', 'qcmenu', 'gpop', 'fcdlg', 'dlp', 'pal', 'ttip', 'askcard', 'hocard', 'updcard'];
         var check = function () {
             raf = 0;
             var s = sh0(); if (!s) return;
@@ -5387,7 +5677,7 @@
                 // or more. Closed ones are display:none / visibility:hidden.
                 if (cs.display === 'none' || cs.visibility === 'hidden') continue;
                 if (ids[i] === 'ttip') { if (el.classList.contains('on')) tip = true; continue; }
-                if (ids[i] === 'askcard' || ids[i] === 'hocard') { var ra = el.getBoundingClientRect(); if (ra.width > 0 && ra.height > 0) ask = true; continue; }
+                if (ids[i] === 'askcard' || ids[i] === 'hocard' || ids[i] === 'updcard') { var ra = el.getBoundingClientRect(); if (ra.width > 0 && ra.height > 0) ask = true; continue; }
                 var r = el.getBoundingClientRect();
                 if (!(r.width > 0 && r.height > 0)) continue;
                 if (ids[i] === 'drops') drops = true;
@@ -5462,7 +5752,7 @@
             '<div id="drops"></div></div>' +
             // Tool capsule: one glass pill, one sliding highlight that follows
             // the pointer, tooltips with the shortcut. The orb opens the palette.
-            '<button class="gpill" id="gpill" title="Ghost mode is on — nothing is saved. Click to turn off">' + SVG.ghost + 'Ghost</button>' +
+            '<button class="gpill" id="gpill" aria-haspopup="dialog" title="Ghost mode is on — click for options">' + SVG.ghost + '<span>Ghost</span><i class="gst" id="gst"></i></button>' +
             '<button class="fcpill" id="fcpill"><i class="fcdot"></i>Full control<span id="fcleft"></span></button>' +
             '<div class="tools" id="tools"><i class="hl" id="hl"></i>' +
             '<button class="tb orb" id="orb" data-tip="Command palette" data-sc="Ctrl+K">' + SVG.sparkle + '</button>' +
@@ -5517,7 +5807,7 @@
     // frame. Rather than touching every place that hides one, each is watched: while it
     // shows we keep a copy, and the moment it hides that copy fades out in its place (an
     // inert sibling, so it sits exactly where the original was). Gone in ~150ms.
-    var EXITS = { drops: 1, tmenu: 1, pmenu: 1, pwfill: 1, pwsave: 1, askcard: 1, hocard: 1, pal: 'fade', fbar: 1,
+    var EXITS = { drops: 1, tmenu: 1, pmenu: 1, pwfill: 1, pwsave: 1, askcard: 1, hocard: 1, updcard: 1, pal: 'fade', fbar: 1,
         recpill: 1, reccard: 1, rwbar: 'up', rwmenu: 1, rwres: 1, rwmsg: 1, ntp: 'fade' };
     function reducedMotion() { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } }
     function wireExits(sh) {
@@ -5802,6 +6092,79 @@
             '#hocard button{border:0;cursor:pointer;border-radius:9px;padding:7px 12px;font:600 12px system-ui,sans-serif;transition:all .12s}' +
             '#hocard .st{background:rgba(255,255,255,.07);color:#e1ddd9}#hocard .st:hover{background:rgba(255,255,255,.13)}' +
             '#hocard .ok{background:#6edcaa;color:#120f0d}#hocard .ok:hover{background:#8ae8bc}' +
+            // update card: under the agent cards (they need an answer), over the page
+            '#updcard{position:fixed;top:48px;right:14px;display:none;z-index:30;flex-direction:column;gap:10px;' +
+            'background:rgba(31,28,25,.97);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);' +
+            'border:1px solid hsl(var(--h) 100% 70% / .38);border-radius:14px;padding:12px 14px;width:340px;max-width:calc(100vw - 40px);' +
+            'box-shadow:0 14px 40px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.06);font:12.5px/1.45 system-ui,sans-serif;' +
+            'transform-origin:top right;animation:pop .18s cubic-bezier(.16,1,.3,1)}' +
+            '#updcard .top{display:flex;align-items:flex-start;gap:11px}' +
+            '#updcard .k{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;flex:none;background:hsl(var(--h) 100% 70% / .16);color:hsl(var(--h) 100% 78%)}' +
+            '#updcard .k svg{width:15px;height:15px}' +
+            '#updcard.good .k{background:rgba(110,220,170,.16);color:#6edcaa}' +
+            '#updcard.bad{border-color:rgba(255,107,122,.5)}#updcard.bad .k{background:rgba(255,107,122,.16);color:#ff8b98}' +
+            '#updcard .qt{color:#e5e1dd;min-width:0;flex:1;word-break:break-word}' +
+            '#updcard .qt b{color:#fff;font-weight:600;font-size:13px}' +
+            '#updcard .sub{color:#aaa39d;font-size:12px}' +
+            '#updcard .x{border:0;background:transparent;color:#8d867f;cursor:pointer;font:400 18px/1 system-ui,sans-serif;padding:0 2px;margin:-2px -4px 0 0;border-radius:6px}' +
+            '#updcard .x:hover{color:#fff;background:rgba(255,255,255,.08)}' +
+            '#updcard .sp{width:14px;height:14px;border-radius:50%;border:2px solid hsl(var(--h) 100% 78% / .28);border-top-color:hsl(var(--h) 100% 78%);animation:updspin .8s linear infinite}' +
+            '@keyframes updspin{to{transform:rotate(360deg)}}' +
+            '#updcard .pbar{position:relative;display:block;height:6px;border-radius:3px;background:rgba(255,255,255,.1);overflow:hidden}' +
+            '#updcard .pf{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:3px;background:hsl(var(--h) 100% 70%);transition:width .25s ease-out;overflow:hidden}' +
+            // a light sweeping along the download bar
+            '#updcard .pf::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.6),transparent);transform:translateX(-100%);animation:updshine 1.3s ease-in-out infinite}' +
+            '@keyframes updshine{to{transform:translateX(100%)}}' +
+            '#updcard .pbar.ind .pf{width:38%;transition:none;animation:updind 1.15s ease-in-out infinite}' +
+            '@keyframes updind{0%{left:-40%}100%{left:100%}}' +
+            // ---- the working look (checking / verifying / installing): a light running round the border,
+            // a morphing aurora orb with sonar rings and orbiting sparks, a shimmering title, a gently drifting card
+            '#updcard.chk{overflow:hidden;isolation:isolate;border-color:transparent;' +
+            'animation:pop .18s cubic-bezier(.16,1,.3,1),updwob 3.6s ease-in-out .25s infinite}' +
+            '@keyframes updwob{0%,100%{transform:rotate(-.5deg) translateY(0)}50%{transform:rotate(.5deg) translateY(-1.5px)}}' +
+            '#updcard.chk::before{content:"";position:absolute;z-index:-2;left:50%;top:50%;width:560px;height:560px;margin:-280px 0 0 -280px;' +
+            'background:conic-gradient(from 0deg,transparent 0 52%,#ff6bd6 68%,#ffb067 78%,#6edcaa 88%,#6ec1ff 95%,transparent 100%);animation:updspin 2.4s linear infinite}' +
+            '#updcard.chk::after{content:"";position:absolute;z-index:-1;inset:1.5px;border-radius:13px;background:rgba(27,24,22,.985)}' +
+            '#updcard.chk .k{width:54px;height:54px;background:none;border-radius:0;overflow:visible;margin:-6px 0 -6px -6px}' +
+            '#updcard .orb{position:relative;display:block;width:54px;height:54px}' +
+            '#updcard .orb i{position:absolute;display:block}' +
+            '#updcard .o-glow{inset:5px;border-radius:50%;background:conic-gradient(#ff6bd6,#ffb067,#6edcaa,#6ec1ff,#b48cff,#ff6bd6);filter:blur(9px);opacity:.8;animation:updspin 3s linear infinite}' +
+            '#updcard .o-blob{left:12px;top:12px;width:30px;height:30px;background:conic-gradient(from 90deg,#ff6bd6,#ffb067,#6edcaa,#6ec1ff,#b48cff,#ff6bd6);' +
+            'border-radius:42% 58% 63% 37%/41% 44% 56% 59%;box-shadow:inset 0 0 9px rgba(255,255,255,.6);animation:updmorph 4.2s ease-in-out infinite,updspin 5.5s linear infinite}' +
+            '#updcard .o-core{left:24px;top:24px;width:6px;height:6px;border-radius:50%;background:#fff;box-shadow:0 0 10px 2px #fff;animation:updcore 1.1s ease-in-out infinite}' +
+            '#updcard .o-ring{inset:11px;border-radius:50%;border:1.5px solid hsl(var(--h) 100% 80%);opacity:0;animation:updring 2.4s cubic-bezier(.2,.6,.3,1) infinite}' +
+            '#updcard .o-ring.r2{animation-delay:.8s}#updcard .o-ring.r3{animation-delay:1.6s}' +
+            '#updcard .o-dot{left:50%;top:50%;width:5px;height:5px;margin:-2.5px 0 0 -2.5px;border-radius:50%;background:#fff;box-shadow:0 0 7px 1px currentColor;animation:updorbit var(--t) linear infinite}' +
+            '#updcard .o-dot.d1{--r:25px;--t:2.1s;color:#ff9ae8}#updcard .o-dot.d2{--r:19px;--t:1.5s;color:#8fe6ff;animation-direction:reverse}#updcard .o-dot.d3{--r:27px;--t:3.2s;color:#ffd08f}' +
+            '@keyframes updmorph{0%,100%{border-radius:42% 58% 63% 37%/41% 44% 56% 59%}25%{border-radius:58% 42% 38% 62%/52% 61% 39% 48%}' +
+            '50%{border-radius:35% 65% 55% 45%/60% 38% 62% 40%}75%{border-radius:60% 40% 47% 53%/38% 55% 45% 62%}}' +
+            '@keyframes updcore{50%{transform:scale(1.55);opacity:.65}}' +
+            '@keyframes updring{0%{transform:scale(.5);opacity:.9}100%{transform:scale(1.95);opacity:0}}' +
+            '@keyframes updorbit{from{transform:rotate(0) translateX(var(--r))}to{transform:rotate(360deg) translateX(var(--r))}}' +
+            '#updcard.chk .qt>b{background:linear-gradient(90deg,#fff 0,#ffd0f4 22%,#fff 44%,#bfe9ff 66%,#fff 100%);background-size:220% 100%;' +
+            '-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:updshim 2.1s linear infinite}' +
+            '@keyframes updshim{from{background-position:120% 0}to{background-position:-100% 0}}' +
+            '#updcard.chk .sub{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;color:#c9bfd8;display:block;min-height:1.4em}' +
+            '#updcard.chk .pbar{background:rgba(255,255,255,.07)}' +
+            '#updcard.chk .pbar.ind .pf{width:46%;background:linear-gradient(90deg,transparent,#ff6bd6,#ffb067,#6edcaa,#6ec1ff,transparent);box-shadow:0 0 12px rgba(255,150,230,.7);animation:updind 1.05s ease-in-out infinite}' +
+            '#updcard.chk .pf::after{display:none}' +
+            // up to date: the check pops in with a burst of sparks; update available: a ping ring asks for a look
+            '#updcard.good .k{position:relative;overflow:visible;animation:upop .55s cubic-bezier(.2,1.7,.4,1) both}' +
+            '@keyframes upop{0%{transform:scale(.3) rotate(-40deg);opacity:0}100%{transform:none;opacity:1}}' +
+            '#updcard .bs{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px 0 0 -2px;border-radius:50%;background:#6edcaa;box-shadow:0 0 6px #6edcaa;' +
+            'opacity:0;animation:updburst .75s ease-out .12s both}' +
+            '#updcard .bs:nth-of-type(odd){background:#ffd08f;box-shadow:0 0 6px #ffd08f}' +
+            '@keyframes updburst{0%{opacity:1;transform:rotate(var(--a)) translateX(4px) scale(1)}100%{opacity:0;transform:rotate(var(--a)) translateX(30px) scale(.2)}}' +
+            '#updcard.avl .k{position:relative;overflow:visible}' +
+            '#updcard.avl .k::after{content:"";position:absolute;inset:-2px;border-radius:10px;border:2px solid hsl(var(--h) 100% 76%);opacity:0;animation:updping 1.8s ease-out infinite}' +
+            '@keyframes updping{0%{transform:scale(.85);opacity:.85}100%{transform:scale(1.6);opacity:0}}' +
+            '@media (prefers-reduced-motion:reduce){#updcard.chk,#updcard.chk::before,#updcard .orb i,#updcard.chk .qt>b,#updcard.chk .pbar.ind .pf,#updcard .bs,#updcard.avl .k::after,#updcard .pf::after{animation:none!important}' +
+            '#updcard.chk .pbar.ind .pf{width:100%;opacity:.55}#updcard .bs{display:none}#updcard.chk .qt>b{-webkit-text-fill-color:#fff}}' +
+            '@media (prefers-reduced-motion:reduce){#updcard .pbar.ind .pf{animation:none;left:0;width:100%;opacity:.55}#updcard .sp{animation:none}}' +
+            '#updcard .btns{display:flex;justify-content:flex-end;gap:8px}' +
+            '#updcard .btns button{border:0;cursor:pointer;border-radius:9px;padding:7px 12px;font:600 12px system-ui,sans-serif;transition:all .12s}' +
+            '#updcard .st{background:rgba(255,255,255,.07);color:#e1ddd9}#updcard .st:hover{background:rgba(255,255,255,.13)}' +
+            '#updcard .ok{background:hsl(var(--h) 100% 70%);color:#120f0d}#updcard .ok:hover{background:hsl(var(--h) 100% 78%)}' +
             '#pwsave{position:fixed;top:48px;right:14px;display:none;z-index:31;flex-direction:column;gap:10px;' +
             'background:rgba(31,28,25,.96);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);' +
             'border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:12px 14px;width:330px;max-width:calc(100vw - 40px);' +
@@ -5907,6 +6270,27 @@
             'box-shadow:inset 0 0 0 1px rgba(167,139,250,.32);transition:background .15s,color .15s}' +
             '.gpill svg{width:14px;height:14px;flex:none}.gpill:hover{background:rgba(167,139,250,.3);color:#efe8ff}' +
             '.bar.ghost .gpill svg{animation:gfloat 2.6s ease-in-out infinite}' +
+            '.gpill .gst{font-style:normal;font-weight:500;opacity:.8;padding-left:7px;margin-left:1px;border-left:1px solid rgba(217,204,255,.3)}' +
+            '.gpill .gst::after{content:"";display:inline-block;margin-left:6px;width:4px;height:4px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg)}' +
+            '#gpop{position:fixed;top:44px;left:0;width:318px;max-width:calc(100vw - 16px);display:block;visibility:hidden;opacity:0;pointer-events:none;transform:translateY(-6px) scale(.97);' +
+            'transition:opacity .14s ease,transform .16s cubic-bezier(.16,1,.3,1),visibility 0s linear .16s;z-index:31;padding:8px;transform-origin:top left;' +
+            'background:rgba(27,22,38,.98);border:1px solid rgba(167,139,250,.34);border-radius:14px;color:#e6e2dd;' +
+            'box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);font:12px/1.4 system-ui,sans-serif}' +
+            '#gpop.on{visibility:visible;opacity:1;pointer-events:auto;transform:none;transition:opacity .14s ease,transform .18s cubic-bezier(.16,1,.3,1),visibility 0s}' +
+            '#gpop .gph{display:flex;gap:10px;align-items:center;padding:4px 6px 10px}' +
+            '#gpop .gpi,#gpop .gpk{flex:none;width:26px;height:26px;border-radius:8px;display:grid;place-items:center;background:rgba(167,139,250,.18);color:#d9ccff;font-style:normal;transition:background .15s,color .15s}' +
+            '#gpop svg{width:14px;height:14px}' +
+            '#gpop .gpt{flex:1;min-width:0;display:flex;flex-direction:column}' +
+            '#gpop .gpt b{font-weight:600;color:#f3efff}#gpop .gpt span{color:#a59dbf;font-size:11px}' +
+            '#gpop .gpr{display:flex;align-items:center;gap:10px;padding:9px 8px;border-radius:10px;cursor:pointer;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);outline:0}' +
+            '#gpop .gpr:hover,#gpop .gpr:focus-visible{background:rgba(167,139,250,.14)}' +
+            '#gpop .gpr .gpk{background:rgba(255,255,255,.07);color:#b3abc8}#gpop .gpr.on .gpk{background:rgba(167,139,250,.32);color:#fff}' +
+            '#gpop .qsw{flex:none;width:30px;height:17px;border-radius:99px;background:rgba(255,255,255,.18);position:relative;transition:background .15s}' +
+            '#gpop .qsw::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:transform .16s}' +
+            '#gpop .gpr.on .qsw{background:#8b6cf0}#gpop .gpr.on .qsw::after{transform:translateX(13px)}' +
+            '#gpop .gpf{display:flex;justify-content:flex-end;padding:9px 2px 1px}' +
+            '#gpop .gpoff{border:0;cursor:pointer;border-radius:9px;padding:7px 12px;font:600 12px system-ui,sans-serif;background:rgba(255,255,255,.08);color:#e8e3f4;transition:background .12s}' +
+            '#gpop .gpoff:hover{background:rgba(255,255,255,.15)}' +
             '@keyframes gfloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-1.5px)}}' +
             '#ghb{transition:color .25s,background .25s}'+
             '.tools.h-agbtn #agbtn,.tools.h-usbtn #usbtn,.tools.h-qcbtn #qcbtn,.tools.h-pip #pip,.tools.h-star #star,.tools.h-ghb #ghb,.tools.h-rwb #rwb,.tools.h-dlbtn #dlbtn{display:none!important}' +
@@ -6643,6 +7027,7 @@
             '<div id="tmenu"></div>' +
             '<div id="usmenu"></div>' +
             '<div id="qcmenu"></div>' +
+            '<div id="gpop"></div>' +
             '<div id="fcdlg"></div>' +
             '<div id="pmenu"></div>' +
             '<button id="pweye" type="button" title="Show password">' +
@@ -6654,6 +7039,7 @@
             '<div id="pwsave"></div>' +
             '<div id="askcard"></div>' +
             '<div id="hocard"></div>' +
+            '<div id="updcard"></div>' +
             '<div id="recpill"></div><div id="reccard"></div>' +
             '<div id="menu"></div>' +
             '<div id="smenu"></div>' +
@@ -7104,7 +7490,8 @@
         ['mousedown', 'click'].forEach(function (ev) {
             gpB.addEventListener(ev, function (e) { e.stopPropagation(); e.preventDefault(); });
         });
-        gpB.addEventListener('click', function () { send('ghost'); });
+        gpB.addEventListener('click', function () { toggleGhostPop(sh); });
+        wireGhostPop(sh);
 
         var pipB = sh.getElementById('pip');
         ['mousedown', 'click'].forEach(function (ev) {
@@ -7415,6 +7802,8 @@
                         }
                         setGhostState(!!j.ghost);
                         state.gl = !!j.gl;
+                        state.pip = j.pip | 0;
+                        state.api = j.api || null;
                         paintGhostTip();
                         exposeState();
                         // Split mode: each view only does its own half — the page
@@ -7439,11 +7828,15 @@
                         if (INTERNAL_DOC) try {
                             document.dispatchEvent(new CustomEvent('brain-state', { detail: state }));
                         } catch (e2) { }
+                    } else if (j && j.b === 102) {
+                        mdToast(String(j.m || ''), !!j.bad);
                     } else if (j && j.b === 98) {
                         fcRefused(sh, j.why || '');
                     } else if (j && j.b === 97) {
                         qcPushed = true;
                         qcApply(j.qc);
+                        // Site APIs: should this document watch its own requests (learning) / keep live tokens (approved tools)?
+                        try { if (j.api && window.__brain && window.__brain.apiConfig) window.__brain.apiConfig(j.api.l, j.api.u); } catch (e) { }
                     } else if (j && j.b === 81) {
                         if (editing && dirty && String(j.q || '').toLowerCase() === readQuery().trim().toLowerCase()) {
                             remoteHist = { q: String(j.q).toLowerCase(), items: Array.isArray(j.items) ? j.items : [] };
@@ -7495,6 +7888,7 @@
                         rwCapture(j.tag || 'agent', true); // host asks for a (usually agent-tagged) snapshot
                     } else if (j && j.b === 61) {
                         state.upd = j.upd;
+                        paintUpd(sh);
                         // An open menu must not be rebuilt (that replays its open animation);
                         // only the Settings row's NEW badge can change.
                         var um = sh.getElementById('menu');

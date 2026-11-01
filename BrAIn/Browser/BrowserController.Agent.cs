@@ -151,7 +151,7 @@ public sealed partial class BrowserController
     }
 
     public Task<BrowserTab> DuplicateTabAsync(BrowserTab tab, CancellationToken ct = default)
-        => NewTabAsync(tab.LastUrl, ct, tab.IsPrivate, tab.GhostLogins ? true : null);
+        => NewTabAsync(tab.LastUrl, ct, tab.IsPrivate && !(tab.InGhost && _ghost), tab.GhostLogins && !_ghost ? true : null);
 
     /// <summary>Reopens the most recently closed tab; null when there is none.</summary>
     public async Task<BrowserTab?> ReopenClosedTabAsync(CancellationToken ct = default)

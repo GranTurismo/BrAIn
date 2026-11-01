@@ -146,14 +146,39 @@ public sealed class Seatbelt
             }
         }
 
+        return await AskCoreAsync(tool, host, (facts?.Name ?? loc?.Name ?? "").Trim(), why, url ?? "", ct);
+    }
+
+    /// <summary>
+    /// Asks the user before something that is not a click: a call to a learned site API that changes data or
+    /// touches something sensitive. Same card, same answers (Allow once / Allow this site 10 min / Deny).
+    /// Returns null when the call may proceed, otherwise the refusal text for the agent.
+    /// </summary>
+    public async Task<string?> AskAsync(string tool, string host, string label, string why, CancellationToken ct)
+    {
+        if (_mode != ModeAsk) return null;
+        host = (host ?? "").ToLowerInvariant();
+        lock (_lock)
+        {
+            if (host.Length > 0 && _siteUntil.TryGetValue(host, out var until))
+            {
+                if (until > DateTime.UtcNow) return null;
+                _siteUntil.Remove(host);
+            }
+        }
+        return await AskCoreAsync(tool, host, label, why, "", ct);
+    }
+
+    private async Task<string?> AskCoreAsync(string tool, string host, string label, string why, string url, CancellationToken ct)
+    {
         var p = new Pending
         {
             Id = Guid.NewGuid().ToString("N"),
             Tool = tool,
             Host = host,
-            Label = (facts?.Name ?? loc?.Name ?? "").Trim(),
+            Label = label,
             Why = why,
-            Url = url ?? "",
+            Url = url,
         };
         lock (_lock) _pending.Add(p);
         Changed?.Invoke();
@@ -180,7 +205,7 @@ public sealed class Seatbelt
         }
         var what = p.Label.Length > 0 ? $"'{p.Label}'" : "that element";
         return answer == "timeout"
-            ? $"NOT APPROVED: the user did not answer in BrAIn in time, so the action on {what} ({why}) was not performed. Do not retry or find another route; tell the user what you wanted to do and ask them."
+            ? $"NOT APPROVED: the user did not answer in BrAIn in time, so the action on {what} ({why}) was not performed. Do not retry or find another route; tell the user what you wanted to do and ask them to try again."
             : $"DENIED: the user declined the action on {what} ({why}) in BrAIn. Do not retry or find another route; tell the user and ask what they want instead.";
     }
 
