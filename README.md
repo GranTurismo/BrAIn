@@ -2,7 +2,7 @@
 
 A real desktop browser that any MCP-capable AI agent can drive — built on
 [Photino.NET](https://github.com/tryphotino/photino.NET) (native WebView2 on
-Windows, WKWebView on macOS) with a first-class [Model Context
+Windows, WKWebView on macOS, WebKitGTK on Linux) with a first-class [Model Context
 Protocol](https://modelcontextprotocol.io) server embedded in the same process.
 
 One binary = a windowed browser + a stdio MCP server exposing ~35 tools for
@@ -18,8 +18,9 @@ for a human while remaining fully agent-drivable.
 
 | Platform | Runtime |
 |----------|---------|
-| Windows  | .NET 8+ SDK, WebView2 Evergreen runtime (preinstalled on Win10/11) |
-| macOS    | .NET 8+ SDK, no extra dependencies (WKWebView is in the OS) |
+| Windows  | .NET 10 SDK to build, WebView2 Evergreen runtime (preinstalled on Win10/11) |
+| macOS    | .NET 10 SDK to build, no extra dependencies (WKWebView is in the OS) |
+| Linux    | .NET 10 SDK to build (the release archives are self-contained: nothing to install but the libraries below). x64 or arm64, GTK 3 and WebKitGTK 4.1 — `libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0` on Debian/Ubuntu — on X11 or Wayland. See [Linux](#linux). |
 
 ## Build & run
 
@@ -44,7 +45,102 @@ Publish for distribution:
 dotnet publish -c Release -r win-x64    # Windows
 dotnet publish -c Release -r osx-arm64  # Apple Silicon
 dotnet publish -c Release -r osx-x64    # Intel Mac
+dotnet publish -c Release -r linux-x64  # Linux (linux-arm64 for ARM)
 ```
+
+`scripts/make-dist.sh` builds every installer, including the two Linux archives
+(`scripts/make-linux-dist.sh` makes just those; it cross-publishes, so it runs on a Mac too).
+
+## Linux
+
+Linux is a first-class platform: the same browser as on macOS — toolbar, tabs, command palette, the
+embedded MCP server and its tools — in a GTK 3 window with one WebKitGTK view per tab. Every
+[release](https://github.com/GranTurismo/BrAIn/releases/latest) has an archive for **x64** and one for
+**arm64** (`BrAIn-<version>-linux-x64.tar.gz`, `BrAIn-<version>-linux-arm64.tar.gz`; the download page shows the SHA-256 of each).
+
+### Install
+
+```bash
+# 1. the system libraries (Debian / Ubuntu names; install.sh prints the right ones for your distribution)
+sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0
+#    Fedora: sudo dnf install webkit2gtk4.1 gtk3 libnotify libsecret
+#    Arch:   sudo pacman -S webkit2gtk-4.1 gtk3 libnotify libsecret
+
+# 2. unpack the archive for your CPU (uname -m: x86_64 = x64, aarch64 = arm64) and run the installer
+tar xzf BrAIn-*-linux-x64.tar.gz
+cd BrAIn-*-linux-x64
+./install.sh                    # for you only, no root needed
+# sudo ./install.sh --system    # or for everybody: /opt/brain-browser
+```
+
+`install.sh` puts the program in `~/.local/share/brain-browser`, links it as `~/.local/bin/brain`, and adds an
+application-menu entry with icons. No .NET is needed (the program is self-contained), and you can also just run
+`./BrAIn` from the unpacked folder without installing anything. `uninstall.sh` (installed next to the program)
+removes it again; your profile in `~/.local/share/BrAIn` stays unless you add `--purge`.
+
+Point your MCP client at the program (use the absolute path; the client needs to be started in your desktop
+session, because BrAIn is a window):
+
+```json
+{ "mcpServers": { "brain": { "command": "/home/you/.local/bin/brain" } } }
+```
+
+On a machine with no display (a server, a container), run it under a virtual X server and a light window manager,
+e.g. `xvfb-run -a bash -c 'openbox & exec brain'` — that is how the Linux tests run it.
+
+### What works
+
+- **The same MCP tools** as on macOS (the table below), with the two exceptions at the end of this list:
+  navigation, snapshots, real mouse input (genuine GDK events delivered to the page, so clicks are trusted),
+  typing, full-page screenshots, tabs and windows, cookies, clipboard, downloads, zoom, and the user agent and
+  light/dark emulation.
+- **The browser around it**: toolbar and tab strip, command palette, per-tab live views (switching tabs keeps
+  scroll, form input and JS state), private tabs and Ghost mode, bookmarks and history, the downloads shelf,
+  pop-up windows, permission and HTTP-auth prompts, element fullscreen (video players), the picture menu
+  (copy / save image), printing (GTK print dialog) and web notifications (libnotify).
+- **Password vault**: encrypted at rest. The key lives in the desktop keyring (libsecret: GNOME Keyring,
+  KWallet, …) when one is running, otherwise in a key file only you can read. Revealing or filling a saved
+  password asks for your account password first (checked through PAM, the way `sudo` does it; there is no
+  Touch ID on Linux). Where that is not possible — an account without a password, a minimal system — it asks
+  for a plain Allow / Cancel confirmation instead.
+- **Importing from other browsers**: bookmarks, history, cookies and passwords from Chrome, Chromium, Brave,
+  Edge, Vivaldi and Opera (also their Snap and Flatpak installs), and bookmarks, history and cookies from
+  Firefox. Chromium's encrypted values are decrypted with the key from the desktop keyring; anything that
+  cannot be read is skipped and the import page says why.
+- **Not on Linux**: `browser_pdf` (Windows only, as on macOS) and `browser_emulate`'s offline / geolocation
+  switches (WebKit has no override for them; user agent and light/dark do work).
+
+### Updating
+
+A per-user install (`install.sh` without `--system`) updates itself, like the macOS and Windows builds: the toolbar
+menu's **Check for updates** (also in the command palette, `Ctrl+K`) downloads the matching `-linux-<arch>.tar.gz` from the latest
+GitHub release, verifies its SHA-256, unpacks it next to the install folder, checks that the new program starts,
+swaps the two folders and restarts BrAIn; an update that cannot be unpacked or does not start leaves the installed
+version untouched. Installs it must not replace — a `--system` install in `/opt`, a distro package, a read-only
+folder, a folder that holds other files, a plain `dotnet publish` — say *Updates unavailable* and why; update
+those by running `install.sh` from the new archive (with `sudo` for `--system`). What the update helper did is in
+`~/.local/share/BrAIn/update.log`.
+
+### Troubleshooting
+
+- **Blank or black window** (seen with some NVIDIA / driver combinations): start it with
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1 brain`. To keep that, put `env WEBKIT_DISABLE_DMABUF_RENDERER=1` in front of the
+  program in the `Exec=` line of `~/.local/share/applications/brain.desktop`.
+- **X11 and Wayland**: BrAIn does not pick a GTK backend itself, so GTK uses native Wayland on a Wayland session
+  and X11 otherwise. Both are exercised in testing (X11 on a virtual X server; Wayland on a headless compositor,
+  without pointer input). If something misbehaves on Wayland, `GDK_BACKEND=x11 brain` runs it through XWayland.
+- **No keyring** (a minimal window manager, a container): the vault key falls back to a file with `0600`
+  permissions in `~/.local/share/BrAIn`. The vault is still encrypted, but the key then sits next to it, so anyone
+  who can read your home folder can read both.
+- **It does not start**: run `brain` from a terminal to see why. `install.sh` warns about missing libraries; the
+  four above are all it needs. `BRAIN_LOG=1` also writes the log to `~/.local/share/BrAIn/brain.log`.
+- **It opens fullscreen**: that is the default; `--no-fullscreen` turns it off.
+
+Linux support is new: it is tested on Ubuntu 24.04 (WebKitGTK 2.52) in a virtual desktop, on x64 and arm64 builds
+of the same code. Reports from real desktops and other distributions are welcome.
+
+For contributors: `scripts/linux/test.sh` runs the Linux checks in Docker (the tab self-test, the installer and
+the self-updater; see `scripts/linux/README.md`), and `.github/workflows/linux-selftest.yml` runs them on a CI runner.
 
 ## Using it as an MCP server
 
@@ -76,6 +172,18 @@ macOS:
 }
 ```
 
+Linux (after `install.sh`):
+
+```json
+{
+  "mcpServers": {
+    "brain": {
+      "command": "/home/you/.local/bin/brain"
+    }
+  }
+}
+```
+
 To open on a specific page at startup, add `"args": ["https://example.com"]`.
 
 ### Typical agent loop
@@ -101,7 +209,7 @@ To open on a specific page at startup, add `"args": ["https://example.com"]`.
 | Tab chrome | `browser_tab` (pin / mute / duplicate / move / reopen closed) |
 | Privacy | `browser_ghost` (status / on / off / toggle — Ghost mode: nothing saved, every tab private and logged out of all accounts — or, if the user chose "Stay logged in", with a copy of their cookies; the agent can turn it off only if it turned it on, and cannot change that choice) |
 | Clipboard, find, save | `browser_clipboard` (read / write), `browser_find_in_page` (Ctrl+F style), `browser_save_page` (DOM to .html) |
-| Emulation | `browser_emulate` (user agent, light/dark, offline, geolocation; Windows full, macOS user agent + colour scheme) |
+| Emulation | `browser_emulate` (user agent, light/dark, offline, geolocation; Windows full, macOS and Linux user agent + colour scheme) |
 | Page history | `browser_rewind` (list / read / search the tab's past states — opt-in, see Rewind below) |
 | Site APIs | `browser_api_list`, `browser_api_learn` (on / off / status), `browser_api_run`, and one `api_<site>_<name>` tool per endpoint the user approved (see "Site APIs" below) |
 | Site scripts | `userscript_create`, `userscript_install_template`, `userscript_run`, `userscript_errors`, `userscript_get`, `userscript_list`, `userscript_templates`, `userscript_update`, `userscript_delete` (see Site scripts below) |
@@ -120,16 +228,20 @@ BrAIn.exe
 IBrowserDriver
 ├── Windows: CdpDriver ─── Chrome DevTools Protocol over
 │                          WebView2's --remote-debugging-port
-└── macOS:   WebKitDriver ─ objc_msgSend → WKWebView evaluateJavaScript,
+├── macOS:   WebKitDriver ─ objc_msgSend → WKWebView evaluateJavaScript,
+│                           results via window.external.sendMessage,
+│                           screenshots via CGWindowListCreateImage
+└── Linux:   WebKitDriver ─ P/Invoke → WebKitGTK evaluate_javascript (GTK 3),
                             results via window.external.sendMessage,
-                            screenshots via CGWindowListCreateImage
+                            screenshots via webkit_web_view_get_snapshot
 ```
 
 Notes on the design:
 
 - **Script execution** — released Photino has no JS-eval API (PR
-  tryphotino/photino.NET#276 is still open), so Windows uses CDP and macOS
-  talks to the WKWebView through the Objective-C runtime directly.
+  tryphotino/photino.NET#276 is still open), so Windows uses CDP, macOS
+  talks to the WKWebView through the Objective-C runtime directly, and Linux
+  calls GTK 3 and WebKitGTK's C API through P/Invoke (`Browser/Linux/`).
 - **`brain.js`** is injected into every document: it builds the
   accessibility-tree snapshot, keeps stable element refs between calls, and
   dispatches realistic input events.
@@ -138,10 +250,10 @@ Notes on the design:
   buttons, an editable omnibox with a history dropdown, a loading progress
   bar, a link-hover status bubble and a live security indicator. Every
   tab has its own native view — a WKWebView on macOS, a WebView2 controller on
-  Windows — so switching tabs just shows another view: scroll, form input, JS
+  Windows, a WebKitWebView on Linux — so switching tabs just shows another view: scroll, form input, JS
   state, audio and in-flight work survive. (Photino itself embeds exactly one
-  webview per window, so the extra views are created by BrAIn: `Browser/Mac/WkTabs.cs`
-  and `Browser/Win/WinTabs.cs`.) Every tab stays live; background tabs are only
+  webview per window, so the extra views are created by BrAIn: `Browser/Mac/WkTabs.cs`,
+  `Browser/Win/WinTabs.cs` and `Browser/Linux/LinuxTabs.cs`.) Every tab stays live; background tabs are only
   throttled. Machines short on RAM can opt in to `BRAIN_MAXLIVE=n` (older Windows
   views are then evicted and reload on demand, scroll restored) or `BRAIN_SUSPEND=1`
   (hidden Windows tabs freeze after 20 s). If per-tab
@@ -370,4 +482,7 @@ GitHub −67%, NYT −64%, Cloudflare −43%, Forbes −28%).
   go to `%LOCALAPPDATA%\BrAIn\brain.log`.
 - `browser_pdf` is Windows-only (CDP `Page.printToPDF`).
 - `browser_click_at` uses real OS-level input on Windows; the JS fallback on
-  macOS dispatches synthetic events.
+  macOS dispatches synthetic events. Linux delivers genuine GDK mouse events to the page's view
+  (trusted clicks; the pointer does not move).
+- Linux is new: tested on Ubuntu 24.04 in a virtual desktop (X11, and Wayland without pointer input); there is
+  no Touch ID (the password vault asks for your account password instead); see [Linux](#linux) for what to try when something is off.

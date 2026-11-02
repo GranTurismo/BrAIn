@@ -161,14 +161,14 @@ public sealed partial class BrowserController
 
     public string? ReadClipboard()
     {
-        if (IsMac) return InvokeOnUi(() => Mac.WkClipboard.Text());
+        if (IsNative) return InvokeOnUi(() => NativeShell.ClipboardText());
         if (OperatingSystem.IsWindows()) return Native.Win32.ClipboardText();
         throw new NotSupportedException("clipboard access is not available on this platform");
     }
 
     public bool WriteClipboard(string text)
     {
-        if (IsMac) return InvokeOnUi(() => Mac.WkClipboard.SetText(text));
+        if (IsNative) return InvokeOnUi(() => NativeShell.SetClipboardText(text));
         if (OperatingSystem.IsWindows()) return Native.Win32.SetClipboardText(text);
         throw new NotSupportedException("clipboard access is not available on this platform");
     }

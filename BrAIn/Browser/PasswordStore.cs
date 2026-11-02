@@ -6,13 +6,13 @@ namespace BrAIn.Browser;
 /// <summary>
 /// The credential vault. Entries live in <c>passwords.dat</c> under the profile
 /// store directory, AES-256-GCM encrypted with a random 256-bit key. The key is
-/// protected by the OS credential store — macOS Keychain (generic-password item)
-/// or Windows DPAPI — and held in memory for the process lifetime so the OS
-/// prompt (if any) happens once per launch, not per lookup. If key protection
+/// protected by the OS credential store — macOS Keychain (generic-password item),
+/// Windows DPAPI or the Linux Secret Service (see <c>PasswordStore.Linux.cs</c>) — and held in memory for the
+/// process lifetime so the OS prompt (if any) happens once per launch, not per lookup. If key protection
 /// is unavailable the key falls back to a permission-locked file; the store
 /// still encrypts, just without OS binding.
 /// </summary>
-internal sealed class PasswordStore
+internal sealed partial class PasswordStore
 {
     /// <summary>One saved login. Origin is scheme://host[:port] — the browser
     /// never stores credentials for a host the tab wasn't actually on.</summary>
@@ -41,6 +41,7 @@ internal sealed class PasswordStore
     private byte[]? Key()
     {
         if (_key is not null) return _key;
+        if (OperatingSystem.IsLinux()) return _key = LinuxKey(); // Secret Service, else a 0600 key file
         byte[]? raw = null;
         try
         {

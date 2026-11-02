@@ -4,9 +4,10 @@ using BrAIn.Browser.Mac;
 namespace BrAIn.Browser.Drivers;
 
 /// <summary>
-/// macOS driver: controls the Photino window's WKWebView via Objective-C
-/// evaluateJavaScript (fire-and-forget) and receives results through the
-/// window.external.sendMessage channel that Photino injects into every page.
+/// WebKit driver (macOS WKWebView, Linux WebKitGTK): controls a tab's web view through the native shell's
+/// fire-and-forget evaluateJavaScript and receives results through the window.external.sendMessage channel the
+/// "brain" script-message handler provides in every page. The same code runs on both platforms; everything that
+/// touches the toolkit goes through <see cref="NativeShell"/>.
 /// </summary>
 public sealed class WebKitDriver : DriverBase
 {
@@ -27,7 +28,7 @@ public sealed class WebKitDriver : DriverBase
     public override string Name => "webkit";
     public override bool SupportsEval => true;
     public override bool SupportsScreenshot => true;
-    public override bool SupportsRealInput => true;  // CGEvent OS-level input (user activation)
+    public override bool SupportsRealInput => true;  // genuine OS-level input events (user activation)
     public override bool SupportsConsoleLog => true; // via brain.js console hook
     public override bool SupportsNetworkLog => true; // via PerformanceResourceTiming polling
     public override bool SupportsCookies => true;    // document.cookie only (no HttpOnly)
@@ -48,22 +49,14 @@ public sealed class WebKitDriver : DriverBase
         var view = _webview;
         if (view == IntPtr.Zero) return base.ClickAtAsync(x, y, button, clickCount, ct);
         return Task.Run(() => Controller.InvokeOnUi(() =>
-        {
-            var win = MacWindow.WindowByNumber(Tab.MacWindowNumber);
-            MacWindow.Activate(win);
-            MacInput.Click(win, view, x, y, CgButton(button), Math.Clamp(clickCount, 1, 2));
-        }), ct);
+            NativeShell.RealClick(Tab, view, x, y, CgButton(button), Math.Clamp(clickCount, 1, 2))), ct);
     }
 
     public override Task MouseMoveAsync(double x, double y, CancellationToken ct)
     {
         var view = _webview;
         if (view == IntPtr.Zero) return base.MouseMoveAsync(x, y, ct);
-        return Task.Run(() => Controller.InvokeOnUi(() =>
-        {
-            var win = MacWindow.WindowByNumber(Tab.MacWindowNumber);
-            MacInput.MoveTo(win, view, x, y);
-        }), ct);
+        return Task.Run(() => Controller.InvokeOnUi(() => NativeShell.RealMove(Tab, view, x, y)), ct);
     }
 
     /// <summary>Per-tab mode: the view already exists (WkTabs.Create) and carries
@@ -74,8 +67,8 @@ public sealed class WebKitDriver : DriverBase
         _webview = Tab.NativeView;
         _windowNumber = Tab.MacWindowNumber;
         _watchedUrl = "";
-        try { Controller.InvokeOnUi(() => MacWindow.EnablePictureInPicture(_webview)); } catch { }
-        try { Controller.InvokeOnUi(() => WkDownloads.Install(_webview, Controller)); } catch { }
+        try { Controller.InvokeOnUi(() => NativeShell.EnablePictureInPicture(_webview)); } catch { }
+        try { Controller.InvokeOnUi(() => NativeShell.InstallDownloads(_webview, Controller)); } catch { }
         StartTabWatcher();
         return Task.CompletedTask;
     }
@@ -239,9 +232,8 @@ public sealed class WebKitDriver : DriverBase
             var s = script;
             Controller.InvokeOnUi(() =>
             {
-                if (_prebound && !WkTabs.Has(webview)) return; // the tab was closed meanwhile
-                var ns = ObjC.NsString(s);
-                ObjC.Send(webview, ObjC.Sel("evaluateJavaScript:completionHandler:"), ns, IntPtr.Zero);
+                if (_prebound && !NativeShell.TabsHas(webview)) return; // the tab was closed meanwhile
+                NativeShell.Eval(webview, s);
             });
         }
 
@@ -391,7 +383,7 @@ public sealed class WebKitDriver : DriverBase
 
     protected override bool PageLoading
     {
-        get { var wv = _webview; return wv != IntPtr.Zero && Controller.InvokeOnUi(() => Alive(wv) && MacWindow.IsWebViewLoading(wv)); }
+        get { var wv = _webview; return wv != IntPtr.Zero && Controller.InvokeOnUi(() => Alive(wv) && NativeShell.IsLoading(wv)); }
     }
 
     protected override void RaiseLoadCompleted()
@@ -452,13 +444,12 @@ public sealed class WebKitDriver : DriverBase
     {
         var wv = ResolveWebView();
         if (wv == IntPtr.Zero) return Task.FromResult(0);
-        return Task.FromResult(Controller.InvokeOnUi(() => WkCookieStore.SetCookies(wv, cookies)));
+        return Task.FromResult(Controller.InvokeOnUi(() => NativeShell.SetCookies(wv, cookies)));
     }
 
     // ---------------- emulation ----------------
-    // WKWebView can swap its user agent and (through the view's NSAppearance)
-    // the prefers-color-scheme it reports. It has no offline or geolocation
-    // override, so those are reported back as unsupported rather than faked.
+    // WebKit can swap its user agent and the prefers-color-scheme it reports. It has no offline or
+    // geolocation override, so those are reported back as unsupported rather than faked.
 
     private string? _origUa;
     private bool _origUaKnown;
@@ -474,21 +465,19 @@ public sealed class WebKitDriver : DriverBase
             if (!Alive(wv)) return;
             if (!_origUaKnown)
             {
-                _origUa = ObjC.NsStringToString(ObjC.Send(wv, ObjC.Sel("customUserAgent")));
+                _origUa = NativeShell.CustomUserAgent(wv);
                 _origUaKnown = true;
             }
             if (e.Reset || e.UserAgent is { Length: > 0 })
             {
                 var ua = e.UserAgent is { Length: > 0 } ? e.UserAgent : _origUa;
-                ObjC.Send(wv, ObjC.Sel("setCustomUserAgent:"), ua is null ? IntPtr.Zero : ObjC.NsString(ua));
+                NativeShell.SetUserAgent(wv, ua);
                 done.Add(e.UserAgent is { Length: > 0 } ? "user agent" : "user agent reset");
             }
             var scheme = e.Reset && e.ColorScheme is null ? "light" : e.ColorScheme;
             if (scheme is "light" or "dark")
             {
-                var ap = ObjC.Send(ObjC.GetClass("NSAppearance"), ObjC.Sel("appearanceNamed:"),
-                    ObjC.NsString(scheme == "dark" ? "NSAppearanceNameDarkAqua" : "NSAppearanceNameAqua"));
-                if (ap != IntPtr.Zero) { ObjC.Send(wv, ObjC.Sel("setAppearance:"), ap); done.Add($"{scheme} colour scheme"); }
+                if (NativeShell.SetAppearance(wv, scheme)) done.Add($"{scheme} colour scheme");
             }
         });
         if (e.Offline is not null) skipped.Add("offline");
@@ -498,7 +487,7 @@ public sealed class WebKitDriver : DriverBase
         return Task.FromResult(msg + " (takes effect on the next navigation/reload)");
     }
 
-    private bool Alive(IntPtr wv) => !_prebound || WkTabs.Has(wv);
+    private bool Alive(IntPtr wv) => !_prebound || NativeShell.TabsHas(wv);
 
     public override async Task<NavigateResult> NavigateAsync(string url, CancellationToken ct)
     {
@@ -520,7 +509,7 @@ public sealed class WebKitDriver : DriverBase
     private async Task<NavigateResult> NavigateNativeAsync(string url, CancellationToken ct)
     {
         RaiseLoadStarted();
-        Controller.InvokeOnUi(() => { if (Alive(_webview)) WkTabs.Load(_webview, url); });
+        Controller.InvokeOnUi(() => { if (Alive(_webview)) NativeShell.TabsLoad(_webview, url); });
         _watchedUrl = url;
         await WaitNativeLoadAsync(ct);
         _everLoaded = true;
@@ -532,7 +521,7 @@ public sealed class WebKitDriver : DriverBase
     {
         RaiseLoadStarted();
         BrowserController.Mark("loadHTML issued");
-        Controller.InvokeOnUi(() => { if (Alive(_webview)) WkTabs.LoadHtml(_webview, html); });
+        Controller.InvokeOnUi(() => { if (Alive(_webview)) NativeShell.TabsLoadHtml(_webview, html); });
         _watchedUrl = "about:blank";
         await WaitNativeLoadAsync(ct, 8000, ownPage: true);
         _everLoaded = true;
@@ -570,7 +559,7 @@ public sealed class WebKitDriver : DriverBase
         var wv = _webview;
         if (wv == IntPtr.Zero) return Task.FromResult((false, false));
         return Task.FromResult(Controller.InvokeOnUi(() =>
-            Alive(wv) ? (WkTabs.CanGoBack(wv), WkTabs.CanGoForward(wv)) : (false, false)));
+            Alive(wv) ? (NativeShell.TabsCanGoBack(wv), NativeShell.TabsCanGoForward(wv)) : (false, false)));
     }
 
     /// <summary>Polls until the pre-navigation marker is gone (new document
@@ -621,13 +610,13 @@ public sealed class WebKitDriver : DriverBase
                 {
                     double vwCss = 0;
                     try { vwCss = (await EvaluateAsync("innerWidth", false, ct))?.GetDouble() ?? 0; } catch { }
-                    var k = vwCss > 0 ? MacWindow.ImageWidth(snap) / vwCss : 1;
-                    snap = MacWindow.CropImage(snap, c0.X * k, c0.Y * k, c0.Width * k, c0.Height * k);
+                    var k = vwCss > 0 ? NativeShell.ImageWidth(snap) / vwCss : 1;
+                    snap = NativeShell.CropImage(snap, c0.X * k, c0.Y * k, c0.Width * k, c0.Height * k);
                 }
                 if (snap != IntPtr.Zero)
                 {
-                    var shot = Controller.InvokeOnUi(() => MacWindow.ImageToPng(snap));
-                    MacWindow.ReleaseImage(snap);
+                    var shot = Controller.InvokeOnUi(() => NativeShell.ImageToPng(snap));
+                    NativeShell.ReleaseImage(snap);
                     if (shot is { Length: > 0 }) return shot;
                 }
             }
@@ -635,24 +624,18 @@ public sealed class WebKitDriver : DriverBase
 
         var png = Controller.InvokeOnUi(() =>
         {
-            var win = _windowNumber != 0 ? MacWindow.WindowByNumber(_windowNumber) : IntPtr.Zero;
+            var win = _windowNumber != 0 ? NativeShell.WindowById(_windowNumber) : IntPtr.Zero;
             if (win == IntPtr.Zero) return null;
 
             // Convert CSS clip to image pixels via the backing scale factor.
             // CGWindowList coordinates are in window-content points.
-            MacWindow.CGRect? clipPx = null;
+            (double X, double Y, double W, double H)? clipPx = null;
             if (clip is { } c)
             {
-                var scale = MacWindow.BackingScale(win);
-                clipPx = new MacWindow.CGRect
-                {
-                    X = c.X * scale,
-                    Y = c.Y * scale,
-                    W = c.Width * scale,
-                    H = c.Height * scale,
-                };
+                var scale = NativeShell.BackingScale(win);
+                clipPx = (c.X * scale, c.Y * scale, c.Width * scale, c.Height * scale);
             }
-            return MacWindow.CapturePng(win, clipPx);
+            return NativeShell.CaptureWindowPng(win, clipPx);
         });
 
         if (png is null || png.Length == 0)
@@ -734,10 +717,10 @@ public sealed class WebKitDriver : DriverBase
         double vw = m.GetProperty("vw").GetDouble();
         double rx = m.GetProperty("rx").GetDouble(), ry = m.GetProperty("ry").GetDouble();
         double rw = m.GetProperty("rw").GetDouble(), rh = m.GetProperty("rh").GetDouble();
-        MacWindow.ShotLog($"prep total={total} vw={vw} rect={rx},{ry} {rw}x{rh}");
+        NativeShell.ShotLog($"prep total={total} vw={vw} rect={rx},{ry} {rw}x{rh}");
         if (total < 1 || vw < 1 || rw < 1 || rh < 1) { await ShotRestoreAsync(); return null; }
 
-        MacWindow.Canvas? canvas = null;
+        NativeShell.ShotCanvas? canvas = null;
         try
         {
             double scale = 0;
@@ -751,25 +734,25 @@ public sealed class WebKitDriver : DriverBase
                 total = Math.Max(total, st.GetProperty("total").GetDouble());
 
                 var img = await SnapViewAsync(wv, ct);
-                if (img == IntPtr.Zero) { MacWindow.ShotLog("grab failed"); break; }
+                if (img == IntPtr.Zero) { NativeShell.ShotLog("grab failed"); break; }
 
                 if (scale == 0)
                 {
-                    scale = MacWindow.ImageWidth(img) / vw; // device pixels per CSS pixel (retina and page zoom included)
+                    scale = NativeShell.ImageWidth(img) / vw; // device pixels per CSS pixel (retina and page zoom included)
                     var cw = (int)Math.Round(rw * scale);
                     var ch = (int)Math.Round(total * scale);
-                    var maxH = (int)(MacWindow.MaxCanvasBytes / 4 / Math.Max(1, cw));
-                    canvas = MacWindow.Canvas.Create(cw, Math.Min(ch, Math.Min(maxH, 60000)));
-                    MacWindow.ShotLog($"scale={scale} canvas={cw}x{ch}");
-                    if (canvas is null) { MacWindow.ReleaseImage(img); break; }
+                    var maxH = (int)(NativeShell.MaxCanvasBytes / 4 / Math.Max(1, cw));
+                    canvas = NativeShell.ShotCanvas.Create(cw, Math.Min(ch, Math.Min(maxH, 60000)));
+                    NativeShell.ShotLog($"scale={scale} canvas={cw}x{ch}");
+                    if (canvas is null) { NativeShell.ReleaseImage(img); break; }
                 }
 
-                img = MacWindow.CropImage(img, rx * scale, ry * scale, rw * scale, rh * scale);
+                img = NativeShell.CropImage(img, rx * scale, ry * scale, rw * scale, rh * scale);
                 if (img == IntPtr.Zero) break;
-                MacWindow.ShotLog($"frame {frame}: requested y={y} actual={actual} total={total}");
-                MacWindow.ShotDump("frame" + frame, img);
+                NativeShell.ShotLog($"frame {frame}: requested y={y} actual={actual} total={total}");
+                NativeShell.ShotDump("frame" + frame, img);
                 canvas!.Draw(img, (int)Math.Round(actual * scale));
-                MacWindow.ReleaseImage(img);
+                NativeShell.ReleaseImage(img);
 
                 var shown = actual + rh;
                 var clamped = actual < y - 1;                   // the page refused to scroll further
@@ -778,7 +761,7 @@ public sealed class WebKitDriver : DriverBase
                 y = actual + rh;
             }
             var outPng = canvas is null ? null : Controller.InvokeOnUi(() => canvas.ToPng());
-            if (MacWindow.ShotDebug && outPng is not null) File.WriteAllBytes(Path.Combine(MacWindow.ShotDir, "brain-shot-final.png"), outPng);
+            if (NativeShell.ShotDebug && outPng is not null) File.WriteAllBytes(Path.Combine(NativeShell.ShotDir, "brain-shot-final.png"), outPng);
             return outPng;
         }
         finally
@@ -796,7 +779,7 @@ public sealed class WebKitDriver : DriverBase
         await SnapGate.WaitAsync(ct);
         try
         {
-            var t = Controller.InvokeOnUi(() => Alive(wv) ? MacWindow.BeginSnapshot(wv) : null);
+            var t = Controller.InvokeOnUi(() => Alive(wv) ? NativeShell.BeginSnapshot(wv) : null);
             if (t is null) return IntPtr.Zero;
             var done = await Task.WhenAny(t, Task.Delay(8000, ct));
             return done == t ? t.Result : IntPtr.Zero;
@@ -815,7 +798,7 @@ public sealed class WebKitDriver : DriverBase
     {
         var wv = _webview;
         if (wv == IntPtr.Zero) return;
-        Controller.InvokeOnUi(() => { if (Alive(wv)) MacWindow.SetWebViewMuted(wv, muted); });
+        Controller.InvokeOnUi(() => { if (Alive(wv)) NativeShell.SetMuted(wv, muted); });
     }
 
     private Timer? _audioTimer;
@@ -831,7 +814,7 @@ public sealed class WebKitDriver : DriverBase
             {
                 var wv = _webview;
                 if (wv == IntPtr.Zero) return;
-                var on = Controller.InvokeOnUi(() => MacWindow.IsWebViewPlayingAudio(wv));
+                var on = Controller.InvokeOnUi(() => NativeShell.IsPlayingAudio(wv));
                 if (on == _audible) return;
                 _audible = on;
                 Controller.SetPageAudible(on);
@@ -845,7 +828,7 @@ public sealed class WebKitDriver : DriverBase
     {
         var wv = _webview;
         if (wv == IntPtr.Zero) return null;
-        try { return Controller.InvokeOnUi(() => Alive(wv) ? MacWindow.GetWebViewUrl(wv) : null); }
+        try { return Controller.InvokeOnUi(() => Alive(wv) ? NativeShell.Url(wv) : null); }
         catch { return null; }
     }
 
@@ -864,7 +847,7 @@ public sealed class WebKitDriver : DriverBase
                 var loading = PageLoading;
                 if (loading) { RaiseLoadStarted(); _sawLoad = true; }
                 if (loading && _webview is var rw && rw != IntPtr.Zero && (Controller.DocOwner ?? Tab) is { Receiving: false } rt
-                    && Controller.InvokeOnUi(() => Alive(rw) ? MacWindow.WebViewProgress(rw) : 0.0) >= 0.15)
+                    && Controller.InvokeOnUi(() => Alive(rw) ? NativeShell.Progress(rw) : 0.0) >= 0.15)
                     Controller.MarkReceiving(rt);
 
                 var age = DateTime.UtcNow - _loadStartAt;
@@ -875,7 +858,7 @@ public sealed class WebKitDriver : DriverBase
                 var wv = _webview;
                 if (wv != IntPtr.Zero)
                 {
-                    var url = Controller.InvokeOnUi(() => MacWindow.GetWebViewUrl(wv));
+                    var url = Controller.InvokeOnUi(() => NativeShell.Url(wv));
                     if (!string.IsNullOrEmpty(url) && url != _watchedUrl)
                     {
                         _watchedUrl = url;
@@ -907,8 +890,8 @@ public sealed class WebKitDriver : DriverBase
                 if (!_loading && (Interlocked.Increment(ref _watchTick) % 3 != 0)) return;
                 var wv = _webview;
                 if (wv == IntPtr.Zero || Tab.IsClosed) return;
-                var (loading, url, audible, prog) = Controller.InvokeOnUi(() => WkTabs.Has(wv)
-                    ? (MacWindow.IsWebViewLoading(wv), MacWindow.GetWebViewUrl(wv), MacWindow.IsWebViewPlayingAudio(wv), MacWindow.WebViewProgress(wv))
+                var (loading, url, audible, prog) = Controller.InvokeOnUi(() => NativeShell.TabsHas(wv)
+                    ? (NativeShell.IsLoading(wv), NativeShell.Url(wv), NativeShell.IsPlayingAudio(wv), NativeShell.Progress(wv))
                     : (false, (string?)null, false, 0.0));
 
                 if (audible != _audible) { _audible = audible; Controller.SetTabAudible(Tab, audible); }

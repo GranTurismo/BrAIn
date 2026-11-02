@@ -2,6 +2,7 @@
 # Build all distributables into dist/:
 #   dist/BrAIn-Setup-<ver>-x64.exe   Windows installer (NSIS; brew install makensis)
 #   dist/BrAIn-<ver>-macOS-<arch>.dmg  macOS drag-install image
+#   dist/BrAIn-<ver>-linux-x64.tar.gz, dist/BrAIn-<ver>-linux-arm64.tar.gz   Linux archives (scripts/make-linux-dist.sh)
 # Requires the mac app to be built first (scripts/rebuild-mac.command).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -23,6 +24,9 @@ echo "== windows installer (nsis)"
 command -v makensis >/dev/null || { echo "makensis missing: brew install makensis"; exit 1; }
 (cd scripts && makensis -DVERSION="$VER" installer-win.nsi)
 
+echo "== linux archives (x64, arm64)"
+bash scripts/make-linux-dist.sh "$VER"
+
 echo "== macOS dmg"
 APP="dist/BrAIn.app"
 [ -d "$APP" ] || { echo "$APP missing — run scripts/rebuild-mac.command first"; exit 1; }
@@ -40,4 +44,4 @@ hdiutil convert "$RW.dmg.sparseimage" -format UDZO -imagekey zlib-level=9 -o "$D
 rm -f "$RW.dmg.sparseimage"
 
 echo "== done"
-ls -lh dist/BrAIn-Setup-*.exe "$DMG"
+ls -lh dist/BrAIn-Setup-*.exe "$DMG" dist/BrAIn-"$VER"-linux-*.tar.gz

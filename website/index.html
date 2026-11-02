@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BrAIn — the browser your AI can actually use</title>
-<meta name="description" content="A desktop browser with an MCP server built in — Rewind page time-travel, a one-keystroke agent kill switch, dev-grade tooling. macOS &amp; Windows.">
+<meta name="description" content="A desktop browser with an MCP server built in — Rewind page time-travel, a one-keystroke agent kill switch, dev-grade tooling. macOS, Windows &amp; Linux.">
 <meta name="theme-color" content="#0d0b0a">
 <meta name="robots" content="index,follow,max-image-preview:large">
 <meta name="author" content="BrAIn">
@@ -35,7 +35,7 @@
   "name": "BrAIn",
   "description": "A real desktop browser with an MCP server built into the same process — every page inspectable, every action verifiable, every moment rewindable. Features Rewind page time-travel, in-window DevTools, a password vault, remappable shortcuts, site scripts, a built-in local Ollama agent and a one-keystroke agent kill switch.",
   "applicationCategory": "BrowserApplication",
-  "operatingSystem": "macOS, Windows",
+  "operatingSystem": "macOS, Windows, Linux",
   "url": "https://brain.gtgroup.dev/",
   "downloadUrl": "https://github.com/GranTurismo/BrAIn/releases/latest",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
@@ -53,8 +53,8 @@
     { "@type": "Question", "name": "What about CAPTCHAs and logins?", "acceptedAnswer": { "@type": "Answer", "text": "BrAIn doesn't try to defeat them. browser_ask_human brings the tab to the front, shows you a card, waits while you do the step, then the agent carries on. Passwords are never typed by the agent — the vault needs your OS authentication." } },
     { "@type": "Question", "name": "Is Rewind recording everything I do?", "acceptedAnswer": { "@type": "Answer", "text": "No. It is off by default and asks before it starts. When on, it keeps compressed DOM snapshots in memory only (never on disk), skips private tabs, login pages and sites you exclude, drops a tab's history when the tab closes, and enforces age and size budgets." } },
     { "@type": "Question", "name": "Does BrAIn send data anywhere?", "acceptedAnswer": { "@type": "Answer", "text": "There is no telemetry or analytics. The only call BrAIn makes on its own is the self-updater asking GitHub for the latest release (and downloading it, SHA-256 verified, when you accept). Otherwise it talks to the sites you visit, to your MCP client over stdio, and to a local Ollama server if you use the built-in agent." } },
-    { "@type": "Question", "name": "Why is the RAM so low on macOS — and will Windows match it?", "acceptedAnswer": { "@type": "Answer", "text": "On macOS each tab is a WKWebView; WebKit shares a process pool and throttles background pages hard. Windows uses WebView2, which is Chromium: expect Chromium-class memory per live tab." } },
-    { "@type": "Question", "name": "Why does my OS warn me about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The builds are not code-signed yet. Verify the SHA-256 on this page, then: on macOS right-click the app → Open; on Windows choose More info → Run anyway in SmartScreen." } },
+    { "@type": "Question", "name": "Why is the RAM so low on macOS — and will Windows match it?", "acceptedAnswer": { "@type": "Answer", "text": "On macOS each tab is a WKWebView; WebKit shares a process pool and throttles background pages hard. Windows uses WebView2, which is Chromium: expect Chromium-class memory per live tab. Linux uses WebKitGTK, the same engine family as macOS, but it has not been benchmarked." } },
+    { "@type": "Question", "name": "Why does my OS warn me about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The builds are not code-signed yet. Verify the SHA-256 on this page, then: on macOS right-click the app → Open; on Windows choose More info → Run anyway in SmartScreen. Linux has no such gate: unpack the archive and run install.sh." } },
     { "@type": "Question", "name": "Can I use it as my daily browser?", "acceptedAnswer": { "@type": "Answer", "text": "It has the daily-driver basics — tabs, bookmarks, history, autocomplete, downloads, private tabs, password vault, import, PiP, find, zoom, print, session restore. It does not have an extension store or sync." } }
   ]
 }
@@ -89,7 +89,7 @@
 <header class="hero" id="top">
   <div class="wrap cols">
     <div>
-      <span class="chip live rv"><i></i><span><span data-version>latest</span> · macOS &amp; Windows</span></span>
+      <span class="chip live rv"><i></i><span><span data-version>latest</span> · macOS, Windows &amp; Linux</span></span>
       <h1 class="rv" style="--d:.05s">The browser your AI can actually <span class="grad rot" id="rot">use</span><span class="rot"><span class="cursor"></span></span></h1>
       <p class="lead rv" style="--d:.12s">BrAIn is a real desktop browser with an <b style="color:var(--ink)">MCP server built into the same process</b>. Your agent sees the real DOM, acts on the real page — and you can rewind it, pause it and audit every step.</p>
       <p class="triplet rv" style="--d:.16s">Every page <a href="#features">inspectable</a><span>·</span>every action <a href="#agent">verifiable</a><span>·</span>every moment <a href="#rewind">rewindable</a></p>
@@ -102,7 +102,7 @@
       </div>
       <div class="meta rv" style="--d:.28s">
         <span class="chip"><i></i>60+ MCP tools</span>
-        <span class="chip"><i></i>WebKit · WebView2</span>
+        <span class="chip"><i></i>WebKit · WebView2 · WebKitGTK</span>
         <span class="chip"><i></i>No telemetry</span>
         <span class="chip"><i></i>Source on GitHub</span>
       </div>
@@ -228,7 +228,7 @@
       <div class="card b-h spot rv">
         <div class="icon"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 118 0v3"/></svg></div>
         <h3>Password vault</h3>
-        <p>Encrypted, unlocked with Touch ID or Windows Hello. Generator and autofill built in.</p>
+        <p>Encrypted, unlocked with Touch ID or Windows Hello (an approval prompt on Linux). Generator and autofill built in.</p>
       </div>
       <div class="card b-i spot rv" style="--d:.05s">
         <div class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="3"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/></svg></div>
@@ -402,7 +402,7 @@
         <rect class="node" x="530" y="90" width="160" height="70" rx="14"/><text x="610" y="122" text-anchor="middle" font-weight="650">Controller</text><text x="610" y="143" text-anchor="middle" class="sub">tabs · state · trust</text>
         <rect class="node mint" x="350" y="185" width="160" height="70" rx="14"/><text x="430" y="217" text-anchor="middle" font-weight="650">Rewind</text><text x="430" y="238" text-anchor="middle" class="sub">in-memory timeline</text>
         <rect class="node mint" x="530" y="185" width="160" height="70" rx="14"/><text x="610" y="217" text-anchor="middle" font-weight="650">Activity + Flows</text><text x="610" y="238" text-anchor="middle" class="sub">audit · approvals</text>
-        <rect class="node" x="350" y="285" width="340" height="86" rx="14"/><text x="520" y="318" text-anchor="middle" font-weight="650">Driver</text><text x="520" y="340" text-anchor="middle" class="sub">WKWebView (macOS) · WebView2 + CDP (Windows)</text>
+        <rect class="node" x="350" y="285" width="340" height="86" rx="14"/><text x="520" y="318" text-anchor="middle" font-weight="650">Driver</text><text x="520" y="340" text-anchor="middle" class="sub">WKWebView (macOS) · WebKitGTK (Linux) · WebView2 + CDP (Windows)</text>
         <path class="flow" d="M430 160 V185 M610 160 V185 M520 255 V285" stroke="#ff9f6e" stroke-width="2" fill="none" opacity=".7"/>
 
         <path class="flow" d="M720 215 H790" stroke="url(#g1)" stroke-width="3" fill="none"/>
@@ -429,7 +429,7 @@
       </ul>
     </div>
     <div class="rv" style="--d:.1s">
-      <div class="tabsrow" id="cfgTabs"><button data-c="mac" class="on">macOS</button><button data-c="win">Windows</button><button data-c="args">With a start page</button></div>
+      <div class="tabsrow" id="cfgTabs"><button data-c="mac" class="on">macOS</button><button data-c="win">Windows</button><button data-c="linux">Linux</button><button data-c="args">With a start page</button></div>
       <div class="snip"><button class="copy" id="cfgCopy">Copy</button><div class="code" id="cfgCode"></div></div>
     </div>
   </div>
@@ -445,8 +445,8 @@
     <div class="status card rv">
       <div><b><span class="k" style="background:var(--good)"></span>macOS · Apple Silicon</b>Tested every release — per-tab views, Rewind, MCP tools and the benchmark ran here.</div>
       <div><b><span class="k" style="background:var(--warn)"></span>Windows · x64</b>First public build. Per-tab WebView2 views are new — expect rough edges and please report them. Logs: <code>%LOCALAPPDATA%\BrAIn\brain.log</code></div>
-      <div><b><span class="k" style="background:var(--warn)"></span>Linux · x64 (experimental)</b>Opens pages and navigates; in-page automation (MCP tools) is not available there yet. Untested on real hardware; needs GTK3 and WebKitGTK. <a href="https://github.com/GranTurismo/BrAIn/releases/latest">Get the .tar.gz from GitHub releases →</a></div>
-      <div><b><span class="k" style="background:var(--dim)"></span>Not yet</b>Intel Macs and ARM Windows. Builds are <b style="color:var(--ink)">unsigned</b> for now (see steps above).</div>
+      <div><b><span class="k" style="background:var(--warn)"></span>Linux · x64 &amp; arm64</b>New: the same toolbar, tabs and MCP tools as macOS in a GTK&nbsp;3 window, installed per user with <code>install.sh</code>, self-updating. Tested on Ubuntu 24.04 in a virtual desktop (X11 and Wayland) — real-desktop reports welcome. Logs: <code>BRAIN_LOG=1</code> → <code>~/.local/share/BrAIn/brain.log</code></div>
+      <div><b><span class="k" style="background:var(--dim)"></span>Not yet</b>Intel Macs and ARM Windows. macOS and Windows builds are <b style="color:var(--ink)">unsigned</b> for now (see steps above).</div>
     </div>
   </div>
 </section>
@@ -460,9 +460,10 @@
       <details><summary>What about CAPTCHAs and logins?</summary><div class="ans"><p>BrAIn doesn't try to defeat them. <code>browser_ask_human</code> brings the tab to the front, shows you a card, waits while you do the step, then the agent carries on. Passwords are never typed by the agent from memory — the vault needs your OS authentication.</p></div></details>
       <details><summary>Is Rewind recording everything I do?</summary><div class="ans"><p>No. It is off by default and asks before it starts. When on, it keeps compressed DOM snapshots in memory only (never on disk), skips private tabs, login pages and sites you exclude, drops a tab's history when the tab closes, and enforces age and size budgets. The agent can only read it if you separately allow that.</p></div></details>
       <details><summary>Does BrAIn send data anywhere?</summary><div class="ans"><p>There is no telemetry or analytics. The only call BrAIn makes on its own is the self-updater asking GitHub for the latest release (and downloading it, SHA-256 verified, when you accept). Otherwise it talks to the sites you visit, to your MCP client over stdio, and to a local Ollama server if you use the built-in agent. Whatever your AI client does with tool results is governed by that client.</p></div></details>
-      <details><summary>Why is the RAM so low on macOS — and will Windows match it?</summary><div class="ans"><p>On macOS each tab is a WKWebView; WebKit shares a process pool and throttles background pages hard. Windows uses WebView2, which is Chromium: expect Chromium-class memory per live tab, though it shares one browser process and our views avoid Chrome's extra helpers. I haven't measured Windows yet, so I won't quote a number.</p></div></details>
-      <details><summary>Why does my OS warn me about the installer?</summary><div class="ans"><p>The builds are not code-signed yet (that needs a paid certificate on each platform). Verify the SHA-256 on this page, then: on macOS right-click the app → Open (or <code>xattr -dr com.apple.quarantine /Applications/BrAIn.app</code>); on Windows choose <b>More info → Run anyway</b> in SmartScreen.</p></div></details>
+      <details><summary>Why is the RAM so low on macOS — and will Windows match it?</summary><div class="ans"><p>On macOS each tab is a WKWebView; WebKit shares a process pool and throttles background pages hard. Windows uses WebView2, which is Chromium: expect Chromium-class memory per live tab, though it shares one browser process and our views avoid Chrome's extra helpers. Linux uses WebKitGTK, the same engine family as macOS, so it should land closer to the Mac. I haven't measured Windows or Linux yet, so I won't quote a number.</p></div></details>
+      <details><summary>Why does my OS warn me about the installer?</summary><div class="ans"><p>The builds are not code-signed yet (that needs a paid certificate on each platform). Verify the SHA-256 on this page, then: on macOS right-click the app → Open (or <code>xattr -dr com.apple.quarantine /Applications/BrAIn.app</code>); on Windows choose <b>More info → Run anyway</b> in SmartScreen. Linux has no such warning: unpack the archive and run <code>install.sh</code>.</p></div></details>
       <details><summary>Can I use it as my daily browser?</summary><div class="ans"><p>It has the daily-driver basics — tabs, bookmarks, history, autocomplete, downloads, private tabs, password vault, import, PiP, find, zoom, print, session restore. It does not have an extension store or sync. Try it for a week and tell us what's missing.</p></div></details>
+      <details><summary>Does it run on Linux — and what if the window is blank?</summary><div class="ans"><p>Yes: x64 and arm64, on X11 and Wayland, with the same toolbar, tabs and MCP tools as on macOS. It needs GTK&nbsp;3 and WebKitGTK&nbsp;4.1 (<code>libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0</code> on Debian and Ubuntu). <code>install.sh</code> in the archive installs it for you alone, without root, and the app then updates itself. If the window comes up blank or black (seen with some NVIDIA setups), start it with <code>WEBKIT_DISABLE_DMABUF_RENDERER=1 brain</code>; if something misbehaves on Wayland, <code>GDK_BACKEND=x11 brain</code> runs it through XWayland. Linux is new, so please report what you find.</p></div></details>
     </div>
   </div>
 </section>

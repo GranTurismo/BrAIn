@@ -13,7 +13,13 @@ public static class Program
     // Must be a synchronous entry point — the attribute is ignored on
     // async Main because the compiler synthesizes the real entry point.
     [STAThread]
-    public static int Main(string[] args) => MainAsync(args).GetAwaiter().GetResult();
+    public static int Main(string[] args)
+    {
+        var code = MainAsync(args).GetAwaiter().GetResult();
+        // Whatever is still parked (the MCP reader on stdin, WebKit helper threads) must not keep a closed browser alive.
+        Environment.Exit(code);
+        return code;
+    }
 
     private static async Task<int> MainAsync(string[] args)
     {
@@ -134,6 +140,7 @@ public static class Program
         {
             // Blocks until the browser window closes (runs the OS message loop).
             controller.RunWindow();
+            BrowserController.Mark("window loop ended");
         }
         catch (Exception ex)
         {
@@ -142,10 +149,17 @@ public static class Program
         }
         finally
         {
-            try { await host.StopAsync(TimeSpan.FromSeconds(3)); }
-            catch { /* shutting down anyway */ }
-            try { await hostTask.WaitAsync(TimeSpan.FromSeconds(3)); }
-            catch { /* shutting down anyway */ }
+            // The window is gone, so the app is done. The MCP host gets a short moment to say goodbye, but it is never
+            // waited for: its stdin reader cannot be cancelled, so while the client keeps the pipe open StopAsync can
+            // take its full timeout or never return at all — which used to leave a windowless process lingering for
+            // seconds, or for good. It stops on its own thread; the process ends right after (see Main).
+            var stopped = Task.Run(async () =>
+            {
+                try { await host.StopAsync(TimeSpan.FromSeconds(1)); }
+                catch { /* shutting down anyway */ }
+            });
+            await Task.WhenAny(stopped, Task.Delay(TimeSpan.FromSeconds(1.5)));
+            BrowserController.Mark("exiting");
         }
         return selfTest ? Math.Max(exitCode, selfTestFails) : exitCode;
     }
@@ -164,6 +178,13 @@ public static class Program
             {
                 // FILE_TYPE_PIPE; consoles and NUL report FILE_TYPE_CHAR.
                 return GetFileType(GetStdHandle(-10)) == 3;
+            }
+            if (OperatingSystem.IsLinux())
+            {
+                // struct stat is laid out differently here, so ask /proc what fd 0 is: "pipe:[n]" / "socket:[n]" is a
+                // client; /dev/null (desktop launch), a tty or a file is "standalone".
+                var target = new FileInfo("/proc/self/fd/0").LinkTarget ?? "";
+                return target.StartsWith("pipe:", StringComparison.Ordinal) || target.StartsWith("socket:", StringComparison.Ordinal);
             }
             var buf = new byte[256];
             if (fstat(0, buf) != 0) return true; // can't tell → assume client

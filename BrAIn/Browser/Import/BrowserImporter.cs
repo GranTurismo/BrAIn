@@ -28,7 +28,7 @@ public sealed record ImportedLogin(string Origin, string User, string Pass);
 /// out to the system's sqlite3 (-json output): zero new dependencies and the
 /// same engine Safari/Firefox/Chrome all use.
 /// </summary>
-public static class BrowserImporter
+public static partial class BrowserImporter
 {
     // (key, app-support dir, keychain service for cookie encryption)
     private static readonly (string Key, string Dir, string Keychain)[] ChromiumBrowsers =
@@ -50,6 +50,7 @@ public static class BrowserImporter
 
     public static List<BrowserSource> Scan()
     {
+        if (OperatingSystem.IsLinux()) return ScanLinux();
         var found = new List<BrowserSource>();
         foreach (var (key, dir, kc) in ChromiumBrowsers)
         {
@@ -203,7 +204,7 @@ public static class BrowserImporter
                 foreach (var root in roots.EnumerateObject())
                     WalkChromeNodes(root.Value, list);
         }
-        catch { }
+        catch (Exception ex) { if (OperatingSystem.IsLinux()) LinuxNoteReadError(path, ex); }
         return list;
     }
 
@@ -283,6 +284,7 @@ public static class BrowserImporter
 
     private static List<ImportedCookie> ChromiumCookies(BrowserSource src)
     {
+        if (OperatingSystem.IsLinux()) return LinuxChromiumCookies(src);
         var db = Path.Combine(src.Dir, "Cookies");
         var rows = SqliteJson(db,
             "select host_key,name,hex(encrypted_value) as ev,expires_utc as t,is_secure,is_httponly,path from cookies");
@@ -395,6 +397,7 @@ public static class BrowserImporter
     {
         var list = new List<ImportedLogin>();
         if (src.Kind != "chromium") return list;
+        if (OperatingSystem.IsLinux()) return LinuxChromiumPasswords(src);
         var rows = SqliteJson(Path.Combine(src.Dir, "Login Data"),
             "select origin_url,username_value,hex(password_value) as pv from logins" +
             " where blacklisted_by_user=0 and length(password_value)>0");
@@ -449,7 +452,8 @@ public static class BrowserImporter
     private static JsonElement SqliteJson(string dbPath, string sql)
     {
         if (!File.Exists(dbPath)) return default;
-        var tmp = Path.Combine(Path.GetTempPath(), "brain-imp-" + Guid.NewGuid().ToString("N"));
+        var tmp = OperatingSystem.IsLinux() ? LinuxTempDir() // private 0700 folder, libsqlite3 instead of the sqlite3 tool
+            : Path.Combine(Path.GetTempPath(), "brain-imp-" + Guid.NewGuid().ToString("N"));
         try
         {
             Directory.CreateDirectory(tmp);
@@ -458,6 +462,7 @@ public static class BrowserImporter
             // WAL/journal sidecars carry recent writes — copy them too.
             foreach (var ext in new[] { "-wal", "-shm", "-journal" })
                 if (File.Exists(dbPath + ext)) CopyDb(dbPath + ext, copy + ext);
+            if (OperatingSystem.IsLinux() && LinuxQuery(dbPath, copy, sql, out var linuxRows)) return linuxRows;
             var stdout = RunTool("sqlite3", "-json", copy, sql);
             if (string.IsNullOrWhiteSpace(stdout) || stdout == "[]") return default;
             using var doc = JsonDocument.Parse(stdout);
@@ -466,6 +471,7 @@ public static class BrowserImporter
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[imp] sqlite {dbPath}: {ex.Message}");
+            if (OperatingSystem.IsLinux()) LinuxNoteReadError(dbPath, ex);
             return default;
         }
         finally { try { Directory.Delete(tmp, true); } catch { } }
@@ -479,6 +485,13 @@ public static class BrowserImporter
     /// gets through since Firefox/Chrome open their DBs share-friendly.</summary>
     private static void CopyDb(string src, string dst)
     {
+        if (OperatingSystem.IsLinux())
+        {
+            // A plain read-only open, like cp: no lock is requested, so a running browser cannot refuse it,
+            // and no process has to be started.
+            File.Copy(src, dst, overwrite: true);
+            return;
+        }
         if (!OperatingSystem.IsWindows())
         {
             RunTool("cp", src, dst);

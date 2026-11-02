@@ -26,7 +26,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     // (Browser/Mac/WkBar.cs). On by default; --no-split / BRAIN_SPLIT=0 falls
     // back to the in-page toolbar that reserves space by shifting the page.
     private readonly bool _splitMode = Environment.GetEnvironmentVariable("BRAIN_SPLIT") != "0";
-    private bool SplitOn => _splitMode && IsMac && !_noToolbar;
+    private bool SplitOn => _splitMode && IsNative && !_noToolbar;
     // macOS split mode gives every tab its own WKWebView (Browser/Mac/WkTabs.cs):
     // switching tabs shows another view instead of reloading one shared page.
     // Windows does the same with WebView2 (Browser/Win/WinTabs.cs): one view per tab, parented to
@@ -35,7 +35,10 @@ public sealed partial class BrowserController : IAsyncDisposable
     private bool _winTabsWanted;
     private bool _winTabsFailed;
     private bool WinPerTab => _winTabsWanted && !_winTabsFailed;
-    private bool PerTab => SplitOn || WinPerTab;
+    // Per-tab views owned by the native shell: macOS split mode, and Linux always (with the toolbar view when
+    // split is on, otherwise the toolbar lives in each page like the Windows build's, or is absent with --no-toolbar).
+    private bool NativeTabs => SplitOn || IsLinux;
+    private bool PerTab => NativeTabs || WinPerTab;
     private Win.WinTabs? _winTabs;
     private long _nsWindowNumber;
     private BrowserTab? _firstTab;
@@ -145,8 +148,7 @@ public sealed partial class BrowserController : IAsyncDisposable
 
     /// <summary>Browser-wide downloads; engine glue funnels lifecycle here,
     /// changes are pushed to the toolbar as {b:20}.</summary>
-    internal Downloads Downloads { get; } = new Downloads(
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"));
+    internal Downloads Downloads { get; } = new Downloads(OsPaths.Downloads());
 
     /// <summary>The tab whose document currently lives in the shared webview.
     /// Blank new tabs are "virtual": chrome.js paints the start page as an
@@ -307,12 +309,15 @@ public sealed partial class BrowserController : IAsyncDisposable
     public int? CdpPort { get; private set; }
     public static bool IsWindows => OperatingSystem.IsWindows();
     public static bool IsMac => OperatingSystem.IsMacOS();
+    public static bool IsLinux => OperatingSystem.IsLinux();
+    /// <summary>The platforms whose browser is a native WebKit shell (Cocoa on macOS, GTK on Linux).</summary>
+    public static bool IsNative => IsMac || IsLinux;
 
     /// <summary>Frameless window: tabs live in the title-bar row next to our
-    /// own min/max/close buttons (Windows only — macOS keeps native traffic
+    /// own min/max/close buttons (Windows and Linux — macOS keeps native traffic
     /// lights; --no-toolbar automation keeps native chrome so the window
     /// stays movable/closable without our bar).</summary>
-    private bool Chromeless => IsWindows && !_noToolbar;
+    private bool Chromeless => (IsWindows || IsLinux) && !_noToolbar;
 
     /// <summary>JS the document-start user script and post-load fallback
     /// inject — brain.js alone for chromeless windows, both libs otherwise.</summary>
@@ -351,7 +356,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             && Environment.GetEnvironmentVariable("BRAIN_PERTAB") != "0"
             && Environment.GetEnvironmentVariable("BRAIN_NO_CDP") is null;
         _userDataDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            OsPaths.LocalAppData(),
             "BrAIn",
             $"profile-{Environment.ProcessId}");
         _storeDir = Path.GetDirectoryName(_userDataDir)!;
@@ -543,7 +548,9 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// dark-on-dark and unreadable. Present as the engine's own browser.</summary>
     private static string DesktopUserAgent => OperatingSystem.IsMacOS()
         ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
-        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0";
+        : OperatingSystem.IsLinux()
+            ? "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+            : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0";
 
     private (PhotinoWindow Window, BrowserTab Tab) CreatePhotinoWindow()
     {
@@ -584,7 +591,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         window.RegisterWebMessageReceivedHandler((_, msg) => HandleWebMessage(tab, msg));
         window.RegisterWindowCreatedHandler((_, _) =>
         {
-            if (Chromeless)
+            if (Chromeless && IsWindows)
             {
                 Native.Win32.ApplyBorderlessChrome(window.WindowHandle);
                 Native.Win32.RoundCorners(window.WindowHandle);
@@ -597,6 +604,15 @@ public sealed partial class BrowserController : IAsyncDisposable
                 try { Mac.WkLaunch.Hide(); }
                 catch (Exception ex) { Log("hiding the window for launch failed: " + ex.Message); }
                 _ = Task.Delay(6000).ContinueWith(_ => MacRevealWindow(), TaskScheduler.Default);
+            }
+            // Linux opens straight into fullscreen too: the window is kept off screen until the first page has
+            // settled and it can appear already fullscreen (OpenFullScreenLinux), instead of flashing a 1440×900
+            // window first. The watchdog makes sure it can never stay hidden whatever goes wrong.
+            if (IsLinux && !_noFullscreen)
+            {
+                try { Linux.LinuxLaunch.Hide(); }
+                catch (Exception ex) { Log("hiding the window for launch failed: " + ex.Message); }
+                _ = Task.Delay(6000).ContinueWith(_ => RevealLinuxWindow(), TaskScheduler.Default);
             }
             // Open fullscreen by default (macOS does this after the inline
             // titlebar is applied, in InitializeMainDriverAsync).
@@ -613,7 +629,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             // current state the moment init settles (success or failure) so
             // a page mounted during init isn't left without tabs/history.
             _ = _driverReady.Task.ContinueWith(_ => PushChromeStateAll(), TaskScheduler.Default);
-            Task.Run(() => SplitOn ? InitializePerTabAsync() : WinPerTab ? InitializeWinPerTabAsync() : InitializeMainDriverAsync());
+            Task.Run(() => NativeTabs ? InitializePerTabAsync() : WinPerTab ? InitializeWinPerTabAsync() : InitializeMainDriverAsync());
         });
         window.RegisterMaximizedHandler((_, _) =>
         {
@@ -656,6 +672,15 @@ public sealed partial class BrowserController : IAsyncDisposable
                 }
             });
         }
+        if (IsLinux)
+        {
+            // GTK lays the views out by itself; the toolbar view's popover height and the side panel's
+            // "window too narrow" rule depend on the window size, so re-run that part.
+            window.RegisterSizeChangedHandler((_, _) =>
+            {
+                try { var w = Linux.LinuxWindow.Window; if (w != IntPtr.Zero) Linux.LinuxBar.Layout(w); } catch { }
+            });
+        }
         window.RegisterWindowClosingHandler((_, _) =>
         {
             try { _winTabs?.CloseAll(); } catch { }
@@ -670,10 +695,12 @@ public sealed partial class BrowserController : IAsyncDisposable
         return (window, tab);
     }
 
-    private static string ResolveIconPath()
+    /// <summary>The window / taskbar icon. GTK cannot read the PNG-compressed .ico, so Linux ships a PNG.</summary>
+    internal static string ResolveIconPath()
     {
-        var p = Path.Combine(AppContext.BaseDirectory, "icon.ico");
-        return File.Exists(p) ? p : Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico");
+        var name = IsLinux ? "icon.png" : "icon.ico";
+        var p = Path.Combine(AppContext.BaseDirectory, name);
+        return File.Exists(p) ? p : Path.Combine(AppContext.BaseDirectory, "Assets", name);
     }
 
     private PhotinoWindow PrepareLoad(PhotinoWindow window)
@@ -784,6 +811,33 @@ public sealed partial class BrowserController : IAsyncDisposable
         });
     }
 
+    /// <summary>Linux: open straight into fullscreen once the first page has settled. The window has been off
+    /// screen since it was created; it is mapped already fullscreen (no visible resize).</summary>
+    private void OpenFullScreenLinux(BrowserTab tab)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                for (var i = 0; i < 40 && (IsLoading || tab.LastUrl is null); i++) await Task.Delay(100);
+                await Task.Delay(100);
+                Mark("fullscreen requested");
+            }
+            catch (Exception ex) { Log("auto fullscreen failed: " + ex.Message); }
+            finally { RevealLinuxWindow(fullscreen: !_noFullscreen); }
+        });
+    }
+
+    /// <summary>Linux: show the launch window (idempotent) and let anything that waited for it go ahead.</summary>
+    private void RevealLinuxWindow(bool fullscreen = true)
+    {
+        if (!IsLinux || !Linux.LinuxLaunch.Hidden) return;
+        try { InvokeOnUi(() => Linux.LinuxLaunch.Reveal(fullscreen && !_noFullscreen)); }
+        catch (Exception ex) { Log("revealing the window failed: " + ex.Message); }
+        Mark("window revealed");
+        if (_welcomeWaiting) { _welcomeWaiting = false; MaybeShowWelcome(); }
+    }
+
     private bool _welcomeWaiting;
 
     /// <summary>Fade the launch window in (idempotent) and let anything that waited for it go ahead.</summary>
@@ -812,10 +866,10 @@ public sealed partial class BrowserController : IAsyncDisposable
             {
                 (nsWin, boot, number) = InvokeOnUi(() =>
                 {
-                    foreach (var w in Mac.MacWindow.AllWindows())
+                    foreach (var w in NativeShell.AllWindows())
                     {
-                        var v = Mac.MacWindow.FindWebView(w);
-                        if (v != IntPtr.Zero) return (w, v, Mac.MacWindow.WindowNumber(w));
+                        var v = NativeShell.FindWebView(w);
+                        if (v != IntPtr.Zero) return (w, v, NativeShell.WindowId(w));
                     }
                     return (IntPtr.Zero, IntPtr.Zero, 0L);
                 });
@@ -825,22 +879,55 @@ public sealed partial class BrowserController : IAsyncDisposable
 
             _nsWindowNumber = number;
             first.MacWindowNumber = number;
-            Mac.WkPopup.OnNewTab = url => _ = Task.Run(() => NewTabAsync(url, default));
-            Mac.WkPopup.Log = Log;
-            Mac.WkPopup.Blocks = (view, openerUrl, url) => QcBlocksPopup(
+            NativeShell.PopupOnNewTab = url => _ = Task.Run(() => NewTabAsync(url, default));
+            NativeShell.PopupLog = Log;
+            NativeShell.PopupBlocks = (view, openerUrl, url) => QcBlocksPopup(
                 view == IntPtr.Zero ? null : Tabs.All.FirstOrDefault(t => t.NativeView == view) ?? (PerTab ? null : DocTab),
                 openerUrl, url);
+            NativeShell.TabsOnMessage = OnPageViewMessage;
             // tab switches crossfade: the old page is hidden once the fade has run
-            Mac.WkTabs.Later = (ms, act) => _ = Task.Delay(ms).ContinueWith(_ => { try { InvokeOnUi(act); } catch { } }, TaskScheduler.Default);
+            NativeShell.TabsSetLater((ms, act) => _ = Task.Delay(ms).ContinueWith(_ => { try { InvokeOnUi(act); } catch { } }, TaskScheduler.Default));
+            if (IsLinux)
+            {
+                // the web engine's own data: cookies, logins, storage (normal tabs) — kept apart from our JSON stores
+                Linux.LinuxEngine.DataDir = Path.Combine(_storeDir, "webkit");
+                Linux.LinuxEngine.CacheDir = Path.Combine(OsPaths.CacheHome(), "BrAIn", "webkit");
+                OsPaths.MakePrivate(_storeDir);                                        // owner-only: cookies, history, vault
+                OsPaths.MakePrivate(Path.GetDirectoryName(Linux.LinuxEngine.CacheDir)!);
+                Linux.LinuxPrompts.GrantAll = _grantPermissions;
+                Linux.LinuxDownloads.Configure(this);
+                Linux.LinuxNotifications.IconPath = ResolveIconPath();
+                Linux.LinuxNotifications.Log = Log;
+                Linux.LinuxNotifications.OnClicked = view =>
+                {
+                    var owner = Tabs.All.FirstOrDefault(t => t.NativeView == view);
+                    if (owner is not null) _ = ActivateWindowAsync(owner.Id.ToString("N")[..8], CancellationToken.None);
+                };
+            }
             InvokeOnUi(() =>
             {
-                Mac.WkTabs.SetBootstrap(boot);
-                try { Mac.MacWindow.ApplyInlineTitlebar(nsWin); }
-                catch (Exception ex) { Log("inline titlebar failed: " + ex.Message); }
-                try { Mac.WkTabs.SetWindowBackground(nsWin); } catch { }
-                try { StartSplitBar(first); }
-                catch (Exception ex) { Log("split bar failed: " + ex.Message); }
-                Mac.WkTabs.HideBootstrap();
+                if (IsMac)
+                {
+                    Mac.WkTabs.SetBootstrap(boot);
+                    try { Mac.MacWindow.ApplyInlineTitlebar(nsWin); }
+                    catch (Exception ex) { Log("inline titlebar failed: " + ex.Message); }
+                    try { Mac.WkTabs.SetWindowBackground(nsWin); } catch { }
+                    try { StartSplitBar(first); }
+                    catch (Exception ex) { Log("split bar failed: " + ex.Message); }
+                    Mac.WkTabs.HideBootstrap();
+                }
+                else
+                {
+                    // GTK: rebuild Photino's one-view window into the split layout (toolbar over a stack of tab views)
+                    Linux.LinuxTabs.SetBootstrap(boot);
+                    try { Linux.LinuxWindow.Setup(nsWin, ResolveIconPath(), withToolbar: SplitOn); }
+                    catch (Exception ex) { Log("window layout failed: " + ex.Message); }
+                    try { NativeShell.SetWindowBackground(nsWin); } catch { }
+                    if (SplitOn)
+                        try { StartSplitBar(first); }
+                        catch (Exception ex) { Log("split bar failed: " + ex.Message); }
+                    Linux.LinuxWindow.HideBootstrap();
+                }
             });
             Mark("window dressed + bar view");
 
@@ -860,7 +947,8 @@ public sealed partial class BrowserController : IAsyncDisposable
                 catch (Exception ex) { Log("first load failed: " + ex.Message); }
             });
 
-            if (!_noFullscreen) MacOpenFullScreen(first);
+            if (IsLinux) { if (!_noFullscreen) OpenFullScreenLinux(first); else RevealLinuxWindow(); }
+            else if (!_noFullscreen) MacOpenFullScreen(first);
             else MacRevealWindow();
             _ = Task.Delay(400).ContinueWith(_ =>
             {
@@ -1147,7 +1235,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     {
         if (tab.WinView is Win.WinTabs.View wv) { _winTabs?.Push(wv, json); return; }
         var view = tab.NativeView;
-        if (view != IntPtr.Zero && Mac.WkTabs.Has(view)) Mac.WkTabs.Push(view, json);
+        if (view != IntPtr.Zero && NativeShell.TabsHas(view)) NativeShell.TabsPush(view, json);
     }
 
     private async Task LoadHtmlWinAsync(BrowserTab tab, string html)
@@ -1181,12 +1269,12 @@ public sealed partial class BrowserController : IAsyncDisposable
         if (tab.GhostLogins) await SeedGhostCookiesAsync();
         var view = InvokeOnUi(() =>
         {
-            var nsWin = Mac.MacWindow.WindowByNumber(_nsWindowNumber);
+            var nsWin = NativeShell.WindowById(_nsWindowNumber);
             var v = nsWin == IntPtr.Zero
                 ? IntPtr.Zero
-                : Mac.WkTabs.Create(nsWin, tab.Id, PageLibSource, tab.IsPrivate, _zoom, tab.GhostLogins);
+                : NativeShell.TabsCreate(nsWin, tab.Id, PageLibSource, tab.IsPrivate, _zoom, tab.GhostLogins);
             // quick controls reach the view's very first document too
-            if (v != IntPtr.Zero && !_noToolbar) Mac.WkTabs.SetQcScript(v, QcBootScript(tab));
+            if (v != IntPtr.Zero && !_noToolbar) NativeShell.TabsSetQcScript(v, QcBootScript(tab));
             return v;
         });
         if (view == IntPtr.Zero) throw new InvalidOperationException("Could not create a web view for the tab");
@@ -1214,8 +1302,8 @@ public sealed partial class BrowserController : IAsyncDisposable
             var view = tab.NativeView;
             InvokeOnUi(() =>
             {
-                var nsWin = Mac.MacWindow.WindowByNumber(_nsWindowNumber);
-                Mac.WkTabs.Show(nsWin, view);
+                var nsWin = NativeShell.WindowById(_nsWindowNumber);
+                NativeShell.TabsShow(nsWin, view);
             });
         }
         // the toolbar must repaint for the newly shown page (dedupe would skip it)
@@ -1236,7 +1324,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         if (winView is Win.WinTabs.View wv)
             try { _winTabs?.Destroy(wv); } catch { }
         if (view != IntPtr.Zero)
-            try { InvokeOnUi(() => Mac.WkTabs.Destroy(view)); } catch { }
+            try { InvokeOnUi(() => NativeShell.TabsDestroy(view)); } catch { }
     }
 
     /// <summary>A message from one tab's page view. Eval replies must always complete,
@@ -1266,7 +1354,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             _cdpBrowser ??= await Cdp.CdpClient.ConnectAsync(CdpPort!.Value, CancellationToken.None);
             return new Cdp.CdpDriver(_cdpBrowser, tab, this);
         }
-        if (IsMac)
+        if (IsNative)
             return new Drivers.WebKitDriver(tab, this);
         return new StubDriver(tab, this);
     }
@@ -1864,9 +1952,11 @@ public sealed partial class BrowserController : IAsyncDisposable
         {
             InvokeOnUi(() =>
             {
-                foreach (var tab in Tabs.All)
+                // Per-tab views share ONE window: closing it once per tab would touch a window that the first close has
+                // already destroyed (a crash on GTK).
+                foreach (var win in Tabs.All.Select(t => t.Window).Distinct())
                 {
-                    try { tab.Window.Close(); } catch { }
+                    try { win.Close(); } catch { }
                 }
             });
         }
@@ -1885,18 +1975,24 @@ public sealed partial class BrowserController : IAsyncDisposable
             if (hwnd != IntPtr.Zero)
                 await Task.Run(() => Native.Win32.Raise(hwnd), ct);
         }
-        else if (IsMac)
+        else if (IsNative)
         {
             // AppKit window ordering is main-thread only — off-thread it can
             // spin forever inside WindowManagement when the app isn't frontmost.
-            await Task.Run(() => InvokeOnUi(() => Mac.MacWindow.Activate(tab)), ct);
+            await Task.Run(() => InvokeOnUi(() => NativeShell.Activate(tab)), ct);
         }
     }
 
     // ---------------- window chrome ops ----------------
 
     public void SetWindowSize(BrowserTab tab, int width, int height)
-        => tab.Window.Invoke(() => { tab.Window.Width = width; tab.Window.Height = height; });
+        => tab.Window.Invoke(() =>
+        {
+            // GTK applies a resize asynchronously, so setting Width and then Height re-reads a stale width and
+            // undoes the first change: ask for both at once.
+            if (IsLinux) tab.Window.SetSize(width, height);
+            else { tab.Window.Width = width; tab.Window.Height = height; }
+        });
 
     public void SetWindowState(BrowserTab tab, string state)
         => tab.Window.Invoke(() =>
@@ -1946,7 +2042,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         {
             if (tab.WinView is Win.WinTabs.View wv) { _winTabs?.SetZoom(wv, percent); return; }
             var v = tab.NativeView;
-            if (v != IntPtr.Zero) tab.Window.Invoke(() => { if (Mac.WkTabs.Has(v)) Mac.WkTabs.SetZoom(v, percent); });
+            if (v != IntPtr.Zero) tab.Window.Invoke(() => { if (NativeShell.TabsHas(v)) NativeShell.TabsSetZoom(v, percent); });
             return;
         }
         tab.Window.Invoke(() => tab.Window.Zoom = percent);
@@ -1971,7 +2067,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         {
             InvokeOnUi(() =>
             {
-                if (SplitOn) Mac.WkTabs.SetZoomAll(pct);
+                if (NativeTabs) NativeShell.TabsSetZoomAll(pct);
                 else if (WinPerTab) _winTabs?.SetZoomAll(pct);
                 else if (_mainWindow is not null) _mainWindow.Zoom = pct;
             });
@@ -2044,21 +2140,21 @@ public sealed partial class BrowserController : IAsyncDisposable
         if (SplitOn && (json.StartsWith("{\"b\":47,", StringComparison.Ordinal) || json.StartsWith("{\"b\":49,", StringComparison.Ordinal)))
         {
             // Approval ids go to the toolbar view only: no web page runs there. If it is not up yet, nothing is sent (the ask times out as a no).
-            if (Mac.WkBar.Exists)
-                try { Mac.WkBar.Eval("window.__brainBarPush&&window.__brainBarPush(" + json + ")"); } catch { }
+            if (NativeShell.BarExists)
+                try { NativeShell.BarEval("window.__brainBarPush&&window.__brainBarPush(" + json + ")"); } catch { }
             return;
         }
         if (PerTab)
         {
             // the tab's own page view, plus the toolbar view when it cares about this push
             PushToView(tab, json);
-            if (SplitOn && Mac.WkBar.Exists && !PageOnlyPush(json))
-                try { Mac.WkBar.Eval("window.__brainBarPush&&window.__brainBarPush(" + json + ")"); } catch { }
+            if (SplitOn && NativeShell.BarExists && !PageOnlyPush(json))
+                try { NativeShell.BarEval("window.__brainBarPush&&window.__brainBarPush(" + json + ")"); } catch { }
             return;
         }
         tab.Window.SendWebMessage(json);
-        if (SplitOn && Mac.WkBar.Exists && !PageOnlyPush(json))
-            try { Mac.WkBar.Eval("window.__brainBarPush&&window.__brainBarPush(" + json + ")"); } catch { }
+        if (SplitOn && NativeShell.BarExists && !PageOnlyPush(json))
+            try { NativeShell.BarEval("window.__brainBarPush&&window.__brainBarPush(" + json + ")"); } catch { }
     }
 
     /// <summary>Pushes only the page view consumes (DevTools data, field/password
@@ -2075,7 +2171,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// <summary>Starts the split-toolbar bar view (main thread).</summary>
     private void StartSplitBar(BrowserTab tab)
     {
-        var nsWin = Mac.MacWindow.WindowByNumber(tab.MacWindowNumber);
+        var nsWin = NativeShell.WindowById(tab.MacWindowNumber);
         if (nsWin == IntPtr.Zero) return;
         const string shim =
             "window.__BRAIN_ROLE='bar';" +
@@ -2090,15 +2186,15 @@ public sealed partial class BrowserController : IAsyncDisposable
         // user closes it, but the window (and this view) live on.
         var firstTab = tab;
         // Toolbar commands act on whichever tab is shown; page views report their own tab.
-        Mac.WkBar.OnBarMessage = msg => HandleWebMessage(Tabs.Active ?? Tabs.All.FirstOrDefault() ?? firstTab, msg, fromBar: true);
-        Mac.WkTabs.OnMessage = OnPageViewMessage;
-        Mac.WkBar.Create(nsWin, shim + Assets.ChromeJs, html);
+        NativeShell.BarOnMessage = msg => HandleWebMessage(Tabs.Active ?? Tabs.All.FirstOrDefault() ?? firstTab, msg, fromBar: true);
+        NativeShell.TabsOnMessage = OnPageViewMessage;
+        NativeShell.BarCreate(nsWin, shim + Assets.ChromeJs, html, IsLinux ? ResolveIconPath() : null);
     }
 
     private IntPtr SplitWindow()
     {
-        if (_nsWindowNumber != 0) return Mac.MacWindow.WindowByNumber(_nsWindowNumber);
-        return _driverTab is { } t && t.MacWindowNumber != 0 ? Mac.MacWindow.WindowByNumber(t.MacWindowNumber) : IntPtr.Zero;
+        if (_nsWindowNumber != 0) return NativeShell.WindowById(_nsWindowNumber);
+        return _driverTab is { } t && t.MacWindowNumber != 0 ? NativeShell.WindowById(t.MacWindowNumber) : IntPtr.Zero;
     }
 
     private void HandleWebMessage(BrowserTab tab, string message, bool fromBar = false)
@@ -2193,7 +2289,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "pastego":
                             {
                                 string? clip = null;
-                                try { clip = IsMac ? InvokeOnUi(() => Mac.WkClipboard.Text()) : Native.Win32.ClipboardText(); } catch { }
+                                try { clip = IsNative ? InvokeOnUi(() => NativeShell.ClipboardText()) : Native.Win32.ClipboardText(); } catch { }
                                 if (!string.IsNullOrWhiteSpace(clip)) await NavigateAsync(clip.Trim(), active);
                                 break;
                             }
@@ -2330,16 +2426,16 @@ public sealed partial class BrowserController : IAsyncDisposable
                             try { InvokeOnUi(() =>
                             {
                                 if (_mainWindow is null) return;
-                                if (IsMac)
+                                if (IsNative)
                                 {
-                                    var nsWin = active is not null ? Mac.MacWindow.NsWindowForTab(active) : IntPtr.Zero;
+                                    var nsWin = active is not null ? NativeShell.WindowForTab(active) : IntPtr.Zero;
                                     if (nsWin == IntPtr.Zero) return;
                                     // Legacy enterFullScreenMode presentation trumps: exit it,
                                     // don't stack a real fullscreen on top.
-                                    if (!Mac.MacWindow.ExitLegacyFullScreen(nsWin))
-                                        Mac.MacWindow.ToggleFullScreen(nsWin);
+                                    if (!NativeShell.ExitLegacyFullScreen(nsWin))
+                                        NativeShell.ToggleFullScreen(nsWin);
                                     else
-                                        Mac.MacWindow.RepairWebViewFrame(nsWin);
+                                        NativeShell.RepairWebViewFrame(nsWin);
                                 }
                                 else _mainWindow.FullScreen = !_mainWindow.FullScreen;
                             }); } catch { }
@@ -2368,21 +2464,33 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "wdrag":
                             try { InvokeOnUi(() =>
                             {
-                                if (IsMac)
+                                if (IsNative)
                                 {
-                                    var nsWin = active is not null ? Mac.MacWindow.NsWindowForTab(active) : IntPtr.Zero;
-                                    if (nsWin != IntPtr.Zero) Mac.MacWindow.BeginWindowDrag(nsWin);
+                                    var nsWin = active is not null ? NativeShell.WindowForTab(active) : IntPtr.Zero;
+                                    if (nsWin != IntPtr.Zero) NativeShell.BeginWindowDrag(nsWin);
                                 }
                                 else Native.Win32.BeginNcDrag(_mainWindow?.WindowHandle ?? IntPtr.Zero, Native.Win32.HtCaption);
                             }); } catch { }
                             break;
                         case "wresize" when int.TryParse(arg, out var ht):
-                            try { InvokeOnUi(() => Native.Win32.BeginNcDrag(_mainWindow?.WindowHandle ?? IntPtr.Zero, ht)); } catch { }
+                            try
+                            {
+                                InvokeOnUi(() =>
+                                {
+                                    if (IsLinux)
+                                    {
+                                        var gw = active is not null ? NativeShell.WindowForTab(active) : IntPtr.Zero;
+                                        if (gw != IntPtr.Zero) NativeShell.BeginWindowResize(gw, ht);
+                                    }
+                                    else Native.Win32.BeginNcDrag(_mainWindow?.WindowHandle ?? IntPtr.Zero, ht);
+                                });
+                            }
+                            catch { }
                             break;
                         case "bm": ToggleBookmark(active); break;
                         // macOS per-tab views keep their own scroll; shared views and Windows views (which can be
                         // evicted and reloaded) need it recorded
-                        case "scroll": if (!SplitOn) RecordScroll(PerTab ? tab : (DocTab ?? active), arg); break;
+                        case "scroll": if (!NativeTabs) RecordScroll(PerTab ? tab : (DocTab ?? active), arg); break;
                         // DevTools panel feed + REPL
                         // Downloads
                         case "dllist": PushDownloads(); break;
@@ -2447,28 +2555,28 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "barready": Mark("toolbar painted"); PushChromeStateAll(); MaybeShowWelcome(); break;
                         case "barh":
                             if (SplitOn)
-                                try { InvokeOnUi(() => Mac.WkBar.Layout(SplitWindow(), arg)); } catch { }
+                                try { InvokeOnUi(() => NativeShell.BarLayout(SplitWindow(), arg)); } catch { }
                             break;
                         case "barui":
                             if (SplitOn && System.Text.RegularExpressions.Regex.IsMatch(arg, "^[a-z]{1,12}$"))
                                 try { InvokeOnUi(() =>
                                 {
-                                    Mac.WkBar.FocusBar(SplitWindow());
-                                    Mac.WkBar.Eval("window.__brainBarCmd&&window.__brainBarCmd('" + arg + "')");
+                                    NativeShell.FocusBar(SplitWindow());
+                                    NativeShell.BarEval("window.__brainBarCmd&&window.__brainBarCmd('" + arg + "')");
                                 }); } catch { }
                             break;
                         case "pageui":
                             if (SplitOn && System.Text.RegularExpressions.Regex.IsMatch(arg, "^[a-z]{1,12}$"))
                                 try { InvokeOnUi(() =>
                                 {
-                                    Mac.WkBar.FocusPage(SplitWindow());
+                                    NativeShell.FocusPage(SplitWindow());
                                     var pv = Tabs.Active?.NativeView ?? IntPtr.Zero;
-                                    if (pv != IntPtr.Zero && Mac.WkTabs.Has(pv))
-                                        Mac.WkTabs.Push(pv, "{\"b\":60,\"c\":\"" + arg + "\"}");
+                                    if (pv != IntPtr.Zero && NativeShell.TabsHas(pv))
+                                        NativeShell.TabsPush(pv, "{\"b\":60,\"c\":\"" + arg + "\"}");
                                 }); } catch { }
                             break;
                         case "focuspage":
-                            if (SplitOn) try { InvokeOnUi(() => Mac.WkBar.FocusPage(SplitWindow())); } catch { }
+                            if (SplitOn) try { InvokeOnUi(() => NativeShell.FocusPage(SplitWindow())); } catch { }
                             break;
                         case "usget": PushScripts(tab); break;
                         case "ytskip": await YtSkipAsync(tab); break;
@@ -2628,7 +2736,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             mtl = IsMac && !_noToolbar,
             // mute/audio handled natively by the engine; otherwise chrome.js
             // enforces and detects it inside the page
-            nat = IsMac || WinPerTab,
+            nat = IsNative || WinPerTab,
             w = _winMax ? 1 : 0,
             dt = _dtOpen ? _dtTab : "",
             privActive = Tabs.Active?.IsPrivate == true,
@@ -2980,8 +3088,8 @@ public sealed partial class BrowserController : IAsyncDisposable
         string? text = null;
         try
         {
-            text = IsMac
-                ? InvokeOnUi(() => Mac.WkClipboard.Text())
+            text = IsNative
+                ? InvokeOnUi(() => NativeShell.ClipboardText())
                 : Native.Win32.ClipboardText();
         }
         catch { }
@@ -3026,7 +3134,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     private void MaybeShowWelcome()
     {
         if (_welcomed || _welcomeShown || _noToolbar) return;
-        if (IsMac && Mac.WkLaunch.Hidden) { _welcomeWaiting = true; return; } // the first scene should play where it can be seen
+        if ((IsMac && Mac.WkLaunch.Hidden) || (IsLinux && Linux.LinuxLaunch.Hidden)) { _welcomeWaiting = true; return; } // the first scene should play where it can be seen
         _welcomeShown = true;
         ShowWelcome();
     }
@@ -3045,7 +3153,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         var js = "window.__brainWelcomeCfg=" + cfg + ";\n" + Assets.WelcomeJs;
         if (SplitOn)
         {
-            try { InvokeOnUi(() => { Mac.WkBar.Eval(js); Mac.WkBar.FocusBar(SplitWindow()); }); }
+            try { InvokeOnUi(() => { NativeShell.BarEval(js); NativeShell.FocusBar(SplitWindow()); }); }
             catch (Exception ex) { Log("welcome failed: " + ex.Message); }
             return;
         }
@@ -3059,7 +3167,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// <summary>The film closed (skipped, finished, or an agent started working) — never auto-play it again.</summary>
     private void MarkWelcomed()
     {
-        if (SplitOn) try { InvokeOnUi(() => Mac.WkBar.FocusPage(SplitWindow())); } catch { }
+        if (SplitOn) try { InvokeOnUi(() => NativeShell.FocusPage(SplitWindow())); } catch { }
         if (_welcomed) return;
         _welcomed = true;
         SavePrefs();
@@ -3205,7 +3313,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         _viewTasks.TryRemove(tab.Id, out _);
         try { if (drv is not null) await drv.DisposeAsync(); } catch { }
         if (wv is not null) try { _winTabs?.Destroy(wv); } catch { }
-        if (view != IntPtr.Zero) try { InvokeOnUi(() => Mac.WkTabs.Destroy(view)); } catch { }
+        if (view != IntPtr.Zero) try { InvokeOnUi(() => NativeShell.TabsDestroy(view)); } catch { }
         PushChromeStateAll();
     }
 
@@ -3234,16 +3342,16 @@ public sealed partial class BrowserController : IAsyncDisposable
 
     private readonly SemaphoreSlim _ghostSeedGate = new(1, 1);
 
-    /// <summary>macOS: before a ghost tab with cookies gets its view, makes sure the shared ghost store
+    /// <summary>macOS / Linux: before a ghost tab with cookies gets its view, makes sure the shared ghost store
     /// exists and holds a copy of the normal store's cookies. Best effort — on a failure or timeout the
     /// tab simply opens with what was copied so far. (Windows copies when it builds the view.)</summary>
     private async Task SeedGhostCookiesAsync()
     {
-        if (!IsMac) return;
+        if (!IsNative) return;
         await _ghostSeedGate.WaitAsync();
         try
         {
-            await InvokeOnUi(() => Mac.WkTabs.SeedGhostStore()).WaitAsync(TimeSpan.FromSeconds(4));
+            await InvokeOnUi(() => NativeShell.SeedGhostStore()).WaitAsync(TimeSpan.FromSeconds(4));
         }
         catch (Exception ex) { Log("ghost cookie copy: " + ex.Message); }
         finally { _ghostSeedGate.Release(); }
@@ -3580,6 +3688,8 @@ public sealed partial class BrowserController : IAsyncDisposable
             bool ok;
             if (OperatingSystem.IsMacOS())
                 ok = await Mac.WkLaAuth.EvaluateAsync(reason, InvokeOnUi);
+            else if (OperatingSystem.IsLinux())
+                ok = await Linux.LinuxAuth.EvaluateAsync(reason, InvokeOnUi);
             else if (OperatingSystem.IsWindows())
             {
                 var hwnd = _mainWindow?.WindowHandle ?? IntPtr.Zero;
@@ -4399,8 +4509,8 @@ public sealed partial class BrowserController : IAsyncDisposable
         var json = JsonSerializer.Serialize(ev, UsJson);
         foreach (var t in Tabs.All)
             if (!t.IsClosed && t.LastUrl == "about:ollama") PushJson(t, json);
-        if (Mac.WkBar.SideExists)
-            try { InvokeOnUi(() => Mac.WkBar.EvalSide("window.__brainSidePush&&window.__brainSidePush(" + json + ")")); } catch { }
+        if (NativeShell.SideExists)
+            try { InvokeOnUi(() => NativeShell.EvalSide("window.__brainSidePush&&window.__brainSidePush(" + json + ")")); } catch { }
     }
 
     /// <summary>
@@ -4417,22 +4527,22 @@ public sealed partial class BrowserController : IAsyncDisposable
             {
                 var win = SplitWindow();
                 if (win == IntPtr.Zero) return;
-                if (!Mac.WkBar.SideExists)
+                if (!NativeShell.SideExists)
                 {
                     const string shim =
                         "window.__BRAIN_SIDE=true;" +
                         "window.external={sendMessage:function(m){try{window.webkit.messageHandlers.brain.postMessage(String(m));}catch(e){}}};" +
                         "window.__brainSidePush=function(o){document.dispatchEvent(new CustomEvent('brain-msg',{detail:o}));};\n";
-                    Mac.WkBar.OnSideMessage = msg => HandleWebMessage(Tabs.Active ?? tab, msg, fromBar: true);
-                    if (!Mac.WkBar.CreateSide(win, shim, BuildOllamaHtml())) return;
+                    NativeShell.SideOnMessage = msg => HandleWebMessage(Tabs.Active ?? tab, msg, fromBar: true);
+                    if (!NativeShell.CreateSide(win, shim, BuildOllamaHtml())) return;
                 }
                 else reopened = true;
-                Mac.WkBar.SetSideOpen(win, !Mac.WkBar.SideOpen);
+                NativeShell.SetSideOpen(win, !NativeShell.SideOpen);
             });
         }
         catch (Exception ex) { Log("ollama side panel failed: " + ex.Message); }
         // A fresh panel asks for its state itself when it loads; a re-shown one needs a push.
-        if (reopened && Mac.WkBar.SideOpen) _ = PushOllamaStateAsync();
+        if (reopened && NativeShell.SideOpen) _ = PushOllamaStateAsync();
     }
 
     private async Task PushOllamaStateAsync()
@@ -4513,14 +4623,10 @@ public sealed partial class BrowserController : IAsyncDisposable
         if (xy is not { Length: 2 } || !double.TryParse(xy[0], out var x) || !double.TryParse(xy[1], out var y)) return;
         Interlocked.Exchange(ref _ytSkipAt, now);
         var view = tab.NativeView;
-        if (IsMac && view != IntPtr.Zero)
+        if (IsNative && view != IntPtr.Zero)
         {
             // hover, press, release — with human-ish gaps, as a real click would arrive
-            void Ev(int type) => InvokeOnUi(() =>
-            {
-                var win = Mac.MacWindow.WindowByNumber(tab.MacWindowNumber);
-                if (win != IntPtr.Zero) Mac.MacInput.SendMouseEvent(win, view, x, y, type);
-            });
+            void Ev(int type) => InvokeOnUi(() => NativeShell.SendMouseEvent(tab, view, x, y, type));
             Ev(5);
             await Task.Delay(70);
             Ev(1);
@@ -4809,7 +4915,8 @@ public sealed partial class BrowserController : IAsyncDisposable
                 }
             }
             catch (Exception ex) { err = ex.Message; }
-            results.Add(new { id = src.Id, name = src.Name, hist, bm, ck, pw, err });
+            var warn = BrowserImporter.TakeWarnings(src); // why parts were skipped (Linux: locked keyring, unreadable file)
+            results.Add(new { id = src.Id, name = src.Name, hist, bm, ck, pw, err, warn });
         }
         var json = JsonSerializer.Serialize(new { b = 18, results });
         try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
@@ -5105,7 +5212,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             {
                 if (_logFile is null)
                 {
-                    var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BrAIn");
+                    var dir = Path.Combine(OsPaths.LocalAppData(), "BrAIn");
                     Directory.CreateDirectory(dir);
                     var path = Path.Combine(dir, "brain.log");
                     if (File.Exists(path) && new FileInfo(path).Length > 2_000_000) File.Delete(path);

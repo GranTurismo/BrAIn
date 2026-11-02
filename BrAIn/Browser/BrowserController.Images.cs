@@ -95,7 +95,7 @@ public sealed partial class BrowserController
             else
             {
                 string? problem = null;
-                if (IsMac) problem = InvokeOnUi(() => Mac.WkClipboard.SetImage(data, kind.Mime, (long)kind.Width * kind.Height)) ? null : "Couldn't put the image on the clipboard.";
+                if (IsNative) problem = InvokeOnUi(() => NativeShell.SetClipboardImage(data, kind.Mime, (long)kind.Width * kind.Height)) ? null : "Couldn't put the image on the clipboard.";
                 else if (OperatingSystem.IsWindows())
                     problem = kind.Mime != "image/png" ? "Copying works for PNG pictures here — use Save image for this one."
                         : Native.Win32.SetClipboardPng(data) ? null : "Couldn't put the image on the clipboard.";

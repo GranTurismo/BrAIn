@@ -502,10 +502,11 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
   const cfg = {
     mac: { raw: '{\n  "mcpServers": {\n    "brain": {\n      "command": "/Applications/BrAIn.app/Contents/MacOS/BrAIn"\n    }\n  }\n}', },
     win: { raw: '{\n  "mcpServers": {\n    "brain": {\n      "command": "C:\\\\Program Files\\\\BrAIn\\\\BrAIn.exe"\n    }\n  }\n}' },
+    linux: { raw: '{\n  "mcpServers": {\n    "brain": {\n      "command": "/home/you/.local/bin/brain"\n    }\n  }\n}' },
     args: { raw: '{\n  "mcpServers": {\n    "brain": {\n      "command": "/Applications/BrAIn.app/Contents/MacOS/BrAIn",\n      "args": ["https://example.com"]\n    }\n  }\n}' },
   };
   const colour = raw => esc(raw).replace(/(&quot;)([^&]*?)(&quot;)(\s*:)/g, '<span class="n">"$2"</span>$4').replace(/:\s*(&quot;)([^&]*?)(&quot;)/g, ': <span class="s">"$2"</span>').replace(/\[(&quot;)([^&]*?)(&quot;)\]/g, '[<span class="s">"$2"</span>]');
-  let cur = /Windows/.test(navigator.userAgent) ? 'win' : 'mac';
+  let cur = /Windows/.test(navigator.userAgent) ? 'win' : /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) ? 'linux' : 'mac';
   const set = c => { cur = c; $$('button', tabs).forEach(b => b.classList.toggle('on', b.dataset.c === c)); code.innerHTML = colour(cfg[c].raw); };
   tabs.addEventListener('click', e => { const b = e.target.closest('button'); if (b) set(b.dataset.c); });
   $('#cfgCopy').addEventListener('click', e => copyText(cfg[cur].raw, e.currentTarget));
@@ -535,11 +536,11 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
   const KINDS = [
     { re: /\.dmg$/i, os: 'mac', name: 'macOS', label: a => /x64|intel/i.test(a) ? 'macOS · Intel' : 'macOS · Apple Silicon' },
     { re: /\.exe$/i, os: 'win', name: 'Windows', label: () => 'Windows 10/11 · x64' },
-    { re: /\.tar\.gz$/i, os: 'linux', name: 'Linux', label: () => 'Linux · x64 (experimental)' },
+    { re: /-linux-(x64|arm64)\.tar\.gz$/i, os: 'linux', name: 'Linux', label: a => /arm64/i.test(a) ? 'Linux · arm64' : 'Linux · x64' },
   ];
   const parse = rel => (rel.assets || []).map(a => {
     const k = KINDS.find(k => k.re.test(a.name)); if (!k) return null;
-    return { os: k.os, name: k.name, label: k.label(a.name), file: a.name, bytes: a.size, url: a.browser_download_url, sha256: (a.digest || '').replace(/^sha256:/, '') };
+    return { os: k.os, name: k.name, label: k.label(a.name), arch: /arm64/i.test(a.name) ? 'arm64' : 'x64', file: a.name, bytes: a.size, url: a.browser_download_url, sha256: (a.digest || '').replace(/^sha256:/, '') };
   }).filter(Boolean);
 
   const rel = await latestRelease(), items = rel ? parse(rel) : [];
@@ -553,6 +554,9 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
 
   const ua = navigator.userAgent;
   const plat = /Windows/.test(ua) ? 'win' : /Android/.test(ua) ? '' : /Linux/.test(ua) ? 'linux' : /Mac/.test(ua) && !/iPhone|iPad/.test(ua) ? 'mac' : '';
+  // Linux ships one archive per CPU; its user agent says which ("x86_64" / "aarch64"), so only that card is "your PC"
+  const myArch = /aarch64|arm64/i.test(ua) ? 'arm64' : 'x64';
+  const mine = d => d.os === plat && (d.os !== 'linux' || d.arch === myArch);
   const mb = b => (b / 1048576).toFixed(1) + ' MB';
   const ICON = {
     mac: '<svg viewBox="0 0 24 24"><path d="M16.4 1.4c0 1.1-.5 2.2-1.2 3-.8.9-2.1 1.5-3.2 1.4-.1-1.1.4-2.3 1.1-3 .8-.9 2.2-1.5 3.3-1.4zM20.5 17.1c-.6 1.3-.8 1.8-1.5 2.9-1 1.5-2.4 3.5-4.2 3.5-1.5 0-2-1-4.1-1s-2.5 1-4.1 1c-1.7 0-3.1-1.7-4.1-3.3C-.2 15.9-.5 10.7 1.2 8.1 2.4 6.2 4.3 5.1 6.1 5.1c1.8 0 2.9 1 4.4 1 1.5 0 2.3-1 4.4-1 1.6 0 3.3.9 4.5 2.4-4 2.2-3.3 7.8.1 9.6z"/></svg>',
@@ -562,20 +566,20 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
   const STEPS = {
     mac: ['Open the DMG and drag <b>BrAIn</b> to Applications.', 'First launch: right-click the app → <b>Open</b> (it isn’t notarized yet) — or run <code>xattr -dr com.apple.quarantine /Applications/BrAIn.app</code>.', 'Press <kbd>⌘</kbd> <kbd>/</kbd> for every shortcut; point your MCP client at the binary.'],
     win: ['Run the installer. If SmartScreen appears: <b>More info → Run anyway</b> (not code-signed yet).', 'It installs the WebView2 runtime if your PC lacks it, adds Start Menu entries, and includes a <b>tab self-test</b> shortcut.', 'Point your MCP client at <code>C:\\Program Files\\BrAIn\\BrAIn.exe</code>.'],
-    linux: ['Extract the archive: <code>tar xzf BrAIn-*-linux-x64.tar.gz</code> (needs GTK3 and WebKitGTK).', 'Experimental: it opens pages and navigates; in-page automation (MCP tools) isn’t available on Linux yet.'],
+    linux: ['Install the libraries once: <code>sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0</code> (Fedora: <code>webkit2gtk4.1 gtk3 libnotify libsecret</code>).', 'Unpack and install for yourself, no root: <code>tar xzf {file} &amp;&amp; cd {dir} &amp;&amp; ./install.sh</code>', 'Start BrAIn from the menu or run <code>brain</code>, and point your MCP client at <code>~/.local/bin/brain</code>. It updates itself from the toolbar menu.'],
   };
   const VERIFY = { mac: 'shasum -a 256 ~/Downloads/', win: 'Get-FileHash -Algorithm SHA256 $HOME\\Downloads\\', linux: 'sha256sum ~/Downloads/' };
-  const rank = d => (d.os === plat ? -10 : 0) + ['mac', 'win', 'linux'].indexOf(d.os);
+  const rank = d => (mine(d) ? -10 : d.os === plat ? -5 : 0) + ['mac', 'win', 'linux'].indexOf(d.os) + (d.arch === 'arm64' ? .5 : 0);
   const order = items.sort((a, b) => rank(a) - rank(b));
   grid.innerHTML = order.map(d => {
-    const ext = (d.file.match(/\.(tar\.gz|[^.]+)$/) || [, ''])[1], rec = d.os === plat;
+    const ext = (d.file.match(/\.(tar\.gz|[^.]+)$/) || [, ''])[1], rec = mine(d);
     return `<article class="card dl rv spot${rec ? ' rec' : ''}" data-os="${d.os}">
       <div class="os"><div class="ico">${ICON[d.os]}</div><div><h3>${d.name}</h3><div class="sub2">${esc(d.label)}</div></div><span class="badge">YOUR PC</span></div>
       <div class="facts"><div><b>${esc(version)}</b><span>version</span></div><div><b>${mb(d.bytes)}</b><span>download</span></div><div><b>.${esc(ext)}</b><span>format</span></div></div>
       <a class="btn primary" href="${esc(d.url)}" data-dl>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>Download for ${d.name}</a>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>Download for ${d.name}${d.os === 'linux' ? ` (${d.arch})` : ''}</a>
       ${d.sha256 ? `<div class="hash"><span>SHA-256</span><code title="${d.sha256}">${d.sha256}</code><button data-copy="${d.sha256}">Copy</button></div>` : ''}
-      <ol class="steps">${STEPS[d.os].map(s => `<li><span>${s}</span></li>`).join('')}</ol>
+      <ol class="steps">${STEPS[d.os].map(s => `<li><span>${s.replace('{file}', esc(d.file)).replace('{dir}', esc(d.file.replace(/\.tar\.gz$/, '')))}</span></li>`).join('')}</ol>
       ${d.sha256 ? `<details><summary style="cursor:pointer;color:var(--mut);font-size:13.5px">Verify from the command line</summary><div class="code" style="margin-top:10px;font-size:12px">${VERIFY[d.os]}${esc(d.file)}\n<span class="c"># expected</span>\n${d.sha256}</div></details>` : ''}
     </article>`;
   }).join('');
@@ -583,7 +587,7 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
   $$('.spot', grid).forEach(el => el.addEventListener('pointermove', e => { const r = el.getBoundingClientRect(); el.style.setProperty('--mx', (e.clientX - r.left) + 'px'); el.style.setProperty('--my', (e.clientY - r.top) + 'px'); }));
 
   // hero button reflects the visitor's OS
-  const pick = items.find(d => d.os === plat);
+  const pick = items.find(mine);
   if (pick) $('#heroDlLabel').textContent = 'Download for ' + pick.name;
 
   grid.addEventListener('click', e => {

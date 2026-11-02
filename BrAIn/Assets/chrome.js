@@ -2346,7 +2346,7 @@
             case 'ready': return 'Restart to update to v' + u.v;
             case 'uptodate': return 'BrAIn is up to date';
             case 'error': return 'Update failed — try again';
-            case 'disabled': return 'Updates unavailable (dev build)';
+            case 'disabled': return /^dev build/.test(u.err || '') ? 'Updates unavailable (dev build)' : 'Updates unavailable';
             default: return 'Check for updates';
         }
     }
@@ -2433,7 +2433,7 @@
             else if (ph === 'verifying') { ico = UPD_ICO.orb; cls = 'chk'; title = 'Verifying the download\u2026'; sub = 'Checking the file is genuine before installing it.'; bar = '<span class="pbar ind"><i class="pf"></i></span>'; close = false; }
             else if (ph === 'ready' || ph === 'installing') {
                 ico = UPD_ICO.orb; cls = 'chk'; title = 'Installing BrAIn ' + ver; close = false;
-                sub = IS_MAC ? 'BrAIn is restarting and will reopen by itself in a few seconds.'
+                sub = IS_MAC || /Linux/.test(navigator.platform) ? 'BrAIn is restarting and will reopen by itself in a few seconds.'
                     : 'BrAIn is closing to install. Windows may ask for permission, then BrAIn reopens by itself.';
                 bar = '<span class="pbar ind"><i class="pf"></i></span>';
             }
@@ -2441,7 +2441,7 @@
                 ico = UPD_ICO.bad; cls = 'bad'; title = 'Update failed'; sub = esc(u.err || 'Something went wrong.');
                 btns = '<button class="st dismiss">Close</button><button class="ok retry">Try again</button>';
             }
-            else { // disabled (dev build)
+            else { // disabled (dev build, or an install this user can't replace)
                 ico = UPD_ICO.bad; cls = 'bad'; title = 'Updates unavailable'; sub = esc(u.err || 'This build cannot update itself.');
                 btns = '<button class="st dismiss">Close</button>';
             }

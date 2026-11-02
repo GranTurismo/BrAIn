@@ -113,6 +113,8 @@ public sealed class Downloads
         var it = Find(id); if (it is null || it.State != 0) return;
         if (it.Wk != IntPtr.Zero && OperatingSystem.IsMacOS())
             Mac.WkDownloads.CancelDownload(it.Wk);
+        else if (it.Wk != IntPtr.Zero && OperatingSystem.IsLinux())
+            Linux.LinuxDownloads.CancelDownload(it.Wk);
         else if (it.CdpGuid is not null && EngineCancel is not null)
             _ = EngineCancel(it);
         it.State = 3;
@@ -147,9 +149,27 @@ public sealed class Downloads
             else if (OperatingSystem.IsWindows())
                 Process.Start("explorer.exe", "/select," + Quote(it.Path));
             else
-                Process.Start("xdg-open", Quote(Path.GetDirectoryName(it.Path) ?? Dir));
+                RevealOnLinux(it.Path);
         }
         catch { }
+    }
+
+    /// <summary>Linux: ask the file manager to show (and select) the file through the standard
+    /// org.freedesktop.FileManager1 service; without one, just open the folder.</summary>
+    private void RevealOnLinux(string path)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("gdbus") { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var a in new[] { "call", "--session", "--timeout", "3", "--dest", "org.freedesktop.FileManager1",
+                         "--object-path", "/org/freedesktop/FileManager1", "--method", "org.freedesktop.FileManager1.ShowItems",
+                         "['" + new Uri(path).AbsoluteUri.Replace("'", "%27") + "']", "" })
+                psi.ArgumentList.Add(a);
+            using var p = Process.Start(psi);
+            if (p is not null && p.WaitForExit(4000) && p.ExitCode == 0) return;
+        }
+        catch { /* no gdbus / no file manager service: fall through */ }
+        Process.Start("xdg-open", Quote(Path.GetDirectoryName(path) ?? Dir));
     }
 
     private static string Quote(string s) => "\"" + s + "\"";

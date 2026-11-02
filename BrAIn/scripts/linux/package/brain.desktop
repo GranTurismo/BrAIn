@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=BrAIn
+GenericName=Web Browser
+Comment=A browser your AI agent can drive (MCP server built in)
+# install.sh puts the real path of the installed program where @EXEC@ is
+Exec=@EXEC@ %u
+Icon=brain-browser
+Terminal=false
+Categories=Network;WebBrowser;
+Keywords=browser;web;internet;mcp;ai;agent;
+StartupNotify=true
+StartupWMClass=BrAIn

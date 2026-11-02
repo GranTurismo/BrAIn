@@ -1,0 +1,90 @@
+name: Linux tab self-test
+
+# Builds the Linux binary and runs `BrAIn --selftest-tabs` on a hosted Ubuntu runner (a virtual X server with a window
+# manager): state surviving a tab switch, view eviction + restore, private tabs. A second job builds both release
+# archives and runs install.sh / uninstall.sh on the x64 one, the way scripts/linux/test.sh does in Docker.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['BrAIn/**', '.github/workflows/linux-selftest.yml']
+
+jobs:
+  selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install runtime libraries and a virtual desktop
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-0 libgtk-3-0t64 libnotify4 libsecret-1-0 \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            xvfb xauth openbox fonts-dejavu-core
+      - name: Publish linux-x64
+        run: dotnet publish BrAIn/BrAIn.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false -o out
+      - name: Run tab self-test
+        env:
+          # WebKit's own sandbox needs user namespaces, which the runner's AppArmor policy refuses to an ordinary process;
+          # this is a throwaway VM, so the sandbox is switched off for the test (never do that on a real machine)
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1'
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          GDK_BACKEND: x11
+          NO_AT_BRIDGE: '1'
+          BRAIN_LOG: '1'
+        run: |
+          # skip the first-run welcome film, which would cover the UI
+          mkdir -p "$HOME/.local/share/BrAIn"
+          echo '{"welcomed":true}' > "$HOME/.local/share/BrAIn/prefs.json"
+          # openbox is the window manager a real desktop would have (focus, fullscreen); the exit code is the number of failed checks
+          xvfb-run -a -s "-screen 0 1600x1000x24" bash -c 'openbox & sleep 1; exec timeout 300 ./out/BrAIn --selftest-tabs --selftest-quiet </dev/null'
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p logs
+          cp "$HOME/.local/share/BrAIn/selftest-tabs.txt" "$HOME/.local/share/BrAIn/brain.log" logs/ 2>/dev/null || true
+          if [ -f logs/selftest-tabs.txt ]; then cat logs/selftest-tabs.txt; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tab-selftest-logs-linux
+          path: logs
+
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install the libraries the program loads and the tools the checks use
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-0 libgtk-3-0t64 libnotify4 libsecret-1-0 \
+            desktop-file-utils libgtk-3-bin hicolor-icon-theme imagemagick python3-gi
+      - name: Build the release archives (x64 and arm64)
+        run: bash BrAIn/scripts/make-linux-dist.sh
+      - name: Install, check and uninstall the x64 archive (per user)
+        env:
+          RIG: ${{ github.workspace }}/BrAIn/scripts/linux
+          PKG: ${{ github.workspace }}/BrAIn/dist
+        run: |
+          # a scratch home, so nothing lands in the runner's own ~/.local
+          export HOME="$(mktemp -d)"
+          unset XDG_DATA_HOME XDG_CACHE_HOME XDG_CONFIG_HOME
+          bash "$RIG/inside-package.sh" user
+      - name: Install, check and uninstall the x64 archive (system-wide)
+        env:
+          RIG: ${{ github.workspace }}/BrAIn/scripts/linux
+          PKG: ${{ github.workspace }}/BrAIn/dist
+        run: sudo --preserve-env=RIG,PKG bash "$RIG/inside-package.sh" system
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-archives
+          path: BrAIn/dist/BrAIn-*-linux-*.tar.gz
+          retention-days: 7

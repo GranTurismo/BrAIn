@@ -5,14 +5,14 @@ using System.Text;
 namespace BrAIn.Browser.Import;
 
 /// <summary>
-/// Chromium-cookie decryption on macOS. Chrome-family browsers encrypt
+/// Chromium-cookie decryption on macOS (the Linux key handling is in <c>ChromeCrypto.Linux.cs</c>). Chrome-family browsers encrypt
 /// cookie values with AES-128-CBC; the key is PBKDF2-HMAC-SHA1 of the
 /// "&lt;Browser&gt; Safe Storage" Keychain password (salt "saltysalt",
 /// 1003 iterations). Encrypted blobs are "v10" + ciphertext, and the
 /// plaintext is prefixed with a 32-byte SHA256 of the host on modern builds.
 /// Reading the keychain may show a one-time macOS consent prompt.
 /// </summary>
-public static class ChromeCrypto
+public static partial class ChromeCrypto
 {
     private static readonly Dictionary<string, byte[]?> _keyCache = new();
 

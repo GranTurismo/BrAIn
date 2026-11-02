@@ -33,9 +33,12 @@ Nothing to do on the website. Publish a GitHub release with the installers attac
 Download section picks it up on the next page load:
 
 ```
-bash scripts/make-dist.sh 1.3.2     # build installers into BrAIn/dist/
+bash scripts/make-dist.sh 1.3.2     # build installers into BrAIn/dist/ (Windows, macOS and both Linux archives)
 gh release create v1.3.2 BrAIn/dist/BrAIn-1.3.2-* BrAIn/dist/BrAIn-Setup-1.3.2-x64.exe
 ```
+
+(`BrAIn-1.3.2-*` already matches the two Linux archives, `BrAIn-1.3.2-linux-x64.tar.gz` and
+`BrAIn-1.3.2-linux-arm64.tar.gz`; `scripts/make-linux-dist.sh` builds just those.)
 
 How the page maps assets to cards (by file name, see `downloads()` in `assets/app.js`):
 
@@ -43,10 +46,12 @@ How the page maps assets to cards (by file name, see `downloads()` in `assets/ap
 |---|---|
 | `*.dmg` | macOS (`x64`/`intel` in the name → Intel, otherwise Apple Silicon) |
 | `*.exe` | Windows x64 |
-| `*.tar.gz` | Linux x64 (experimental) |
+| `*-linux-x64.tar.gz` | Linux x64 |
+| `*-linux-arm64.tar.gz` | Linux arm64 (the card marked "your PC" follows the visitor's user agent: `aarch64` → arm64, else x64) |
 
 Version, size, download URL and SHA-256 come from the release itself (GitHub computes the
-`digest` for every uploaded asset). Keep those file-name patterns when adding platforms; a new
+`digest` for every uploaded asset). Keep those file-name patterns when adding platforms (the app's own updater picks
+`BrAIn-<ver>-linux-<x64|arm64>.tar.gz`, `*macOS*arm64*.dmg` and `BrAIn-Setup*.exe` the same way); a new
 kind of file needs one line in `KINDS` plus its install steps.
 
 The API is anonymous (60 requests/hour per visitor IP), so the page caches the answer for

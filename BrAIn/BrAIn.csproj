@@ -13,7 +13,7 @@
     <AssemblyName>BrAIn</AssemblyName>
     <!-- The updater compares this against the latest GitHub release tag — bump it
          together with scripts/make-dist.sh's version argument. -->
-    <Version>1.7.0</Version>
+    <Version>1.8.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <!-- macOS bundle settings are applied when publishing for osx-* RIDs -->
@@ -52,6 +52,8 @@
     <EmbeddedResource Include="Assets\chrome.js" LogicalName="BrAIn.Assets.chrome.js" />
     <EmbeddedResource Include="Assets\welcome.js" LogicalName="BrAIn.Assets.welcome.js" />
     <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- GTK cannot read the PNG-compressed .ico: the Linux window/taskbar icon is this PNG -->
+    <Content Include="Assets\icon.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

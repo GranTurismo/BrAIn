@@ -99,8 +99,11 @@
   function render() {
     var list = document.getElementById('list'), go = document.getElementById('go');
     if (!sources.length) {
+      var linux = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
       list.innerHTML = '<div class="empty">No other browsers with data found.<br>' +
-        'BrAIn looks in the standard Chrome, Edge, Brave, Arc, Vivaldi, Opera, Firefox and Safari profile folders.</div>';
+        'BrAIn looks in the standard ' + (linux
+          ? 'Chrome, Chromium, Edge, Brave, Vivaldi, Opera and Firefox profile folders (including Snap and Flatpak installs).'
+          : 'Chrome, Edge, Brave, Arc, Vivaldi, Opera, Firefox and Safari profile folders.') + '</div>';
       go.hidden = true;
       return;
     }
@@ -199,6 +202,7 @@
         el.innerHTML = r.err
           ? '<span class="bad">Failed: ' + esc(r.err) + '</span>'
           : 'Imported ' + esc(parts.join(' \u00b7 ') || 'nothing');
+        if (r.warn) el.innerHTML += '<div class="bnote">' + esc(r.warn) + '</div>';
       }
     }
   });

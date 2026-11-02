@@ -125,14 +125,14 @@ public sealed partial class BrowserController
         {
             if (PerTab)
             {
-                var boot = IsMac && tab.NativeView != IntPtr.Zero ? QcBootScript(tab) : null;
+                var boot = IsNative && tab.NativeView != IntPtr.Zero ? QcBootScript(tab) : null;
                 InvokeOnUi(() =>
                 {
                     if (tab.IsClosed) return;
                     if (boot is not null)
                     {
-                        Mac.WkTabs.SetQcScript(tab.NativeView, boot);
-                        Mac.WkTabs.SetDarkLook(tab.NativeView, page["dark"]);
+                        NativeShell.TabsSetQcScript(tab.NativeView, boot);
+                        NativeShell.TabsSetDarkLook(tab.NativeView, page["dark"]);
                     }
                     PushToView(tab, json);
                 });
@@ -166,7 +166,7 @@ public sealed partial class BrowserController
         if (tab.PopupsBlocked == 0) return false;
         // page messages arrive on the main thread, so the view can be asked directly
         var doc = tab.WinView is Win.WinTabs.View wv ? _winTabs?.Url(wv)
-            : IsMac && tab.NativeView != IntPtr.Zero ? Mac.MacWindow.GetWebViewUrl(tab.NativeView)
+            : IsNative && tab.NativeView != IntPtr.Zero ? NativeShell.Url(tab.NativeView)
             : tab.LastUrl;
         if (tab.PopupOpener == doc && Environment.TickCount64 - tab.PopupAt < 3000) return false;
         var had = tab.PopupsBlocked > 0;
