@@ -43,5 +43,15 @@ hdiutil detach /Volumes/BrAIn >/dev/null
 hdiutil convert "$RW.dmg.sparseimage" -format UDZO -imagekey zlib-level=9 -o "$DMG" >/dev/null
 rm -f "$RW.dmg.sparseimage"
 
+# The in-app updater installs an update only when it carries a signature made with the maintainer's key (Browser/UpdateTrust.cs).
+# Upload each .sig beside its file when creating the GitHub release; a release without them can only be installed by hand.
+echo "== sign the release files (updater trust)"
+if [ -r "${BRAIN_UPDATE_KEY:-$HOME/.brain-release/update-signing.pem}" ]; then
+  bash scripts/sign-release.sh "$VER" "dist/BrAIn-Setup-$VER-x64.exe" "$DMG" "dist/BrAIn-$VER-linux-x64.tar.gz" "dist/BrAIn-$VER-linux-arm64.tar.gz"
+else
+  echo "!! signing key not found (~/.brain-release/update-signing.pem): installed copies of BrAIn will REFUSE to update to this release."
+  echo "!! sign it with scripts/sign-release.sh $VER <files> before publishing."
+fi
+
 echo "== done"
-ls -lh dist/BrAIn-Setup-*.exe "$DMG" dist/BrAIn-"$VER"-linux-*.tar.gz
+ls -lh dist/BrAIn-Setup-*.exe "$DMG" dist/BrAIn-"$VER"-linux-*.tar.gz dist/*.sig 2>/dev/null

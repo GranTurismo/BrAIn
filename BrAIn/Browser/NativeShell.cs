@@ -128,6 +128,9 @@ internal static class NativeShell
 
     // ------------------------------------------------------------------ per-tab views (WkTabs / LinuxTabs)
 
+    /// <summary>The address the engine has committed in this view (null when it has none yet).</summary>
+    internal static string? TabsUrl(IntPtr view) => OnMac ? Mac.WkTabs.CurrentUrl(view) : Linux.LinuxTabs.CurrentUrl(view);
+
     internal static bool TabsHas(IntPtr view) => OnMac ? Mac.WkTabs.Has(view) : Linux.LinuxTabs.Has(view);
 
     internal static IntPtr TabsCreate(IntPtr win, Guid tab, string lib, bool priv, int zoom, bool ghostLogins)
@@ -156,6 +159,12 @@ internal static class NativeShell
     internal static void TabsSetZoomAll(int pct)
     {
         if (OnMac) Mac.WkTabs.SetZoomAll(pct); else Linux.LinuxTabs.SetZoomAll(pct);
+    }
+
+    /// <summary>DevTools opened (the recorder source) or closed (empty): see WkTabs.SetNetRecorder.</summary>
+    internal static void TabsSetNetRecorder(string js)
+    {
+        if (OnMac) Mac.WkTabs.SetNetRecorder(js); else Linux.LinuxTabs.SetNetRecorder(js);
     }
 
     internal static void TabsSetQcScript(IntPtr view, string js)

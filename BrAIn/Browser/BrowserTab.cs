@@ -28,6 +28,9 @@ public sealed class BrowserTab
     /// Zero until the view is created; zero again once the tab is closed.</summary>
     public IntPtr NativeView { get; set; }
 
+    /// <summary>DevTools network recorder: the newest document of this tab it has reported (older ones are history).</summary>
+    public string? NetDoc { get; set; }
+
     /// <summary>Windows per-tab mode: this tab's own WebView2 view (Browser/Win/WinTabs.cs).
     /// Null until created, and again after the view is evicted to save memory.</summary>
     public object? WinView { get; set; }

@@ -23,7 +23,7 @@ internal static unsafe partial class LinuxTabs
         public Guid Tab;
         public bool Private;
         public bool Ghost;   // private view on the seeded ghost store ("Keep my cookies & logins")
-        public string Lib = "", Qc = "";
+        public string Lib = "", Qc = "", Token = ""; // Token: this view's secret, see ViewAuth
         public bool Dark;        // the "dark pages" quick control
         public bool? Emulated;   // a scheme forced by browser_emulate (true dark, false light); wins over Dark
     }
@@ -39,6 +39,9 @@ internal static unsafe partial class LinuxTabs
 
     /// <summary>The view currently shown.</summary>
     internal static IntPtr Active { get; private set; }
+
+    /// <summary>webkit_web_view_get_uri — what the engine has committed, not what the host last asked for.</summary>
+    internal static string? CurrentUrl(IntPtr view) => view == IntPtr.Zero ? null : GLib.Str(WebKit.webkit_web_view_get_uri(view));
 
     internal static bool Has(IntPtr view) => view != IntPtr.Zero && _views.ContainsKey(view);
 
@@ -57,9 +60,15 @@ internal static unsafe partial class LinuxTabs
     {
         if (win == IntPtr.Zero || LinuxWindow.Pages == IntPtr.Zero) return IntPtr.Zero;
 
-        var ucm = LinuxEngine.NewContentManager(s => OnMessage?.Invoke(tab, s));
-        LinuxEngine.AddScript(ucm, Mac.WkTabs.Shim);
+        var token = ViewAuth.NewToken();
+        var ucm = LinuxEngine.NewContentManager(s =>
+        {
+            var ok = ViewAuth.Accept(token, s); // a page's own script cannot produce the token: its messages stop here
+            if (ok is not null) OnMessage?.Invoke(tab, ok);
+        });
+        LinuxEngine.AddScript(ucm, Mac.WkTabs.ShimFor(token));
         LinuxEngine.AddScript(ucm, libSource);
+        if (_netRec.Length > 0) LinuxEngine.AddScript(ucm, _netRec); // DevTools is open: this tab records its requests from the first one
 
         // Ghost tabs that keep the user's cookies share the seeded ephemeral store (LinuxTabs.Ghost.cs).
         // If it is gone (its last tab just closed), they fall back to the clean private store below.
@@ -91,7 +100,7 @@ internal static unsafe partial class LinuxTabs
         Gtk.gtk_stack_add_named(LinuxWindow.Pages, view, tab.ToString("N"));
         Gtk.gtk_widget_show(view);
 
-        _views[view] = new ViewInfo { View = view, Ucm = ucm, Tab = tab, Private = priv, Ghost = ghost, Lib = libSource };
+        _views[view] = new ViewInfo { View = view, Ucm = ucm, Tab = tab, Private = priv, Ghost = ghost, Lib = libSource, Token = token };
         ConnectSignals(view);
         return view;
     }
@@ -103,10 +112,28 @@ internal static unsafe partial class LinuxTabs
     {
         if (!_views.TryGetValue(view, out var info) || info.Qc == js) return;
         info.Qc = js;
+        ApplyScripts(info);
+    }
+
+    /// <summary>The view's document-start scripts, in order: quick-control values, the shim, the page library and — only while
+    /// DevTools is open — the network recorder.</summary>
+    private static void ApplyScripts(ViewInfo info)
+    {
         WebKit.webkit_user_content_manager_remove_all_scripts(info.Ucm);
-        if (js.Length > 0) LinuxEngine.AddScript(info.Ucm, js); // first, so chrome.js finds it
-        LinuxEngine.AddScript(info.Ucm, Mac.WkTabs.Shim);
+        if (info.Qc.Length > 0) LinuxEngine.AddScript(info.Ucm, info.Qc);
+        LinuxEngine.AddScript(info.Ucm, Mac.WkTabs.ShimFor(info.Token));
         LinuxEngine.AddScript(info.Ucm, info.Lib);
+        if (_netRec.Length > 0) LinuxEngine.AddScript(info.Ucm, _netRec);
+    }
+
+    private static string _netRec = "";
+
+    /// <summary>DevTools opened / closed: see WkTabs.SetNetRecorder.</summary>
+    internal static void SetNetRecorder(string js)
+    {
+        if (_netRec == js) return;
+        _netRec = js;
+        foreach (var info in _views.Values) ApplyScripts(info);
     }
 
     /// <summary>Dark pages: the view reports a dark system appearance, so sites with a dark theme of their own
@@ -142,6 +169,7 @@ internal static unsafe partial class LinuxTabs
             LinuxEngine.ReleaseContentManager(info.Ucm);
             if (Active == view) Active = IntPtr.Zero;
             Gtk.gtk_widget_destroy(view); // removes it from the stack and drops the last reference
+            LinuxFullscreen.ViewDestroyed(view); // it may have been fullscreen: the chrome must come back
         }
         catch { }
         if (info.Private && !info.Ghost && _privCtx != IntPtr.Zero && !_views.Values.Any(v => v.Private && !v.Ghost))

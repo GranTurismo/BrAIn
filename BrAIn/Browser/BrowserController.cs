@@ -284,6 +284,52 @@ public sealed partial class BrowserController : IAsyncDisposable
         catch (Exception ex) { Log("page fullscreen failed: " + ex.Message); }
     }
 
+    // ------------------------------------------------------------------
+    // A page that is fullscreen (the Fullscreen API: a player's button) must leave it BEFORE its tab is closed or hidden.
+    // macOS: WebKit moves the page's view into a screen-sized window of its own and takes the browser window off screen; tearing the
+    // view down in that state means the exit never completes — the browser window never comes back (a black screen) and the video
+    // keeps playing in the process nobody can reach any more. Windows / Linux: a view that goes away never reports leaving
+    // fullscreen, so the window stayed fullscreen / the toolbar stayed hidden.
+    // ------------------------------------------------------------------
+    private const string ExitFsJs = "(function(){try{var d=document,f=d.exitFullscreen||d.webkitExitFullscreen||d.webkitCancelFullScreen;if(f){var p=f.call(d);if(p&&p.catch)p.catch(function(){})}}catch(e){}return true})()";
+    private const string InFsJs = "!!(document.fullscreenElement||document.webkitFullscreenElement||document.webkitCurrentFullScreenElement)";
+
+    /// <summary>True while this tab's page is fullscreen or still entering / leaving it.</summary>
+    private async Task<bool> PageIsFullscreenAsync(BrowserTab tab)
+    {
+        try
+        {
+            if (IsWindows) return _pageFsTab == tab.Id;
+            if (IsLinux) return Linux.LinuxFullscreen.Active && tab.Id == Tabs.ActiveExact?.Id;
+            if (IsMac && tab.NativeView != IntPtr.Zero)
+            {
+                var v = tab.NativeView;
+                var st = InvokeOnUi(() => Mac.WkTabs.FullscreenState(v));
+                if (st >= 0) return st != 0;
+                // macOS before 12 cannot say: ask the page
+                using var cts = new CancellationTokenSource(600);
+                var r = await EvaluateAsync(InFsJs, false, tab, cts.Token);
+                return r is { ValueKind: JsonValueKind.True };
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>Takes the tab's page out of fullscreen and waits (up to ~2 s) until that has finished. Cheap when it is not fullscreen.</summary>
+    private async Task ExitPageFullscreenAsync(BrowserTab tab)
+    {
+        if (!await PageIsFullscreenAsync(tab)) return;
+        Log("a tab whose page is fullscreen is going away: leaving fullscreen first");
+        try
+        {
+            using var cts = new CancellationTokenSource(1500);
+            await EvaluateAsync(ExitFsJs, false, tab, cts.Token);
+        }
+        catch { }
+        for (var i = 0; i < 50 && await PageIsFullscreenAsync(tab); i++) await Task.Delay(40);
+    }
+
     /// <summary>Per-tab mute: macOS drivers mute their WKWebView; on Windows the tab's WebView2 view does.</summary>
     private void ApplyTabMute(BrowserTab t)
     {
@@ -321,8 +367,10 @@ public sealed partial class BrowserController : IAsyncDisposable
 
     /// <summary>JS the document-start user script and post-load fallback
     /// inject — brain.js alone for chromeless windows, both libs otherwise.</summary>
-    internal string PageLibSource => _noToolbar ? Assets.BrainJs
-        : SplitOn ? "window.__BRAIN_SPLIT=true;\n" + Assets.CombinedLib : Assets.CombinedLib;
+    internal string PageLibSource => (_noToolbar ? Assets.BrainJs
+        : SplitOn ? "window.__BRAIN_SPLIT=true;\n" + Assets.CombinedLib : Assets.CombinedLib)
+        // brain.js and chrome.js take their private send/receive handle from window.__brainCap while they run; it must be gone before any page script does
+        + "\ntry{delete window.__brainCap}catch(e){}\n";
     private bool _winMax;
 
     public BrowserController(string[] args)
@@ -669,6 +717,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                     // Window resizes re-lay out the titlebar; re-pin the
                     // traffic lights to the toolbar's vertical center.
                     Mac.MacWindow.CenterTrafficLights(nsWin, 23);
+                    UpdateMacFullscreen(nsWin); // fullscreen has no traffic lights: the toolbar shows the memory readout there
                 }
             });
         }
@@ -1235,7 +1284,19 @@ public sealed partial class BrowserController : IAsyncDisposable
     {
         if (tab.WinView is Win.WinTabs.View wv) { _winTabs?.Push(wv, json); return; }
         var view = tab.NativeView;
-        if (view != IntPtr.Zero && NativeShell.TabsHas(view)) NativeShell.TabsPush(view, json);
+        if (view == IntPtr.Zero || !NativeShell.TabsHas(view)) return;
+        // A web page can watch whatever is pushed into its view (see PageFeed): it only gets what a page has business with.
+        // The address is the engine's own, so a page that has just loaded can never still count as one of BrAIn's pages.
+        // (Only in split mode: without a toolbar view of its own the page-side script IS the toolbar and needs the whole state.)
+        var url = NativeShell.TabsUrl(view);
+        if (string.IsNullOrEmpty(url) || url == "about:blank") url = tab.LastUrl;
+        if (SplitOn && !MessageTrust.IsInternalUrl(url))
+        {
+            var safe = PageFeed.ForWebPage(json, tab);
+            if (safe is null) return;
+            json = safe;
+        }
+        NativeShell.TabsPush(view, json);
     }
 
     private async Task LoadHtmlWinAsync(BrowserTab tab, string html)
@@ -1320,6 +1381,8 @@ public sealed partial class BrowserController : IAsyncDisposable
         tab.NativeView = IntPtr.Zero;
         tab.WinView = null;
         _viewTasks.TryRemove(tab.Id, out _);
+        // a view that goes away while fullscreen never reports leaving it (the exit above may also have timed out): undo what entering did
+        if (_pageFsTab == tab.Id) PageFullScreen(tab.Id, false);
         try { if (drv is not null) await drv.DisposeAsync(); } catch { }
         if (winView is Win.WinTabs.View wv)
             try { _winTabs?.Destroy(wv); } catch { }
@@ -1364,6 +1427,11 @@ public sealed partial class BrowserController : IAsyncDisposable
         driver.ConsoleMessage += (_, e) => Enqueue(_console, e);
         driver.NetworkEvent += (_, e) =>
         {
+            if (e.X is not null) // from the WebKit recorder: belongs to this tab; a navigation starts a new document
+            {
+                e = e with { X = e.X with { Tab = tab.Id.ToString("N")[..8] } };
+                tab.NetDoc = e.X.Doc;
+            }
             _network.AddOrUpdate(e.RequestId, e, (rid, old) => MergeNetwork(old, e));
             // trim oldest when the map grows past the cap
             if (_network.Count > LogCap * 2)
@@ -1695,13 +1763,16 @@ public sealed partial class BrowserController : IAsyncDisposable
             RequestHeaders = next.RequestHeaders ?? old.RequestHeaders,
             ResponseHeaders = next.ResponseHeaders ?? old.ResponseHeaders,
             PostData = next.PostData ?? old.PostData,
+            X = NetRecord.MergeExtra(old.X, next.X),
+            // the recorder knows the true method; the CDP feed's later phases never carry one
+            Method = next.X is not null && next.Method.Length > 0 ? next.Method : old.Method,
         };
 
     public IReadOnlyList<ConsoleEntry> ConsoleLog => _console.ToArray();
     public IReadOnlyList<NetworkEntry> NetworkLog =>
         _network.Values.OrderBy(n => n.Time).ToArray();
     public void ClearConsoleLog() => _console.Clear();
-    public void ClearNetworkLog() => _network.Clear();
+    public void ClearNetworkLog() { _network.Clear(); ClearNetRecorder(); }
 
     // ---------------- tabs / windows ----------------
 
@@ -1800,6 +1871,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             if (Tabs.ActiveExact?.Id != tab.Id)
             {
                 var prev = Tabs.ActiveExact;
+                if (prev is not null) await ExitPageFullscreenAsync(prev); // hiding a fullscreen page would leave a black screen
                 var swSw = System.Diagnostics.Stopwatch.StartNew();
                 Tabs.Activate(tab.Id);
                 await EnsureTabViewAsync(tab);
@@ -1857,6 +1929,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     {
         var tab = Tabs.FindByPrefix(idOrPrefix) ?? throw new InvalidOperationException($"No such tab '{idOrPrefix}'");
         if (tab.IsPinned) return false; // pinned tabs resist close — unpin first
+        await ExitPageFullscreenAsync(tab); // a fullscreen page leaves fullscreen first (see PageIsFullscreenAsync)
         var wasActive = Tabs.Active?.Id == tab.Id;
         var idx = Tabs.IndexOf(tab.Id);
         if (PerTab) return await ClosePerTabAsync(tab, wasActive, idx, ct);
@@ -2535,7 +2608,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "pwdel": await PwDeleteAsync(tab, arg); break;
                         case "dtget": await PushDevTools(tab); break;
                         case "dtclearc": _console.Clear(); break;
-                        case "dtclearn": _network.Clear(); break;
+                        case "dtclearn": _network.Clear(); ClearNetRecorder(); break;
                         case "dteval": await DevToolsEvalAsync(active, arg); break;
                         case "dtnet": PushNetDetail(tab, arg); break;
                         case "dtsend": await DevToolsSendAsync(active, arg); break;
@@ -2544,12 +2617,19 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "dtcset": await DtCookieSetAsync(tab, arg); break;
                         case "dtsessions": PushDtSessions(tab); break;
                         case "dtstate":
+                        {
+                            var was = _dtOpen;
                             _dtOpen = arg.Length > 0;
                             if (arg.Length > 0) _dtTab = arg;
+                            if (_dtOpen != was) UpdateNetRecorder();
                             break;
+                        }
+                        case "dtpreserve": _dtPreserve = arg == "1"; await PushDevTools(tab); break;
+                        case "dthar": await ExportHarAsync(tab); break;
                         case "agtoggle": SetAgentPaused(!_agPaused); break;
                         case "askok": Belt.Answer(arg); break;
                         case "beltmode": Belt.SetMode(arg); break;
+                        case "uploadreset": Belt.ResetUploadScope(); break;
                         case "beltget": PushBelt(); PushHandoff(); break;
                         case "handoff": Handoff.Answer(arg); break;
                         case "recstart": await RecStartAsync(active); break;
@@ -2741,6 +2821,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             // (FullSizeContentView + transparent titlebar) — the bar pads for
             // them and empty bar space starts a native window drag.
             mtl = IsMac && !_noToolbar,
+            fs = IsMac && _macFs, // macOS fullscreen: the traffic-light inset is empty — the toolbar fills it with the memory readout
             // mute/audio handled natively by the engine; otherwise chrome.js
             // enforces and detects it inside the page
             nat = IsNative || WinPerTab,
@@ -3879,6 +3960,33 @@ public sealed partial class BrowserController : IAsyncDisposable
     // evals through the driver (CSP-safe unlike page-side eval()).
     // ------------------------------------------------------------------
 
+    // ---- network recorder (WebKit): on while DevTools is open, see Assets/netrec.js
+    private bool _netRecOn, _dtPreserve;
+
+    /// <summary>DevTools opened or closed. Open: every tab view records from its first request (a document-start script), the
+    /// page already showing gets it on the panel's first poll. Closed: new documents no longer get it, and the ones that have
+    /// it stop recording. Costs nothing while DevTools is closed.</summary>
+    private void SetNetRecorder(bool on)
+    {
+        if (!NativeTabs || _netRecOn == on) return;
+        _netRecOn = on;
+        try { InvokeOnUi(() => NativeShell.TabsSetNetRecorder(on ? Assets.NetRecJs : "")); } catch { }
+        if (!on) EvalInAllTabs("window.__brainNet&&window.__brainNet.stop()");
+    }
+
+    private void ClearNetRecorder() => EvalInAllTabs("window.__brainNet&&window.__brainNet.clear()");
+
+    private void EvalInAllTabs(string js)
+    {
+        foreach (var t in Tabs.All.Where(t => !t.IsClosed && t.Driver is Drivers.WebKitDriver).ToList())
+            try { _ = t.Driver!.EvaluateAsync(js, false, CancellationToken.None).ContinueWith(_ => { }, TaskScheduler.Default); } catch { }
+    }
+
+    /// <summary>Recorder entries belong to one tab and one document of it: the panel shows the newest document's requests
+    /// unless "Preserve log" is on. Entries without a recorder (the Windows CDP feed) are shown as they always were.</summary>
+    private bool NetVisible(NetworkEntry n, string tabId, string? doc)
+        => n.X is null || (n.X.Tab == tabId && (_dtPreserve || doc is null || n.X.Doc == doc));
+
     private async Task PushDevTools(BrowserTab tab)
     {
         if (_noToolbar || tab.IsClosed || !_driverReady.Task.IsCompleted) return;
@@ -3910,11 +4018,15 @@ public sealed partial class BrowserController : IAsyncDisposable
             x = c.Text.Length > 2000 ? c.Text[..2000] : c.Text,
             u = c.Url,
         }).ToArray();
-        var net = _network.Values.OrderBy(n => n.Time).TakeLast(300).Select(n => (object)new
+        var shown = DocTab ?? tab;
+        var shownId = shown.Id.ToString("N")[..8];
+        var net = _network.Values.Where(n => NetVisible(n, shownId, shown.NetDoc)).OrderBy(n => n.Time).TakeLast(300).Select(n => (object)new
         {
             id = n.RequestId,
             m = n.Method, u = n.Url.Length > 400 ? n.Url[..400] : n.Url,
             st = n.Status, ty = n.ResourceType, sz = n.BytesReceived, er = n.Error,
+            // recorder only: when it began (ms after the document), how long it took, whether it has finished
+            s = n.X?.StartMs, ms = n.X?.DurationMs, dn = n.X?.Done,
         }).ToArray();
         var json = JsonSerializer.Serialize(new { b = 10, con, net });
         try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
@@ -3951,6 +4063,15 @@ public sealed partial class BrowserController : IAsyncDisposable
             m = n.Method, u = n.Url, st = n.Status, ty = n.ResourceType,
             sz = n.BytesReceived, er = n.Error, t = n.Time.ToString("HH:mm:ss"),
             rq = n.RequestHeaders, rs = n.ResponseHeaders, pd = n.PostData,
+            x = n.X is null ? null : new
+            {
+                k = n.X.Kind, s = n.X.StartMs, ms = n.X.DurationMs, stt = n.X.StatusText, ct = n.X.Mime, pr = n.X.Protocol,
+                dsz = n.X.DecodedBytes, dn = n.X.Done, red = n.X.Redirected, fu = n.X.FinalUrl,
+                tm = n.X.Timing is { } tt ? new { q = tt.Queue, dns = tt.Dns, con = tt.Connect, tls = tt.Tls, wait = tt.Wait, rcv = tt.Receive } : null,
+                body = n.X.ResponseBody, bt = n.X.BodyTruncated, bl = n.X.BodyLength, bx = n.X.BodyDropped,
+                nf = n.X.FrameCount, cl = n.X.CloseInfo,
+                fr = n.X.Frames?.Select(f => new { d = f.Dir, t = f.AtMs, n = f.Size, x = f.Text }).ToArray(),
+            },
         });
         try { InvokeOnUi(() => { if (!tab.IsClosed) SendUi(tab, json); }); }
         catch { }
@@ -3959,11 +4080,55 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// <summary>Edit-and-resend: replay an arbitrary request host-side. The
     /// browser profile's cookies for the target domain are merged in, but the
     /// request bypasses page CSP/CORS like a real API client (b:13).</summary>
-    private static readonly HttpClient _dtHttp = new(new HttpClientHandler
+    private static readonly HttpRequestOptionsKey<bool> AllowPrivateKey = new("brain-allow-private");
+
+    private static readonly HttpClient _dtHttp = new(new SocketsHttpHandler
     {
         AllowAutoRedirect = true,
         AutomaticDecompression = System.Net.DecompressionMethods.All,
+        // Checked on every connection (redirects included), against the address actually used: a public name that resolves to loopback or the
+        // LAN (DNS rebinding) is refused unless the request was explicitly allowed to go there (the page being inspected IS local).
+        ConnectCallback = async (ctx, ct) =>
+        {
+            var allow = ctx.InitialRequestMessage.Options.TryGetValue(AllowPrivateKey, out var a) && a;
+            var addrs = await System.Net.Dns.GetHostAddressesAsync(ctx.DnsEndPoint.Host, ct);
+            var ok = addrs.Where(ip => allow || !IsPrivateAddress(ip)).ToArray();
+            if (ok.Length == 0) throw new HttpRequestException("blocked: that address is on this machine or its local network");
+            var sock = new System.Net.Sockets.Socket(System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp) { NoDelay = true };
+            try { await sock.ConnectAsync(ok, ctx.DnsEndPoint.Port, ct); return new System.Net.Sockets.NetworkStream(sock, ownsSocket: true); }
+            catch { sock.Dispose(); throw; }
+        },
     });
+
+    /// <summary>Loopback, private (RFC 1918 / ULA), link-local (cloud metadata lives at 169.254.169.254), CGNAT and unspecified addresses.</summary>
+    private static bool IsPrivateAddress(System.Net.IPAddress ip)
+    {
+        if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+        if (System.Net.IPAddress.IsLoopback(ip) || ip.Equals(System.Net.IPAddress.Any) || ip.Equals(System.Net.IPAddress.IPv6Any)) return true;
+        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            return ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6UniqueLocal;
+        var b = ip.GetAddressBytes();
+        return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168) || (b[0] == 169 && b[1] == 254) ||
+               (b[0] == 100 && b[1] >= 64 && b[1] <= 127) || b[0] == 0;
+    }
+
+    private static bool IsPrivateName(string? host)
+    {
+        if (string.IsNullOrEmpty(host)) return false;
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase) || host.EndsWith(".local", StringComparison.OrdinalIgnoreCase)) return true;
+        return System.Net.IPAddress.TryParse(host.Trim('[', ']'), out var ip) && IsPrivateAddress(ip);
+    }
+
+    /// <summary>Edit-and-resend is for the page being inspected: its own site, over http(s). Anything else would let a page's own copy of the
+    /// panel (it runs in the page's world) make the host fetch arbitrary URLs and read the answers.</summary>
+    private static string? SendRefusal(Uri target, string? pageUrl)
+    {
+        if (target.Scheme is not ("http" or "https")) return "Only http and https requests can be resent.";
+        var pageHost = HostOf(pageUrl);
+        if (string.IsNullOrEmpty(pageHost) || !string.Equals(Mcp.ApiSite.KeyOf(target.Host), Mcp.ApiSite.KeyOf(pageHost), StringComparison.OrdinalIgnoreCase))
+            return "Edit and resend only works on the site of the page you are inspecting (" + (pageHost ?? "?") + "), not " + target.Host + ".";
+        return null;
+    }
 
     private async Task DevToolsSendAsync(BrowserTab tab, string arg)
     {
@@ -3975,7 +4140,12 @@ public sealed partial class BrowserController : IAsyncDisposable
             var r = doc.RootElement;
             var method = r.TryGetProperty("m", out var m) ? m.GetString() ?? "GET" : "GET";
             var url = r.GetProperty("u").GetString()!;
+            var target = new Uri(url);
+            var refused = SendRefusal(target, DocTab?.LastUrl ?? tab.LastUrl);
+            if (refused is not null) throw new InvalidOperationException(refused);
             using var req = new HttpRequestMessage(new HttpMethod(method), url);
+            // inspecting a page on this machine / local network: its own site is where the request is meant to go
+            req.Options.Set(AllowPrivateKey, IsPrivateName(HostOf(DocTab?.LastUrl ?? tab.LastUrl)));
 
             Dictionary<string, string>? headers = null;
             if (r.TryGetProperty("h", out var h) && h.ValueKind == JsonValueKind.Object)
@@ -4048,7 +4218,21 @@ public sealed partial class BrowserController : IAsyncDisposable
         catch { }
     }
 
-    /// <summary>All profile cookies for the DevTools Cookies pane (b:14).
+    /// <summary>A cookie with this Domain attribute is sent to <paramref name="host"/> (no Domain = document.cookie's own site).</summary>
+    internal static bool CookieBelongsTo(string? domain, string? host)
+    {
+        if (string.IsNullOrEmpty(host)) return false;
+        if (string.IsNullOrEmpty(domain)) return true;
+        var d = domain.TrimStart('.');
+        return host.Equals(d, StringComparison.OrdinalIgnoreCase) || host.EndsWith("." + d, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? HostOf(string? url)
+    {
+        try { return Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : null; } catch { return null; }
+    }
+
+    /// <summary>All of THIS site's cookies for the DevTools Cookies pane (b:14).
     /// The pane filters by the active document's host client-side.</summary>
     private async Task PushDtCookiesAsync(BrowserTab tab)
     {
@@ -4060,17 +4244,21 @@ public sealed partial class BrowserController : IAsyncDisposable
             var cookies = await driver.GetCookiesAsync(CancellationToken.None);
             string? host = null;
             try { host = new Uri(DocTab?.LastUrl ?? tab.LastUrl ?? "").Host; } catch { }
+            // The pane runs inside the page it inspects (the same JavaScript world), so it gets that site's cookies only — the CDP feed
+            // used to hand it the whole profile — and a web page's copy never sees HttpOnly values (HttpOnly exists to keep them from
+            // page scripts). BrAIn's own pages are trusted.
+            var web = !MessageTrust.IsInternalUrl(DocTab?.LastUrl ?? tab.LastUrl);
             json = JsonSerializer.Serialize(new
             {
                 b = 14,
                 host,
-                ck = cookies.OrderBy(c => c.Domain).ThenBy(c => c.Name).Select(c => new
+                ck = cookies.Where(c => CookieBelongsTo(c.Domain, host)).OrderBy(c => c.Domain).ThenBy(c => c.Name).Select(c => new
                 {
                     // document.cookie (macOS) carries no domain — these are
                     // by definition the current site's cookies; attribute the
                     // host so the pane's site filter and editor see them.
-                    n = c.Name, v = c.Value, d = c.Domain ?? host, p = c.Path,
-                    e = c.Expires, h = c.HttpOnly, s = c.Secure,
+                    n = c.Name, v = c.HttpOnly && web ? "" : c.Value, d = c.Domain ?? host, p = c.Path,
+                    e = c.Expires, h = c.HttpOnly, s = c.Secure, hid = c.HttpOnly && web,
                 }),
             });
         }
@@ -4093,6 +4281,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             var dom = r.TryGetProperty("d", out var d) ? d.GetString() : null;
             var path = r.TryGetProperty("p", out var p) ? p.GetString() : null;
             var secure = r.TryGetProperty("s", out var s) && s.GetBoolean();
+            if (!CookieBelongsTo(dom, HostOf(DocTab?.LastUrl ?? tab.LastUrl))) return; // the pane edits the inspected site's cookies, nobody else's
             var driver = await DriverOrThrowAsync(tab, CancellationToken.None);
             var url = dom is { Length: > 0 }
                 ? (secure ? "https://" : "http://") + dom.TrimStart('.') + (path ?? "/")
@@ -4110,6 +4299,8 @@ public sealed partial class BrowserController : IAsyncDisposable
         {
             using var doc = JsonDocument.Parse(arg);
             var r = doc.RootElement;
+            var cdom = r.TryGetProperty("d", out var cd) ? cd.GetString() : null;
+            if (!CookieBelongsTo(cdom, HostOf(DocTab?.LastUrl ?? tab.LastUrl))) return; // the pane edits the inspected site's cookies, nobody else's
             var driver = await DriverOrThrowAsync(tab, CancellationToken.None);
             await driver.SetCookieAsync(new CookieInfo(
                 r.GetProperty("n").GetString()!,
@@ -5262,6 +5453,7 @@ internal static class Assets
     private static readonly Lazy<string> _brainJs = new(() => Load("BrAIn.Assets.brain.js"));
     private static readonly Lazy<string> _chromeJs = new(() => Load("BrAIn.Assets.chrome.js"));
     private static readonly Lazy<string> _welcomeJs = new(() => Load("BrAIn.Assets.welcome.js"));
+    private static readonly Lazy<string> _netRecJs = new(() => Load("BrAIn.Assets.netrec.js"));
     private static readonly Lazy<string> _theme = new(() => Load("BrAIn.Assets.theme.css"));
     // Internal pages share one stylesheet, inlined where they say /*@THEME*/.
     private static string Themed(string name) => Load(name).Replace("/*@THEME*/", _theme.Value);
@@ -5281,6 +5473,8 @@ internal static class Assets
     public static string BrainJs => _brainJs.Value;
     public static string ChromeJs => _chromeJs.Value;
     public static string WelcomeJs => _welcomeJs.Value;
+    /// <summary>The network recorder (netrec.js): loaded only while DevTools is open.</summary>
+    public static string NetRecJs => _netRecJs.Value;
     public static string CombinedLib => _combinedLib.Value;
 
     public static string NewTabHtml => _newTab.Value;

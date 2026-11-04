@@ -64,8 +64,12 @@ class MCP:
                     self.cv.notify_all()
 
     def _send(self, m):
-        self.p.stdin.write((json.dumps(m) + '\n').encode())
-        self.p.stdin.flush()
+        try:
+            self.p.stdin.write((json.dumps(m) + '\n').encode())
+            self.p.stdin.flush()
+        except BrokenPipeError:
+            time.sleep(0.3)
+            raise RuntimeError(f'the app is gone (exit status {self.p.poll()}) — it died before or while being sent {m.get("method")}') from None
 
     def notify(self, method, params=None):
         self._send({'jsonrpc': '2.0', 'method': method, **({'params': params} if params else {})})
@@ -121,6 +125,27 @@ class MCP:
             self.p.wait(wait)
         except Exception:
             self.p.kill()
+
+
+def belt_strict():
+    """Switches ON the extra agent questions (uploads, clipboard, cookies, file: addresses, every acting script) for this run: the app
+    reads belt.json at start. Off by default, so every other test also checks that ordinary agent work is never interrupted."""
+    d = os.path.expanduser('~/.local/share/BrAIn')
+    os.makedirs(d, exist_ok=True)
+    open(d + '/belt.json', 'w').write('{"mode":"ask","strict":true}')
+
+
+def belt_uploads_anywhere():
+    """Answers the one-time "where may agents upload from?" question in advance (the app reads belt.json at start), for tests that
+    upload as part of something else. Test 25 covers the question itself."""
+    d = os.path.expanduser('~/.local/share/BrAIn')
+    os.makedirs(d, exist_ok=True)
+    open(d + '/belt.json', 'w').write('{"mode":"ask","strict":false,"uploads":"anywhere"}')
+
+
+def belt_default():
+    try: os.unlink(os.path.expanduser('~/.local/share/BrAIn/belt.json'))
+    except OSError: pass
 
 
 def start_site():

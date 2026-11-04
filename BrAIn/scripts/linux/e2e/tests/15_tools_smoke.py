@@ -4,6 +4,7 @@ import tempfile
 from mcp import *
 
 start_site()
+belt_uploads_anywhere()   # the first upload would ask where agents may upload from; test 25 covers that question
 c = MCP(['--no-fullscreen'])
 time.sleep(4)
 
@@ -56,9 +57,11 @@ check('network_requests lists the page\'s requests', 'two.html' in ok('network_r
 check('history lists visited pages', 'logs' in ok('history', action='list', limit=5))
 check('bookmark add', 'bookmarked' in ok('bookmark', action='add'))
 check('bookmark list', 'logs' in ok('bookmark', action='list', limit=3))
-out = tempfile.mktemp(suffix='.html')
-ok('save_page', outputPath=out, overwrite=True)
-check('save_page writes the file', os.path.exists(out) and os.path.getsize(out) > 100, out)
+outside = tempfile.mktemp(suffix='.html')
+check('save_page refuses to write outside Downloads', c.call('save_page', outputPath=outside, overwrite=True).startswith('ERROR') and not os.path.exists(outside), outside)
+out = os.path.expanduser('~/Downloads/smoke-page.html')
+ok('save_page', outputPath='smoke-page.html', overwrite=True)
+check('save_page writes the file (in Downloads)', os.path.exists(out) and os.path.getsize(out) > 100, out)
 
 c.call('navigate', url=SITE + '/upload.html')
 time.sleep(1.0)

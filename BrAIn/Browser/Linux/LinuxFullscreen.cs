@@ -13,6 +13,7 @@ internal static unsafe class LinuxFullscreen
 {
     private static bool _active;
     private static bool _appWasFullscreen;
+    private static IntPtr _view;
 
     internal static bool Active => _active;
 
@@ -29,6 +30,7 @@ internal static unsafe class LinuxFullscreen
         {
             var win = LinuxWindow.Window;
             _appWasFullscreen = LinuxWindow.IsFullScreen(win);
+            _view = view;
             _active = true;
             LinuxWindow.SetChromeHidden(true);
         }
@@ -39,16 +41,26 @@ internal static unsafe class LinuxFullscreen
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
     private static int OnLeave(IntPtr view, IntPtr data)
     {
-        try
-        {
-            var win = LinuxWindow.Window;
-            _active = false;
-            LinuxWindow.SetChromeHidden(false);
-            LinuxBar.Layout(win);
-            // WebKit unfullscreens the window right after this handler; put the app back the way it was
-            if (_appWasFullscreen) GLib.RunOnMainLoop(() => GLib.Every(80, () => { LinuxWindow.SetFullScreen(win, true); return false; }));
-        }
-        catch { }
+        try { Leave(); } catch { }
         return 0;
+    }
+
+    private static void Leave()
+    {
+        var win = LinuxWindow.Window;
+        _active = false;
+        _view = IntPtr.Zero;
+        LinuxWindow.SetChromeHidden(false);
+        LinuxBar.Layout(win);
+        // WebKit unfullscreens the window right after this handler; put the app back the way it was
+        if (_appWasFullscreen) GLib.RunOnMainLoop(() => GLib.Every(80, () => { LinuxWindow.SetFullScreen(win, true); return false; }));
+    }
+
+    /// <summary>The fullscreen page's view was destroyed (its tab closed). A view that goes away this way may never emit
+    /// "leave-fullscreen", which would leave the toolbar hidden for good: undo what entering did.</summary>
+    internal static void ViewDestroyed(IntPtr view)
+    {
+        if (!_active || view != _view) return;
+        try { Leave(); } catch { }
     }
 }

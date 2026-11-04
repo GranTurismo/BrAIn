@@ -18,6 +18,11 @@ public sealed class WebKitDriver : DriverBase
     private bool _loading, _sawLoad;
     private DateTime _loadStartAt;
     private int _evalCounter;
+
+    /// <summary>The id of a script the host evaluates: the page can post a reply too ({"b":1,...} is the one message a page may send), so it must
+    /// not be able to guess the id of an eval that is about to run and answer it first (think: the one that asks the page for its own origin).</summary>
+    private string NewEvalId(string prefix)
+        => prefix + Interlocked.Increment(ref _evalCounter) + "-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8));
     // Per-tab mode: this driver owns exactly one tab's own WKWebView (Tab.NativeView).
     private bool _prebound;
     private bool _everLoaded;
@@ -140,7 +145,7 @@ public sealed class WebKitDriver : DriverBase
                 {
                     using var probeCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
                     using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, probeCts.Token);
-                    var probeId = "init" + Interlocked.Increment(ref _evalCounter);
+                    var probeId = NewEvalId("init");
                     var res = await EvalOnWebViewAsync(_webview, probeId, linked.Token, TimeSpan.FromMilliseconds(150),
                         BuildEnvelope(probeId, "document.readyState === 'complete' || document.readyState === 'interactive'", false));
                     if (res?.ValueKind == JsonValueKind.True)
@@ -192,7 +197,7 @@ public sealed class WebKitDriver : DriverBase
         var wv = ResolveWebView();
         if (wv == IntPtr.Zero)
             throw new InvalidOperationException("WKWebView not available (window closed?)");
-        var id = "e" + Interlocked.Increment(ref _evalCounter);
+        var id = NewEvalId("e");
         return await EvalOnWebViewAsync(wv, id, ct, null, BuildEnvelope(id, expression, awaitPromise));
     }
 
@@ -210,7 +215,7 @@ public sealed class WebKitDriver : DriverBase
         var wv = ResolveWebView();
         if (wv == IntPtr.Zero)
             throw new InvalidOperationException("WKWebView not available (window closed?)");
-        var id = "e" + Interlocked.Increment(ref _evalCounter);
+        var id = NewEvalId("e");
         var res = await EvalOnWebViewAsync(wv, id, ct, null, BuildScriptEnvelope(id, script, awaitPromise));
         if (res is { ValueKind: JsonValueKind.Object } el
             && el.TryGetProperty("__ce", out var ce) && ce.ValueKind == JsonValueKind.True)
@@ -406,9 +411,13 @@ public sealed class WebKitDriver : DriverBase
     /// DevTools is closed.</summary>
     private int _netCounter;
 
+    private string? _netDoc;   // the recorder's document id the host last read (a navigation starts a new one)
+    private int _netVer;       // ... and the version it read up to
+
     public override async Task PullNetworkAsync(CancellationToken ct)
     {
         if (_webview == IntPtr.Zero) return;
+        try { if (await DrainRecorderAsync(ct)) return; } catch { /* mid-navigation: fall back below */ }
         try
         {
             var res = await EvaluateAsync(
@@ -435,6 +444,32 @@ public sealed class WebKitDriver : DriverBase
             }
         }
         catch { /* context mid-navigation */ }
+    }
+
+    /// <summary>The network recorder (Assets/netrec.js) is a document-start script while DevTools is open; the page that
+    /// was already showing when it opened gets it injected here. Reads what changed since the last poll and turns each
+    /// record into a NetworkEntry with timing, bodies and WebSocket frames. False when the page cannot run it.</summary>
+    private async Task<bool> DrainRecorderAsync(CancellationToken ct)
+    {
+        const string Read = "(function(n,d,v){return n?JSON.stringify(n.drain(n.d===d?v:0)):''})(window.__brainNet,{0},{1})";
+        var js = Read.Replace("{0}", JsonSerializer.Serialize(_netDoc ?? "")).Replace("{1}", _netVer.ToString());
+        var res = await EvaluateAsync(js, false, ct);
+        var text = res?.ValueKind == JsonValueKind.String ? res.Value.GetString() : null;
+        if (string.IsNullOrEmpty(text))
+        {
+            await EvalScriptAsync(Assets.NetRecJs, false, ct); // idempotent: installs the hooks and backfills from the timeline
+            res = await EvaluateAsync(js, false, ct);
+            text = res?.ValueKind == JsonValueKind.String ? res.Value.GetString() : null;
+            if (string.IsNullOrEmpty(text)) return false;
+        }
+        using var doc = JsonDocument.Parse(text);
+        var root = doc.RootElement;
+        var docId = root.GetProperty("d").GetString() ?? "";
+        var origin = root.GetProperty("o").GetDouble();
+        _netDoc = docId; _netVer = root.GetProperty("v").GetInt32();
+        foreach (var r in root.GetProperty("r").EnumerateArray())
+            RaiseNetwork(NetRecord.ToEntry(r, docId, origin));
+        return true;
     }
 
     /// <summary>Bulk cookie write into the webview's WKWebsiteDataStore for

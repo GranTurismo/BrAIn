@@ -51,14 +51,31 @@ internal static partial class WkTabs
     private const nint NSWindowBelow = -1;
     private const nint NSWindowAbove = 1;
 
-    /// <summary>The same window.external contract Photino provides, plus
-    /// __brainPush for host → page pushes (queued until chrome.js subscribes).</summary>
-    internal const string Shim =
-        "window.external={sendMessage:function(m){try{window.webkit.messageHandlers.brain.postMessage(String(m));}catch(e){}}," +
-        "receiveMessage:function(cb){window.__brainCb=cb;var q=window.__brainQ||[];window.__brainQ=null;" +
-        "q.forEach(function(o){try{cb(o)}catch(e){}});}};" +
-        "window.__brainPush=function(o){var cb=window.__brainCb;if(cb){try{cb(o)}catch(e){}}" +
-        "else{(window.__brainQ=window.__brainQ||[]).push(o);}};\n";
+    /// <summary>The same window.external contract Photino provides, plus __brainPush for host → page pushes (queued until chrome.js
+    /// subscribes) — but built so a WEB PAGE cannot use or watch it (see ViewAuth). Per view, because it carries the view's secret token:
+    /// <list type="bullet">
+    /// <item>BrAIn's own scripts (brain.js, chrome.js) take a private handle from <c>window.__brainCap</c> at the very start, and the library bundle
+    /// removes it again before any page script runs; messages sent through it carry the token.</item>
+    /// <item>For a web page <c>window.external.sendMessage</c> only forwards the replies to scripts the host evaluated itself and the user-script
+    /// runner's status reports; everything else is ignored. BrAIn's own pages (about:*) get the full, authenticated sender.</item>
+    /// <item><c>window.__brainPush</c> (what the host calls) is sealed: not writable, not configurable, and it feeds a callback only BrAIn's scripts
+    /// can reach — a page can no longer wrap it to read what the host sends.</item>
+    /// <item>The native postMessage is captured now, so a page that later replaces it, or reaches a pristine copy through an iframe, still has no token.</item>
+    /// </list></summary>
+    internal static string ShimFor(string token) =>
+        "(function(){if(window.__brainPush)return;var T='" + token + "',S=String,apply=Reflect.apply,H=null,P=null;" +
+        "try{H=window.webkit.messageHandlers.brain;P=H.postMessage}catch(e){}" +
+        "function raw(s){if(P){try{apply(P,H,[s])}catch(e){}}}" +
+        "var internal=false;try{internal=/^(about|data|app):$/i.test(location.protocol)&&window.top===window&&!window.opener}catch(e){}" +
+        "var q=[],cb=null;" +
+        "function recv(f){cb=f;var a=q;q=[];for(var i=0;i<a.length;i++){try{f(a[i])}catch(e){}}}" +
+        "function push(o){if(cb){try{cb(o)}catch(e){}}else{q.push(o)}}" +
+        "function send(m){raw(T+'|'+S(m))}" +
+        "function reply(m){m=S(m);if(m.indexOf('{\"b\":1,')===0||m.indexOf('{\"b\": 1,')===0||m.indexOf('brain:usran:')===0||m.indexOf('brain:usrerr:')===0)raw(m)}" +
+        "try{Object.defineProperty(window,'__brainCap',{value:{send:send,recv:recv},writable:true,configurable:true,enumerable:false})}catch(e){}" +
+        "window.external=internal?{sendMessage:send,receiveMessage:recv}:{sendMessage:reply,receiveMessage:function(){}};" +
+        "Object.defineProperty(window,'__brainPush',{value:push,writable:false,configurable:false,enumerable:false});" +
+        "})();\n";
 
     private sealed class ViewInfo
     {
@@ -66,13 +83,14 @@ internal static partial class WkTabs
         public Guid Tab;
         public bool Private;
         public bool Ghost;   // private view on the seeded ghost store ("Keep my cookies & logins")
-        public string Lib = "", Qc = "";
+        public string Lib = "", Qc = "", Token = ""; // Token: this view's secret, see ViewAuth
         public bool Dark;
     }
 
     private static IntPtr _handlerClass;
     private static readonly Dictionary<IntPtr, ViewInfo> _views = new();
     private static readonly Dictionary<IntPtr, Guid> _byHandler = new();
+    private static readonly Dictionary<IntPtr, string> _tokens = new(); // handler -> the view's secret (same lock as _byHandler)
     private static IntPtr _privStore;
     private static IntPtr _boot;
 
@@ -81,6 +99,16 @@ internal static partial class WkTabs
 
     /// <summary>The view currently shown.</summary>
     internal static IntPtr Active { get; private set; }
+
+    /// <summary>WKWebView.URL — what the engine has committed, not what the host last asked for.</summary>
+    internal static string? CurrentUrl(IntPtr view)
+    {
+        if (view == IntPtr.Zero) return null;
+        var u = ObjC.Send(view, ObjC.Sel("URL"));
+        if (u == IntPtr.Zero) return null;
+        var s = ObjC.Send(u, ObjC.Sel("absoluteString"));
+        return s == IntPtr.Zero ? null : ObjC.NsStringToString(s);
+    }
 
     internal static bool Has(IntPtr view) => view != IntPtr.Zero && _views.ContainsKey(view);
 
@@ -92,11 +120,16 @@ internal static partial class WkTabs
         {
             var body = ObjC.Send(message, ObjC.Sel("body"));
             if (body == IntPtr.Zero || !ObjC.IsKindOf(body, "NSString")) return;
-            Guid id;
+            Guid id; string? token;
             lock (_byHandler)
+            {
                 if (!_byHandler.TryGetValue(self, out id)) return;
+                _tokens.TryGetValue(self, out token);
+            }
             var s = ObjC.NsStringToString(body);
-            if (!string.IsNullOrEmpty(s)) OnMessage?.Invoke(id, s);
+            if (string.IsNullOrEmpty(s) || token is null) return;
+            s = ViewAuth.Accept(token, s); // a page's own script cannot produce the token: its messages stop here
+            if (s is not null) OnMessage?.Invoke(id, s);
         }
         catch { }
     }
@@ -167,14 +200,17 @@ internal static partial class WkTabs
 
         var ucc = ObjC.Send(ObjC.Send(ObjC.GetClass("WKUserContentController"), ObjC.Sel("alloc")), ObjC.Sel("init")); // +1
         var handler = NewHandler(tab); // +1
+        var token = ViewAuth.NewToken();
+        lock (_byHandler) _tokens[handler] = token;
         if (ucc == IntPtr.Zero || handler == IntPtr.Zero)
         {
             ObjC.Send(cfg, ObjC.Sel("release"));
             return IntPtr.Zero;
         }
         ObjC.Send(ucc, ObjC.Sel("addScriptMessageHandler:name:"), handler, ObjC.NsString("brain"));
-        AddScript(ucc, Shim);
+        AddScript(ucc, ShimFor(token));
         AddScript(ucc, libSource);
+        if (_netRec.Length > 0) AddScript(ucc, _netRec); // DevTools is open: this tab records its requests from the first one
         ObjC.Send(cfg, ObjC.Sel("setUserContentController:"), ucc);
         EnableElementFullscreen(cfg);
 
@@ -202,7 +238,7 @@ internal static partial class WkTabs
         {
             ObjC.Send(ucc, ObjC.Sel("release"));
             ObjC.Send(handler, ObjC.Sel("release"));
-            lock (_byHandler) _byHandler.Remove(handler);
+            lock (_byHandler) { _byHandler.Remove(handler); _tokens.Remove(handler); }
             return IntPtr.Zero;
         }
 
@@ -240,7 +276,7 @@ internal static partial class WkTabs
         ObjC.Send(handler, ObjC.Sel("release"));
         ObjC.Send(ucc, ObjC.Sel("release"));
 
-        _views[wv] = new ViewInfo { View = wv, Handler = handler, Ucc = ucc, Tab = tab, Private = priv, Ghost = ghost, Lib = libSource };
+        _views[wv] = new ViewInfo { View = wv, Handler = handler, Ucc = ucc, Tab = tab, Private = priv, Ghost = ghost, Lib = libSource, Token = token };
         return wv;
     }
 
@@ -251,10 +287,29 @@ internal static partial class WkTabs
     {
         if (!_views.TryGetValue(view, out var info) || info.Qc == js) return;
         info.Qc = js;
+        ApplyScripts(info);
+    }
+
+    /// <summary>The view's document-start scripts, in order: quick-control values (first, so chrome.js finds them), the shim,
+    /// the page library, and — only while DevTools is open — the network recorder. Applies from the next document on.</summary>
+    private static void ApplyScripts(ViewInfo info)
+    {
         ObjC.Send(info.Ucc, ObjC.Sel("removeAllUserScripts"));
-        if (js.Length > 0) AddScript(info.Ucc, js); // first, so chrome.js finds it
-        AddScript(info.Ucc, Shim);
+        if (info.Qc.Length > 0) AddScript(info.Ucc, info.Qc);
+        AddScript(info.Ucc, ShimFor(info.Token));
         AddScript(info.Ucc, info.Lib);
+        if (_netRec.Length > 0) AddScript(info.Ucc, _netRec);
+    }
+
+    private static string _netRec = "";
+
+    /// <summary>DevTools opened / closed: every view (and every view made while it stays open) gets / drops the network
+    /// recorder as a document-start script. The page already showing is handled by the driver's first poll.</summary>
+    internal static void SetNetRecorder(string js)
+    {
+        if (_netRec == js) return;
+        _netRec = js;
+        foreach (var info in _views.Values) ApplyScripts(info);
     }
 
     /// <summary>Dark pages: the view reports a dark system appearance, so sites with a dark theme
@@ -287,11 +342,45 @@ internal static partial class WkTabs
         }
     }
 
+    private static readonly Dictionary<IntPtr, int> _fsWaits = new(); // main thread only
+    private const int FullscreenWaitMs = 100, FullscreenWaitTicks = 1200;
+
+    /// <summary>WKWebView.fullscreenState (macOS 12+): 0 not fullscreen, 1 entering, 2 fullscreen, 3 leaving — while it is not 0 WebKit has moved
+    /// the page's view into its own screen-sized window and taken the browser window off screen, and only finishing the exit puts that
+    /// back. -1 where the property does not exist (older macOS cannot tell).</summary>
+    internal static int FullscreenState(IntPtr view)
+    {
+        if (view == IntPtr.Zero) return 0;
+        var sel = ObjC.Sel("fullscreenState");
+        if (ObjC.SendBool(view, ObjC.Sel("respondsToSelector:"), sel) == 0) return -1;
+        return (int)ObjC.SendNInt(view, sel);
+    }
+
     /// <summary>Tears a tab's view down completely (stops loads, drops scripts,
     /// releases the web content process).</summary>
     internal static void Destroy(IntPtr view)
     {
-        if (view == IntPtr.Zero || !_views.Remove(view, out var info)) return;
+        if (view == IntPtr.Zero || !_views.ContainsKey(view)) return;
+        // Never release a view while WebKit is entering, in or leaving fullscreen: its WKFullScreenWindowController then dies with a
+        // transition still pending and WebKit asserts (a crash report: WebFullScreenManagerProxy::beganEnterFullScreen from
+        // -[WKFullScreenWindowController dealloc] — e.g. when the window cannot animate because it is not on screen). A view torn
+        // down at the end of one also leaves the browser window off screen. So wait for the transition to finish and destroy it then;
+        // the page was asked to leave fullscreen already (BrowserController.ExitPageFullscreenAsync).
+        if (FullscreenState(view) > 0 && Later is not null)
+        {
+            _fsWaits.TryGetValue(view, out var waited);
+            if (waited < FullscreenWaitTicks)
+            {
+                _fsWaits[view] = waited + 1;
+                Later(FullscreenWaitMs, () => Destroy(view));
+                return;
+            }
+            // two minutes and WebKit never finished: releasing it now would crash the whole browser — leave this one view alone instead
+            Console.Error.WriteLine("[BrAIn] a closed tab's fullscreen never finished; its view is kept so the browser survives");
+            return;
+        }
+        _fsWaits.Remove(view);
+        if (!_views.Remove(view, out var info)) return;
         try
         {
             // still on screen = the closed tab's page crossfading into its neighbour: it goes
@@ -310,7 +399,7 @@ internal static partial class WkTabs
             else Remove();
         }
         catch { }
-        lock (_byHandler) _byHandler.Remove(info.Handler);
+        lock (_byHandler) { _byHandler.Remove(info.Handler); _tokens.Remove(info.Handler); }
         if (Active == view) Active = IntPtr.Zero;
         if (info.Private && !info.Ghost && _privStore != IntPtr.Zero && !_views.Values.Any(v => v.Private && !v.Ghost))
         {
@@ -478,10 +567,24 @@ internal static partial class WkTabs
         Set(_boot);
     }
 
-    /// <summary>Hides the bootstrap view (it only exists to host the window).</summary>
+    /// <summary>The bootstrap view, so the crash-reload handler can leave it alone (see <see cref="HideBootstrap"/>).</summary>
+    internal static IntPtr BootView => _boot;
+
+    /// <summary>Hides the bootstrap view (it only exists to host the window and as the configuration template) and lets go of its
+    /// web-content process. Photino loaded a blank page into it, which starts a WebContent process of its own — 28 to 47 MB for a
+    /// view nobody ever sees. The view itself stays (tabs copy its configuration, popups reuse its delegate); only its process goes,
+    /// and WebKit starts a new one only if something loads into it again. -[WKWebView _killWebContentProcessAndResetState] is WebKit
+    /// SPI, so it is used only where the view answers it.</summary>
     internal static void HideBootstrap()
     {
-        if (_boot != IntPtr.Zero) ObjC.SendNInt(_boot, ObjC.Sel("setHidden:"), 1);
+        if (_boot == IntPtr.Zero) return;
+        ObjC.SendNInt(_boot, ObjC.Sel("setHidden:"), 1);
+        try
+        {
+            var sel = ObjC.Sel("_killWebContentProcessAndResetState");
+            if (ObjC.SendBool(_boot, ObjC.Sel("respondsToSelector:"), sel) != 0) ObjC.Send(_boot, sel);
+        }
+        catch { }
     }
 
     // ------------------------------------------------------------------ view operations

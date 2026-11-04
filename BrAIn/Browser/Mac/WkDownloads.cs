@@ -264,6 +264,7 @@ internal static partial class WkDownloads
     {
         if (_origProcTerm != IntPtr.Zero)
             try { Marshal.GetDelegateForFunctionPointer<ProcTermImp>(_origProcTerm)(self, sel, wv); } catch { }
+        if (wv == WkTabs.BootView) return; // we ended that one on purpose (WkTabs.HideBootstrap): reloading would bring it back
         DiagLog("web content process terminated — reloading");
         try { ObjC.Send(wv, ObjC.Sel("reload")); } catch { }
     }

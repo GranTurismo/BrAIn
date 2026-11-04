@@ -74,7 +74,8 @@ check "the relaunched app is still running" alive "$NEWPID"
 shot A3-after
 check "the program, command link and menu entry are where they were" bash -c "[ \"\$(readlink -f ~/.local/bin/brain)\" = '$P/BrAIn' ] && grep -qx 'Exec=$P/BrAIn %u' ~/.local/share/applications/brain.desktop"
 OTHER=x64; [ "$ARCH" = x64 ] && OTHER=arm64
-expect_eq "this platform's archive was downloaded exactly once" 1 "$(grep -c "releases/download/v9.9.9/BrAIn-9.9.9-linux-$ARCH.tar.gz" "$FAKE/requests.log")"
+expect_eq "this platform's archive was downloaded exactly once" 1 "$(grep -c "releases/download/v9.9.9/BrAIn-9.9.9-linux-$ARCH.tar.gz\$" "$FAKE/requests.log")"
+expect_eq "...and so was its signature" 1 "$(grep -c "releases/download/v9.9.9/BrAIn-9.9.9-linux-$ARCH.tar.gz.sig\$" "$FAKE/requests.log")"
 expect_eq "no other platform's file was asked for" 0 "$(grep -cE "download/.*(macOS|\.exe|linux-$OTHER)" "$FAKE/requests.log")"
 APP_PID=$NEWPID
 
@@ -114,6 +115,36 @@ sleep 1; shot B2-broken
 check "the app is still running" alive "$APP_PID"
 expect_eq "the install folder is byte for byte what it was" "$before" "$(tree_hash "$P")"
 check "nothing was left beside it" bash -c "[ \"\$(ls -A ~/.local/share | grep -c brain-browser)\" = 1 ]"
+
+# ---------------------------------------------------------------------------------------------------------------
+section "B3. a release that cannot be proven genuine is refused (GitHub alone is not trusted)"
+# The maintainer's signature (scripts/sign-release.sh, checked in Browser/UpdateTrust.cs) is what makes BrAIn install an update.
+# Everything below has a download that would unpack and run fine: only the proof is missing or wrong. Nothing may be installed.
+refused() {   # refused <tag> <what is wrong with it> <pattern the error must match> <1 if the download should be attempted>
+  local tag=$1 why=$2 pat=$3 dl=$4
+  m=$(mark)
+  update_keys
+  if [ "$dl" = 1 ]; then
+    check "$tag ($why): offered" wait_log "update: available ${tag#v}" 40 "$m"
+    update_keys
+  fi
+  check "$tag ($why): refused with a reason ($pat)" wait_log "update: error ${tag#v}: .*$pat" 60 "$m"
+  sleep 1
+  check "$tag ($why): the app is still running" alive "$APP_PID"
+  expect_eq "$tag ($why): the install folder is byte for byte what it was" "$before" "$(tree_hash "$P")"
+  check "$tag ($why): no installer was started (nothing beside the install, no 'installing' phase)" bash -c "! tail -n +$((m + 1)) '$LOG' | grep -q 'update: installing' && [ \"\$(ls -A ~/.local/share | grep -c brain-browser)\" = 1 ]"
+  check "$tag ($why): the download was deleted" wait_cond 20 "[ -z \"\$(ls -A '$CACHE' 2>/dev/null)\" ]"
+}
+SIGN=none release v9.9.20 "$NEW"
+refused v9.9.20 "no signature published" "not signed" 0
+expect_eq "v9.9.20: the unsigned release was not even downloaded" 0 "$(grep -c 'releases/download/v9.9.20/' "$FAKE/requests.log")"
+SIGN=other release v9.9.21 "$NEW"
+refused v9.9.21 "signed by a key BrAIn does not trust" "signature of this update is not valid" 1
+check "v9.9.21: the signature file was fetched and judged" grep -q 'releases/download/v9.9.21/.*\.sig' "$FAKE/requests.log"
+SIGN=replay release v9.9.22 "$NEW"
+refused v9.9.22 "a genuine signature of ANOTHER version" "signature of this update is not valid" 1
+DIGEST=none release v9.9.23 "$NEW"
+refused v9.9.23 "signed, but GitHub gave no digest" "no checksum" 1
 stop_app "$P/BrAIn"
 
 # ---------------------------------------------------------------------------------------------------------------

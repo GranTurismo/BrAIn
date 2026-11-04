@@ -340,7 +340,15 @@ public sealed class ProfileTools(BrowserController browser)
             if (name.Length > 80) name = name[..80];
             path = Path.Combine(browser.Downloads.Dir, name + ".html");
         }
-        else path = Path.IsPathRooted(outputPath) ? outputPath : Path.Combine(browser.Downloads.Dir, outputPath);
+        else
+        {
+            // Only inside the Downloads folder, and only as .html: this tool writes text a web page chose, and a file written
+            // somewhere else (a shell start-up file, a launch agent, an autostart entry) could run it.
+            var confined = PathGuard.InsideFolder(outputPath, browser.Downloads.Dir, out var whyNot);
+            if (confined is null) return $"ERROR: {whyNot}. Give a plain file name (or none) and it is saved there.";
+            path = confined.EndsWith(".html", StringComparison.OrdinalIgnoreCase) || confined.EndsWith(".htm", StringComparison.OrdinalIgnoreCase)
+                ? confined : confined + ".html";
+        }
         if (File.Exists(path) && !overwrite) return $"{path} already exists; pass overwrite=true or another outputPath";
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         await File.WriteAllTextAsync(path, html, ct);

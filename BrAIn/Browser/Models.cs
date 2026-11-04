@@ -17,7 +17,38 @@ public sealed record NetworkEntry(
     string? Error,
     Dictionary<string, string>? RequestHeaders = null,
     Dictionary<string, string>? ResponseHeaders = null,
-    string? PostData = null);
+    string? PostData = null,
+    NetExtra? X = null);
+
+/// <summary>What only the WebKit recorder (Assets/netrec.js) can tell about a request — timing, the response text, WebSocket
+/// frames. Null for entries from the Windows CDP feed, which the panel simply shows without these tabs.</summary>
+public sealed record NetExtra(
+    string? Tab = null,            // short id of the tab it belongs to
+    string? Doc = null,            // which document of that tab (a navigation starts a new one)
+    string? Kind = null,           // document | fetch | xhr | script | stylesheet | image | font | media | websocket | other
+    double StartMs = 0,            // start, ms after the document began
+    double DurationMs = 0,
+    double DocOrigin = 0,          // epoch ms of the document's start
+    string? StatusText = null,
+    string? Mime = null,
+    string? Protocol = null,       // h2, http/1.1 ...
+    long DecodedBytes = 0,
+    NetTiming? Timing = null,
+    string? ResponseBody = null,   // text responses only, capped (256 KB)
+    bool BodyTruncated = false,
+    long BodyLength = 0,
+    bool BodyDropped = false,      // evicted by the recorder's memory budget
+    bool Redirected = false,
+    string? FinalUrl = null,
+    bool Done = false,
+    IReadOnlyList<NetFrame>? Frames = null,
+    int FrameCount = 0,
+    string? CloseInfo = null);
+
+public sealed record NetTiming(double Queue, double Dns, double Connect, double Tls, double Wait, double Receive);
+
+/// <summary>One WebSocket message: Dir is "s" (sent) or "r" (received).</summary>
+public sealed record NetFrame(string Dir, double AtMs, int Size, string? Text);
 
 public sealed record CookieInfo(
     string Name,

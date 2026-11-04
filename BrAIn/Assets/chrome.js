@@ -8,6 +8,11 @@
 (function () {
     if (window.__brainChrome) return;
 
+    // The host's messages carry a per-view secret that only this script's closure holds (WkTabs.ShimFor): taken now, before any page script runs,
+    // and removed from window right after the library bundle. A web page can neither call the bridge nor read it. Without it (the bar and side
+    // views, Windows, the fallback injection) the plain window.external bridge is used.
+    var CAP = window.__brainCap, EXT = CAP ? { sendMessage: CAP.send, receiveMessage: CAP.recv } : window.external;
+
     // ---- trust boundary ---------------------------------------------------
     // This script runs inside every web page, so anything it exposes (globals, DOM events)
     // can be read by that page's own scripts. Only BrAIn's own pages (about: documents the
@@ -128,10 +133,14 @@
     }
 
     function send(cmd) {
+        // This script's UI lives in the page's own DOM, so the page's scripts can click its buttons and press its keys — with events THEY
+        // create. A command that is caused by such an event (isTrusted === false: only real user input is trusted) is not the user's: drop it.
+        // (Commands sent outside any event — timers, load handlers — are the script's own business and pass.)
+        try { var ev = window.event; if (ev && ev.isTrusted === false) return; } catch (e) { }
         // Navigating away from the overlay: keep it up until the new document
         // replaces this one — otherwise the hidden previous page flashes.
         if (state.ov && /^navigate:/.test(cmd)) holdOverlay(4000);
-        try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
+        try { EXT && EXT.sendMessage('brain:' + cmd); } catch (e) { }
     }
 
     // ---------------- optimistic close / switch ----------------
@@ -1535,13 +1544,31 @@
         return 'Agent asks before risky actions: ' + ((state.belt && state.belt.mode === 'auto') ? 'off' : 'on');
     }
     function toggleBelt() { send('beltmode:' + ((state.belt && state.belt.mode === 'auto') ? 'ask' : 'auto')); }
+    // Which folder row is picked on the upload question (the choice is sent by position; the host holds the paths).
+    var upSel = 0;
+    function uploadLabel() {
+        var u = state.belt && state.belt.uploads;
+        if (!u || !u.scope) return 'Agent file uploads: asks where from, on first use';
+        return u.scope === 'anywhere' ? 'Agent file uploads: from anywhere (click to be asked again)'
+            : 'Agent file uploads: only from ' + (u.folder || 'one folder') + ' (click to change)';
+    }
     function beltHtml(a, more) {
         var tool = String(a.tool || '').replace(/^browser_/, '').replace(/_/g, ' ');
+        if (a.up) {
+            var fl = a.up.folders || [];
+            var rows = fl.map(function (f, i) { return '<span class="fr' + (i === upSel ? ' on' : '') + '" data-i="' + i + '"><span class="rd"></span>' + esc(f) + '</span>'; }).join('');
+            return '<span class="top"><span class="k">' + BELT_SVG + '</span><span class="qt">An AI agent wants to <b>upload</b> \u201c<b>' + esc(a.label || '') + '</b>\u201d' +
+                (a.host ? ' to <b>' + esc(a.host) + '</b>' : '') + '<br><i>' + esc(a.up.note || '') + '</i></span></span>' +
+                (fl.length ? '<span class="fl"><span class="fh">Allow uploads only from:</span>' + rows + '</span>' : '') +
+                (more > 0 ? '<span class="more">+' + more + ' more waiting</span>' : '') +
+                '<span class="btns"><button class="dn">Deny</button><button class="st">Just this once</button><button class="wa">Anywhere</button>' +
+                (fl.length ? '<button class="ok">Only this folder</button>' : '') + '</span>';
+        }
         return '<span class="top"><span class="k">' + BELT_SVG + '</span><span class="qt">An AI agent wants to <b>' + esc(tool) + '</b>' +
-            (a.label ? ' “<b>' + esc(a.label) + '</b>”' : '') + (a.host ? ' on <b>' + esc(a.host) + '</b>' : '') +
+            (a.label ? ' \u201c<b>' + esc(a.label) + '</b>\u201d' : '') + (a.host ? ' on <b>' + esc(a.host) + '</b>' : '') +
             '<br><i>' + esc(a.why || '') + '</i></span></span>' +
             (more > 0 ? '<span class="more">+' + more + ' more waiting</span>' : '') +
-            '<span class="btns"><button class="dn">Deny</button><button class="st">Allow this site 10 min</button><button class="ok">Allow once</button></span>';
+            '<span class="btns"><button class="dn">Deny</button>' + (a.once ? '' : '<button class="st">Allow this site 10 min</button>') + '<button class="ok">Allow once</button></span>';
     }
     function onBelt(sh, belt) {
         if (!belt) return;
@@ -1550,15 +1577,28 @@
         var ask = belt.ask || [];
         if (!ask.length) { b.style.display = 'none'; b.innerHTML = H(''); beltAskId = ''; return; }
         var a = ask[0];
+        if (beltAskId !== a.id) upSel = 0;
         beltAskId = a.id;
         b.innerHTML = H(beltHtml(a, ask.length - 1));
         var wire = function (cls, choice) {
-            b.querySelector(cls).addEventListener('click', function (e) {
+            var el = b.querySelector(cls); if (!el) return;
+            el.addEventListener('click', function (e) {
                 if (!e.isTrusted || !beltAskId) return; // script-made clicks never count
-                send('askok:' + beltAskId + ':' + choice);
+                send('askok:' + beltAskId + ':' + (typeof choice === 'function' ? choice() : choice));
             });
         };
-        wire('.dn', 'deny'); wire('.st', 'site'); wire('.ok', 'once');
+        wire('.dn', 'deny');
+        if (a.up) {
+            wire('.st', 'once'); wire('.wa', 'anywhere'); wire('.ok', function () { return 'folder:' + upSel; });
+            var rows = b.querySelectorAll('.fr');
+            for (var ri = 0; ri < rows.length; ri++) rows[ri].addEventListener('click', function (e) {
+                if (!e.isTrusted) return;
+                upSel = +this.getAttribute('data-i') || 0;
+                for (var rj = 0; rj < rows.length; rj++) rows[rj].classList.toggle('on', rj === upSel);
+            });
+        } else {
+            wire('.st', 'site'); wire('.ok', 'once');
+        }
         b.style.display = 'flex';
     }
 
@@ -2317,6 +2357,7 @@
                 ['apilearn', apiLearnLabel(), ''],
                 ['apis', 'Site APIs', apiBadge()],
                 ['belt', beltLabel(), ''],
+                ['uploadscope', uploadLabel(), ''],
                 ['fullctl', fcOn() ? 'Turn off full control' : 'Full control mode\u2026', ''],
             ]],
             ['Library', [
@@ -2667,6 +2708,7 @@
         if (c === 'agcancel') { send('agcancel'); return; }
         if (c === 'agent') { toggleAgent(); return; }
         if (c === 'belt') { toggleBelt(); return; }
+        if (c === 'uploadscope') { send('uploadreset'); return; }
         if (c === 'fullctl') { if (fcOn()) send('fullctl:off'); else openFc(sh); return; }
         if (c === 'rec') { toggleRec(); return; }
         if (c === 'import') { send('navigate:about:import'); return; }
@@ -2731,6 +2773,7 @@
             ['agent', (state.ag && state.ag.p) ? 'Resume agent' : 'Pause agent', 'ai agent mcp stop halt pause resume continue', IS_MAC ? '\u21e7\u2318.' : 'Ctrl+Shift+.'],
             ['rec', recLabel(), 'record flow macro teach show once automation demonstrate steps learn', IS_MAC ? '\u2303\u2325R' : 'Ctrl+Alt+R'],
             ['belt', beltLabel(), 'ai agent mcp safety approve ask confirm risky pay delete send seatbelt permission', ''],
+            ['uploadscope', uploadLabel(), 'ai agent mcp upload file folder attach anywhere permission', ''],
             ['rewind', 'Rewind — scrub back through this page', 'rewind time travel history snapshot previous state undo', IS_MAC ? '\u21e7\u2318Y' : 'Ctrl+Shift+Y'],
             ['find', 'Find in page', 'search text', IS_MAC ? '\u2318F' : 'Ctrl+F'],
             ['bm', state.bm ? 'Remove bookmark' : 'Bookmark this page', 'star favorite save', IS_MAC ? '\u2318D' : 'Ctrl+D'],
@@ -3881,8 +3924,20 @@
         var mb = s.getElementById('wmaxb');
         if (mb) { mb.innerHTML = H(state.w ? SVG.wres : SVG.wmax); mb.title = state.w ? 'Restore down' : 'Maximize'; }
         var bar = s.querySelector('.bar');
-        if (bar) bar.classList.toggle('mtl', state.mtl);
+        if (bar) { bar.classList.toggle('mtl', state.mtl); bar.classList.toggle('fs', !!state.fs); }
+        paintMem(s);
     }
+
+    // ---------------- memory readout (macOS fullscreen) ----------------
+    // The host samples the app + its WebKit helper processes once a second while the window is fullscreen and pushes {b:110, mb}.
+    function fmtMem(mb) { return mb >= 1000 ? (mb / 1024).toFixed(mb >= 10240 ? 0 : 1) + ' GB' : Math.round(mb) + ' MB'; }
+    function paintMem(s) {
+        var el = s && s.getElementById('mem'); if (!el) return;
+        var has = typeof state.mem === 'number';
+        el.classList.toggle('on', has);
+        var t = el.querySelector('b'); if (t && has) t.textContent = fmtMem(state.mem);
+    }
+    function onMem(s, mb) { if (typeof mb === 'number' && isFinite(mb)) { state.mem = mb; paintMem(s); } }
 
     // ---------------- devtools panel ----------------
     var dtOpen = false, dtTab = 'con', dtH = 340;
@@ -3974,24 +4029,28 @@
             }
         }
         var ns = dtNetType + '|' + dtNetQ + '|' + dtNetSel + '|' + net.length;
-        for (var nx = 0; nx < net.length; nx++) // status/bytes land via merges
-            ns += '|' + (net[nx].st || '') + (net[nx].sz || '');
+        for (var nx = 0; nx < net.length; nx++) // status/bytes/time land via merges
+            ns += '|' + (net[nx].st || '') + (net[nx].sz || '') + (net[nx].ms || '') + (net[nx].dn ? 'd' : '');
         if (ns !== dtNetSig) {
             dtNetSig = ns;
             var nl = sh.getElementById('dtnet');
             if (nl) {
-                var h2 = '';
+                var h2 = '', wfMax = 1;
+                for (var k0 = 0; k0 < net.length; k0++) // the waterfall's scale: the end of the latest request shown
+                    if (net[k0].s != null && (dtNetType === 'all' || netBucket(net[k0].ty) === dtNetType))
+                        wfMax = Math.max(wfMax, net[k0].s + (net[k0].ms || 0));
                 for (var k = 0; k < net.length; k++) {
                     var n = net[k];
                     if (dtNetType !== 'all' && netBucket(n.ty) !== dtNetType) continue;
                     if (dtNetQ && (n.u || '').toLowerCase().indexOf(dtNetQ) < 0) continue;
-                    var st = n.er ? 'ERR' : (n.st || '…');
+                    var st = n.er ? 'ERR' : (n.st || (n.dn ? '—' : '…'));
                     var cls = n.er ? 's0' : 's' + String(n.st || 0)[0];
                     h2 += '<div class="dnetr' + (dtNetSel === n.id ? ' sel' : '') + '" data-id="' + esc(n.id || '') + '">' +
                         '<span class="' + cls + '">' + st + '</span>' +
                         '<span>' + esc(n.m || '') + '</span><span style="color:#908881">' + esc(n.ty || '') + '</span>' +
                         '<span style="color:#908881">' + (n.sz ? fmtBytes(n.sz) : '') + '</span>' +
-                        '<span class="u" title="' + esc(n.u || '') + '">' + esc(n.u || '') + '</span></div>';
+                        '<span style="color:#908881">' + (n.ms != null && n.dn ? fmtMs(n.ms) : '') + '</span>' + wfCell(n, wfMax) +
+                        '<span class="u" title="' + esc(n.u || '') + '">' + esc(n.u || '') + '&lrm;</span></div>'; // LRM: the rtl ellipsis trick must not move a trailing "/" to the front
                 }
                 nl.innerHTML = H(h2 || '<div style="padding:12px 14px;color:#68625c">no requests match</div>');
             }
@@ -4026,28 +4085,163 @@
             h += '<div class="dtkv"><b title="' + esc(keys[i]) + '">' + esc(keys[i]) + '</b><span>' + esc(map[keys[i]]) + '</span></div>';
         return h || '<div class="dtkv"><b>—</b><span style="color:#68625c">none</span></div>';
     }
+    // ---- network detail: Headers / Payload / Preview / Response / Timing / Messages
+    var dtNetSub = 'hdr';
+    function fmtMs(ms) { ms = +ms || 0; return ms >= 1000 ? (ms / 1000).toFixed(2) + ' s' : (ms < 10 ? ms.toFixed(1) : Math.round(ms)) + ' ms'; }
+    function wfClass(n) {
+        if (n.er) return 'wfe';
+        var b = netBucket(n.ty);
+        return b === 'xhr' ? 'wfx' : b === 'js' ? 'wfj' : b === 'css' ? 'wfc' : b === 'img' ? 'wfi' : b === 'font' ? 'wff' : (b === 'ws' || b === 'media') ? 'wfm' : '';
+    }
+    function wfCell(n, max) {
+        if (n.s == null) return '<span class="wf"></span>';
+        var w = Math.max((n.ms || 0) / max * 100, 0.8), l = Math.min(n.s / max * 100, 99.2);
+        return '<span class="wf"><i class="' + wfClass(n) + '" style="left:' + l.toFixed(2) + '%;width:' + Math.min(w, 100 - l).toFixed(2) + '%"></i></span>';
+    }
+    function shq(t) { return "'" + String(t).replace(/'/g, "'\\''") + "'"; }
+    function isBinaryPost(pd) { return /^\[(binary|Blob|FormData)/.test(pd || ''); }
+    function curlOf(e) {
+        var p = ['curl ' + shq(e.u)];
+        if (e.m && e.m !== 'GET') p.push('-X ' + e.m);
+        var rq = e.rq || {};
+        Object.keys(rq).forEach(function (k) { p.push('-H ' + shq(k + ': ' + rq[k])); });
+        if (e.pd && !isBinaryPost(e.pd)) p.push('--data-raw ' + shq(e.pd));
+        p.push('--compressed');
+        return p.join(' \\\n  ');
+    }
+    function fetchOf(e) {
+        var o = {}, rq = e.rq || {};
+        if (Object.keys(rq).length) o.headers = rq;
+        if (e.pd && !isBinaryPost(e.pd)) o.body = e.pd;
+        o.method = e.m || 'GET';
+        return 'fetch(' + JSON.stringify(e.u) + ', ' + JSON.stringify(o, null, 2) + ');';
+    }
+    // collapsible JSON tree: the first two levels open. `lbl` is the key this value hangs under (inside the summary, so a nested
+    // value stays on the key's line)
+    function jsonTree(v, depth, lbl) {
+        lbl = lbl || '';
+        if (v === null) return lbl + '<span class="jz">null</span>';
+        var t = typeof v;
+        if (t === 'string') return lbl + '<span class="js">"' + esc(v.length > 4000 ? v.slice(0, 4000) + '…' : v) + '"</span>';
+        if (t === 'number') return lbl + '<span class="jn">' + v + '</span>';
+        if (t === 'boolean') return lbl + '<span class="jb">' + v + '</span>';
+        var arr = Array.isArray(v), keys = arr ? null : Object.keys(v), n = arr ? v.length : keys.length;
+        if (!n) return lbl + '<span class="jz">' + (arr ? '[]' : '{}') + '</span>';
+        var h = '<details' + (depth < 2 ? ' open' : '') + '><summary>' + lbl + (arr ? 'Array(' + n + ')' : 'Object {' + n + '}') + '</summary><div class="jt">';
+        for (var i = 0; i < n && i < 500; i++)
+            h += '<div>' + jsonTree(arr ? v[i] : v[keys[i]], depth + 1, (arr ? '<span class="jz">' + i + '</span>' : '<span class="jk">' + esc(keys[i]) + '</span>') + ': ') + '</div>';
+        if (n > 500) h += '<div class="jz">… ' + (n - 500) + ' more</div>';
+        return h + '</div></details>';
+    }
+    function whyNoBody(e) {
+        var x = e.x || {};
+        if (x.bx) return 'The recorder dropped this body to stay within its memory budget (newer responses were kept).';
+        var b = netBucket(e.ty);
+        if (b === 'img' || b === 'font' || b === 'media') return 'Binary content (' + b + ') is not stored.';
+        if (b === 'doc' || b === 'js' || b === 'css') return 'Documents, scripts and stylesheets are not captured here (only fetch / XHR responses are).';
+        if (b === 'ws') return 'A WebSocket has no response body: see Messages.';
+        return 'No response text was recorded. The response may be empty or not text, or the request ran before recording started (open DevTools first, then reload).';
+    }
+    function bodyHtml(e) {
+        var x = e.x || {};
+        if (x.body == null) return '<div class="dtkv"><span style="color:#78726d">' + esc(whyNoBody(e)) + '</span></div>';
+        return null;
+    }
+    function netPane(e, sub) {
+        var x = e.x || null, h = '';
+        if (sub === 'hdr') {
+            h += '<div class="dtsec">General</div>' +
+                '<div class="dtkv"><b>URL</b><span>' + esc(e.u) + '</span></div>' +
+                '<div class="dtkv"><b>Method</b><span>' + esc(e.m) + '</span></div>' +
+                '<div class="dtkv"><b>Status</b><span>' + (e.er ? '<span class="resp-err">' + esc(e.er) + '</span>' : (e.st ? e.st + (x && x.stt ? ' ' + esc(x.stt) : '') : (x && x.dn ? 'unknown' : 'pending'))) + '</span></div>' +
+                '<div class="dtkv"><b>Type</b><span>' + esc(e.ty || '') + (x && x.ct ? ' · ' + esc(x.ct) : '') + '</span></div>';
+            if (x && x.pr) h += '<div class="dtkv"><b>Protocol</b><span>' + esc(x.pr) + '</span></div>';
+            if (x && x.red) h += '<div class="dtkv"><b>Redirected to</b><span>' + esc(x.fu || '') + '</span></div>';
+            h += '<div class="dtkv"><b>Transferred</b><span>' + fmtBytes(e.sz) + (x && x.dsz && x.dsz !== e.sz ? ' (' + fmtBytes(x.dsz) + ' uncompressed)' : '') + '</span></div>' +
+                '<div class="dtkv"><b>Started</b><span>' + esc(e.t || '') + (x ? ' · +' + fmtMs(x.s) + ' after the page began' : '') + '</span></div>';
+            if (x && x.dn) h += '<div class="dtkv"><b>Total time</b><span>' + fmtMs(x.ms) + '</span></div>';
+            h += '<div class="dtsec">Request headers</div>' + kvRows(e.rq) + '<div class="dtsec">Response headers</div>' + kvRows(e.rs);
+            if (x && !e.rq) h += '<div class="dtkv"><span style="color:#68625c">Request headers are only known for fetch / XHR calls the page makes itself.</span></div>';
+        } else if (sub === 'pay') {
+            if (!e.pd) h = '<div class="dtkv"><span style="color:#78726d">This request has no body.</span></div>';
+            else {
+                var ct = ((e.rq || {})['content-type'] || '').toLowerCase(), parsed = null;
+                if (/json/.test(ct) || /^\s*[\[{]/.test(e.pd)) { try { parsed = JSON.parse(e.pd); } catch (er) { } }
+                if (parsed !== null && typeof parsed === 'object') h = '<div class="dtsec">JSON</div>' + jsonTree(parsed, 0) + '<div class="dtsec">Raw</div><pre class="dtpre">' + esc(e.pd) + '</pre>';
+                else if (/x-www-form-urlencoded/.test(ct)) {
+                    h = '<div class="dtsec">Form data</div>';
+                    e.pd.split('&').forEach(function (pr) {
+                        var q = pr.indexOf('='), k = q < 0 ? pr : pr.slice(0, q), v = q < 0 ? '' : pr.slice(q + 1);
+                        try { k = decodeURIComponent(k.replace(/\+/g, ' ')); v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (er) { }
+                        h += '<div class="dtkv"><b>' + esc(k) + '</b><span>' + esc(v) + '</span></div>';
+                    });
+                } else h = '<pre class="dtpre">' + esc(e.pd) + '</pre>';
+            }
+        } else if (sub === 'prev' || sub === 'res') {
+            var nb = bodyHtml(e);
+            if (nb && e.ty === 'image') h = '<img alt="" style="max-width:100%;max-height:260px;border-radius:6px;background:#fff2" src="' + esc(e.u) + '">';
+            else if (nb) h = nb;
+            else {
+                var body = x.body, tr = x.bt ? '<div class="dtkv"><span style="color:#ffb86b">Showing the first ' + fmtBytes(body.length) + ' of ' + fmtBytes(x.bl) + '.</span></div>' : '';
+                var jv = null;
+                if (sub === 'prev') { try { jv = JSON.parse(body); } catch (er) { } }
+                h = tr + (sub === 'prev' && jv !== null && typeof jv === 'object' ? jsonTree(jv, 0) : '<pre class="dtpre">' + esc(body) + '</pre>');
+            }
+        } else if (sub === 'tm') {
+            var tm = x && x.tm;
+            h = '<div class="dtsec">Timing</div>' +
+                '<div class="dtkv"><b>Started</b><span>+' + fmtMs(x ? x.s : 0) + ' after the page began</span></div>' +
+                '<div class="dtkv"><b>Total</b><span>' + (x && x.dn ? fmtMs(x.ms) : 'still running…') + '</span></div>';
+            if (tm) {
+                var rows = [['Queueing / stalled', tm.q], ['DNS lookup', tm.dns], ['Initial connection', tm.con - tm.tls > 0 ? tm.con - tm.tls : tm.con], ['SSL / TLS', tm.tls], ['Waiting for server (TTFB)', tm.wait], ['Content download', tm.rcv]],
+                    tot = Math.max(x.ms || 0, 0.1), at = 0;
+                h += '<div class="dtsec">Phases</div>';
+                rows.forEach(function (r) {
+                    h += '<div class="tmr"><b>' + r[0] + '</b><div class="bar2"><i style="left:' + Math.min(at / tot * 100, 99).toFixed(1) + '%;width:' + Math.max(r[1] / tot * 100, r[1] > 0 ? 1 : 0).toFixed(1) + '%"></i></div><span>' + fmtMs(r[1]) + '</span></div>';
+                    at += r[1];
+                });
+                if (!tm.q && !tm.dns && !tm.con && !tm.wait && !tm.rcv)
+                    h += '<div class="dtkv"><span style="color:#68625c">The browser hides the phases of cross-origin requests unless the server sends Timing-Allow-Origin.</span></div>';
+            } else h += '<div class="dtkv"><span style="color:#68625c">Phase breakdown is not available (yet) for this request.</span></div>';
+        } else if (sub === 'ws') {
+            var fr = (x && x.fr) || [];
+            h = '<div class="dtsec">Messages (' + (x ? x.nf : 0) + (x && x.nf > fr.length ? ', showing ' + fr.length : '') + ')' + (x && x.cl ? ' · closed ' + esc(x.cl) : '') + '</div>';
+            fr.forEach(function (f) {
+                h += '<div class="frr"><span class="' + (f.d === 's' ? 'fs' : 'fr') + '" title="' + (f.d === 's' ? 'sent' : 'received') + '">' + (f.d === 's' ? '↑' : '↓') + '</span><span style="color:#908881">+' + fmtMs(f.t) + '</span><span style="color:#908881">' + fmtBytes(f.n) + '</span><span class="fx">' + esc(f.x || '') + '</span></div>';
+            });
+            if (!fr.length) h += '<div class="dtkv"><span style="color:#68625c">No messages yet.</span></div>';
+        }
+        return h;
+    }
     function renderNetDetail(sh) {
         var d = sh.getElementById('dtdetail'), e = dtNetEntry;
         if (!d || !e) return;
-        var h = '<div class="dttools"><button class="dtbtn" id="dtback">‹ All requests</button>' +
-            '<span class="dtsp"></span><button class="dtbtn" id="dteditb" style="color:#ffc8a3">✎ Edit and resend</button></div>' +
-            '<div class="dtbscroll">' +
-            '<div class="dtsec">General</div>' +
-            '<div class="dtkv"><b>URL</b><span>' + esc(e.u) + '</span></div>' +
-            '<div class="dtkv"><b>Method</b><span>' + esc(e.m) + '</span></div>' +
-            '<div class="dtkv"><b>Status</b><span>' + (e.er ? '<span class="resp-err">' + esc(e.er) + '</span>' : (e.st || 'pending')) + '</span></div>' +
-            '<div class="dtkv"><b>Type</b><span>' + esc(e.ty || '') + '</span></div>' +
-            '<div class="dtkv"><b>Size</b><span>' + fmtBytes(e.sz) + '</span></div>' +
-            '<div class="dtkv"><b>Time</b><span>' + esc(e.t || '') + '</span></div>';
-        if (e.pd) h += '<div class="dtsec">Request body</div><pre style="white-space:pre-wrap;word-break:break-all;color:#cdc6c0;margin:0 0 4px">' + esc(e.pd) + '</pre>';
-        h += '<div class="dtsec">Request headers</div>' + kvRows(e.rq) +
-            '<div class="dtsec">Response headers</div>' + kvRows(e.rs) + '</div>';
+        var isWs = e.ty === 'websocket', hasX = !!e.x;
+        var tabs = [['hdr', 'Headers'], ['pay', 'Payload']];
+        if (hasX) tabs.push(isWs ? ['ws', 'Messages'] : ['prev', 'Preview'], isWs ? null : ['res', 'Response'], ['tm', 'Timing']);
+        tabs = tabs.filter(Boolean);
+        if (!tabs.some(function (t) { return t[0] === dtNetSub; })) dtNetSub = 'hdr';
+        var h = '<div class="dttools"><button class="dtbtn" id="dtback">‹ All requests</button><span class="dtsp"></span>' +
+            '<button class="dtbtn" id="dtcurl" title="Copy as cURL">Copy cURL</button>' +
+            '<button class="dtbtn" id="dtcfetch" title="Copy as fetch()">Copy fetch</button>' +
+            '<button class="dtbtn" id="dteditb" style="color:#ffc8a3">✎ Edit and resend</button></div>' +
+            '<div class="dsub">' + tabs.map(function (t) { return '<button data-s="' + t[0] + '"' + (t[0] === dtNetSub ? ' class="on"' : '') + '>' + t[1] + '</button>'; }).join('') + '</div>' +
+            '<div class="dtbscroll" id="dtnetpane">' + netPane(e, dtNetSub) + '</div>';
         d.innerHTML = H(h);
         showNetView(sh, 'detail');
         d.querySelector('#dtback').addEventListener('click', function () {
             dtNetSel = null; dtNetEntry = null; showNetView(sh, 'list');
         });
         d.querySelector('#dteditb').addEventListener('click', function () { renderNetEditor(sh); });
+        d.querySelector('#dtcurl').addEventListener('click', function () { copyText(curlOf(e)); mdToast('Copied as cURL'); });
+        d.querySelector('#dtcfetch').addEventListener('click', function () { copyText(fetchOf(e)); mdToast('Copied as fetch()'); });
+        d.querySelectorAll('.dsub button').forEach(function (b) {
+            b.addEventListener('click', function () {
+                dtNetSub = b.getAttribute('data-s');
+                d.querySelectorAll('.dsub button').forEach(function (o) { o.classList.toggle('on', o === b); });
+                var pane = d.querySelector('#dtnetpane'); if (pane) pane.innerHTML = H(netPane(e, dtNetSub));
+            });
+        });
     }
     function addHdrRow(sh, name, val) {
         var box = sh.getElementById('dteh'); if (!box) return;
@@ -4147,7 +4341,8 @@
                 new Date(c.e * 1000).toLocaleTimeString() : 'Session';
             h += '<div class="ckr" data-i="' + i + '">' +
                 '<span title="' + esc(c.n) + '">' + esc(c.n) + '</span>' +
-                '<span class="cv" title="' + esc(c.v) + '">' + esc(c.v) + '</span>' +
+                (c.hid ? '<span class="cv" title="HttpOnly: kept from page scripts, so hidden here too" style="color:#78726d">•••• hidden</span>'
+                    : '<span class="cv" title="' + esc(c.v) + '">' + esc(c.v) + '</span>') +
                 '<span>' + esc(c.d || '') + '</span><span>' + esc(c.p || '/') + '</span>' +
                 '<span>' + esc(exp) + '</span><span>' + flags + '</span>' +
                 '<button class="ckx" title="Delete cookie" data-di="' + i + '">✕</button></div>';
@@ -4777,6 +4972,7 @@
         state.topmost = !!b.topmost;
         state.wc = !!b.wc;
         state.mtl = !!b.mtl;
+        state.fs = !!b.fs;
         state.w = !!b.w;
         state.sess = b.sess || 0;
         if (b.ag) { state.ag = b.ag; if (b.ag.n > 0) { agRunUntil = Date.now() + 2200; welcomeYield(); } }
@@ -5667,7 +5863,7 @@
         var check = function () {
             raf = 0;
             var s = sh0(); if (!s) return;
-            var full = false, drops = false, tip = false, ask = false;
+            var full = false, drops = false, tip = false, ask = false, tallAsk = false;
             for (var i = 0; i < ids.length; i++) {
                 var el = s.getElementById(ids[i]);
                 if (!el) continue;
@@ -5677,7 +5873,11 @@
                 // or more. Closed ones are display:none / visibility:hidden.
                 if (cs.display === 'none' || cs.visibility === 'hidden') continue;
                 if (ids[i] === 'ttip') { if (el.classList.contains('on')) tip = true; continue; }
-                if (ids[i] === 'askcard' || ids[i] === 'hocard' || ids[i] === 'updcard') { var ra = el.getBoundingClientRect(); if (ra.width > 0 && ra.height > 0) ask = true; continue; }
+                if (ids[i] === 'askcard' || ids[i] === 'hocard' || ids[i] === 'updcard') {
+                    var ra = el.getBoundingClientRect();
+                    if (ra.width > 0 && ra.height > 0) { ask = true; if (ids[i] === 'askcard' && el.querySelector('.fl')) tallAsk = true; } // the upload question lists folders: taller than a plain card
+                    continue;
+                }
                 var r = el.getBoundingClientRect();
                 if (!(r.width > 0 && r.height > 0)) continue;
                 if (ids[i] === 'drops') drops = true;
@@ -5686,7 +5886,7 @@
             if (window.__brainWelcomeOpen) full = true; // welcome.js overlay covers the whole window
             // Fixed sizes per kind: resizing a WKWebView on every keystroke
             // while the suggestion list changes height is what made typing laggy.
-            var want = full ? 'full' : drops ? '440' : ask ? '240' : tip ? '120' : 'bar';
+            var want = full ? 'full' : (drops || tallAsk) ? '440' : ask ? '240' : tip ? '120' : 'bar';
             if (want === last) { if (lowTimer) { clearTimeout(lowTimer); lowTimer = 0; } return; }
             if (want === 'bar' && last !== '') {
                 // collapse a beat late so open/close flicker never ping-pongs the view size,
@@ -5739,6 +5939,8 @@
     // the welcome film (welcome.js) builds its demo windows from the same strings via kit().
     function barHtml() {
         return '<div class="bar"><i class="gmist" id="gmist"></i>' +
+            // macOS fullscreen: the traffic-light inset is empty — BrAIn's live memory use sits in it (host push b:110)
+            '<span class="mem" id="mem" aria-label="Memory used by BrAIn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.6"/><path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2"/></svg><b></b></span>' +
             '<div class="nav" id="nav"><i class="hl" id="nhl"></i>' +
             '<button class="nav-b" data-cmd="back" data-tip="Back" data-sc="Alt+←">' + SVG.back + '</button>' +
             '<button class="nav-b" data-cmd="forward" data-tip="Forward" data-sc="Alt+→">' + SVG.forward + '</button>' +
@@ -5875,6 +6077,11 @@
             // window's top-left (~8..72px) — pad the bar so they land in
             // empty space instead of on the nav buttons.
             '.bar.mtl{padding-left:78px}' +
+            // ...and in fullscreen the lights are gone: show BrAIn's memory use there (never takes a click: the empty bar drags the window)
+            '.mem{display:none;position:absolute;left:14px;top:0;bottom:0;align-items:center;gap:5px;pointer-events:none;' +
+            'color:var(--dim);font:600 10.5px/1 ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums;white-space:nowrap}' +
+            '.mem svg{width:11px;height:11px;opacity:.85}.mem b{font-weight:600;color:var(--mut)}' +
+            '.bar.mtl.fs .mem.on{display:flex}' +
             // Aurora: two soft site-tinted glows under the glass plus a
             // one-pixel light line on the lower edge. Static gradients only —
             // no blur, no animation, nothing to re-raster.
@@ -6076,6 +6283,12 @@
             '#askcard .dn{background:rgba(255,107,122,.16);color:#ff8b98}#askcard .dn:hover{background:rgba(255,107,122,.28)}' +
             '#askcard .st{background:rgba(255,255,255,.07);color:#e1ddd9}#askcard .st:hover{background:rgba(255,255,255,.13)}' +
             '#askcard .ok{background:hsl(var(--h) 100% 70%);color:#120f0d}#askcard .ok:hover{background:hsl(var(--h) 100% 78%)}' +
+            '#askcard .wa{background:#b8323f;color:#fff}#askcard .wa:hover{background:#cb3d4b}' +
+            '#askcard .fl{display:flex;flex-direction:column;gap:3px}#askcard .fh{color:#9d9791;font-size:11.5px;margin-bottom:1px}' +
+            '#askcard .fr{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.05);color:#e1ddd9;cursor:pointer;font-size:12px;word-break:break-all}' +
+            '#askcard .fr:hover,#askcard .fr.on{background:rgba(255,255,255,.1)}' +
+            '#askcard .fr .rd{width:11px;height:11px;border-radius:50%;border:1.5px solid #9d9791;flex:none;box-sizing:border-box}' +
+            '#askcard .fr.on .rd{border-color:#fff;background:#fff;box-shadow:inset 0 0 0 2px #1e161a}' +
             '#hocard{position:fixed;top:48px;right:14px;display:none;z-index:33;flex-direction:column;gap:10px;' +
             'background:rgba(20,28,26,.97);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);' +
             'border:1px solid rgba(110,220,170,.45);border-radius:14px;padding:12px 14px;width:350px;max-width:calc(100vw - 40px);' +
@@ -6676,7 +6889,21 @@
             '.crow.warn{color:#ffd08a}' +
             '.crow.in{color:#8fe0cd}.crow.in .ct{color:#3d7a6b}' +
             '.crow.out .ct{color:hsl(var(--h) 100% 74%)}' +
-            '.dneth,.dnetr{display:grid;grid-template-columns:52px 62px 78px 74px 1fr;gap:10px;padding:2px 14px}' +
+            '.dneth,.dnetr{display:grid;grid-template-columns:52px 62px 78px 74px 62px 150px 1fr;gap:10px;padding:2px 14px}' +
+            '.wf{position:relative;min-height:16px}.wf i{position:absolute;top:5px;height:7px;border-radius:3px;background:#7cc4ff;min-width:2px}' +
+            '.wf .wfx{background:#ffb86b}.wf .wfj{background:#ffd666}.wf .wfc{background:#b69bff}.wf .wfi{background:#7ee0a3}' +
+            '.wf .wff{background:#ff9ad0}.wf .wfm{background:#6fe0c6}.wf .wfe{background:#ff8a94}' +
+            '.dsub{display:flex;gap:2px;padding:0 10px;border-bottom:1px solid rgba(255,255,255,.08);flex:none}' +
+            '.dsub button{padding:6px 11px;border:0;background:transparent;color:#908982;font-size:11px;cursor:pointer;border-bottom:2px solid transparent}' +
+            '.dsub button:hover{color:#e6e2dd}.dsub button.on{color:hsl(var(--h) 100% 86%);border-bottom-color:hsl(var(--h) 100% 74%)}' +
+            '.dtpre{white-space:pre-wrap;word-break:break-all;color:#cdc6c0;margin:0;user-select:text}' +
+            '.jt{margin-left:14px;border-left:1px solid rgba(255,255,255,.07);padding-left:8px}.jt summary{cursor:pointer;list-style:none;color:#a79f98}' +
+            '.jt summary::-webkit-details-marker{display:none}.jk{color:#9ecbff}.js{color:#7ee0a3}.jn{color:#ffb86b}.jb{color:#d9a0ff}.jz{color:#78726d}' +
+            '.tmr{display:grid;grid-template-columns:190px 1fr 70px;gap:10px;align-items:center;padding:2px 0}' +
+            '.tmr .bar2{height:8px;border-radius:4px;background:rgba(255,255,255,.07);position:relative}.tmr .bar2 i{position:absolute;top:0;bottom:0;border-radius:4px;background:hsl(var(--h) 100% 74%)}' +
+            '.tmr b{font-weight:400;color:#a79f98}.tmr span{text-align:right;color:#d7d2ce}' +
+            '.frr{display:grid;grid-template-columns:20px 74px 56px 1fr;gap:8px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.03)}' +
+            '.frr .fs{color:#7ee0a3}.frr .fr{color:#7cc4ff}.frr .fx{word-break:break-all;color:#d7d2ce;user-select:text}' +
             '.dneth{color:#78726d;font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;border-bottom:1px solid rgba(255,255,255,.08);position:sticky;top:0;background:#161412;flex:none}' +
             '.dnetr{border-bottom:1px solid rgba(255,255,255,.03);font:11.5px/1.55 Consolas,"Cascadia Mono",monospace}' +
             '.dnetr .u{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#bfb8b1;direction:rtl;text-align:left}' +
@@ -7086,8 +7313,10 @@
             '<div class="dtrepl"><span class="pr">›</span><input id="dtin" spellcheck="false" placeholder="Evaluate JavaScript in page context…"></div></div>' +
             '<div class="dtpane" id="dtpnet">' +
             '<div class="dnettools"><div class="fpills" id="dtfp"></div>' +
+            '<label class="cklbl" title="Keep the requests of earlier pages when you navigate"><input type="checkbox" id="dtpres"> Preserve log</label>' +
+            '<button class="dtbtn" id="dthar" title="Save every request below as a .har file in Downloads">⤓ HAR</button>' +
             '<input id="dtfq" placeholder="Filter" spellcheck="false"></div>' +
-            '<div class="dneth"><span>Status</span><span>Method</span><span>Type</span><span>Size</span><span>URL</span></div>' +
+            '<div class="dneth"><span>Status</span><span>Method</span><span>Type</span><span>Size</span><span>Time</span><span>Waterfall</span><span>URL</span></div>' +
             '<div class="dtscroll" id="dtnet"></div>' +
             '<div id="dtdetail" style="display:none"></div>' +
             '<div id="dtedit" style="display:none"></div></div>' +
@@ -7212,7 +7441,11 @@
                 return;
             }
             var row = ev.target.closest ? ev.target.closest('.ckr') : null;
-            if (row) { dtCkEdit = dtCkView[+row.dataset.i] || null; renderCkEditor(sh); }
+            if (row) {
+                var ec = dtCkView[+row.dataset.i] || null;
+                if (ec && ec.hid) return; // an HttpOnly cookie's value is not shown to the page, so it cannot be edited from here (delete works)
+                dtCkEdit = ec; renderCkEditor(sh);
+            }
         });
         // Sessions pane: switch / reopen / restore.
         var sl = sh.getElementById('dtslist');
@@ -7246,6 +7479,10 @@
         if (fq) fq.addEventListener('input', function () {
             dtNetQ = fq.value.trim().toLowerCase(); dtNetSig = 'x'; if (dtLast) renderDt(sh, dtLast);
         });
+        var preserve = sh.getElementById('dtpres');
+        if (preserve) preserve.addEventListener('change', function () { dtNetSig = 'x'; send('dtpreserve:' + (preserve.checked ? '1' : '0')); });
+        var harBtn = sh.getElementById('dthar');
+        if (harBtn) harBtn.addEventListener('click', function () { send('dthar'); mdToast('Saving the requests as a HAR file in Downloads…'); });
         var netList = sh.getElementById('dtnet');
         if (netList) netList.addEventListener('click', function (ev) {
             var row = ev.target.closest ? ev.target.closest('.dnetr') : null;
@@ -7747,8 +7984,8 @@
         // At document-start our user script can beat Photino's bridge — poll
         // briefly rather than permanently losing host pushes.
         var wireBridge = function () {
-            if (!(window.external && window.external.receiveMessage)) return false;
-            window.external.receiveMessage(function (m) {
+            if (!(EXT && EXT.receiveMessage)) return false;
+            EXT.receiveMessage(function (m) {
                 try {
                     // Consume any pending boot state BEFORE the push renders —
                     // the push can beat the deferred applyBoot and trigger the
@@ -7778,6 +8015,7 @@
                         state.topmost = !!j.topmost;
                         state.wc = !!j.wc;
                         state.mtl = !!j.mtl;
+                        state.fs = !!j.fs;
                         state.nat = !!j.nat;
                         state.w = !!j.w;
                         state.sess = j.sess || 0;
@@ -7860,6 +8098,8 @@
                         renderCookies(sh);
                     } else if (j && j.b === 15 && dtOpen) {
                         renderSessions(sh, j);
+                    } else if (j && j.b === 110) {
+                        onMem(sh, j.mb);
                     } else if (j && j.b === 48) {
                         onRec(sh, j.rec, j.done);
                     } else if (j && j.b === 49) {

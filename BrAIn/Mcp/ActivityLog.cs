@@ -331,6 +331,56 @@ internal static class ActivityRecorder
                 }
             }
 
+            // Not a click, but just as consequential: reading cookies or the clipboard, uploading a file, a script that submits or sends,
+            // opening a local file. Credential files are refused outright below; the rest asks only for the few cases Seatbelt.ClassifySensitive
+            // lists (and for everything in "strict"); full control and "auto" skip the question.
+            if (Seatbelt.HardRefusal(tool, args, browser.StoreDir) is { } hard)
+            {
+                // credential and key files: refused in every mode (full control included), without bothering the user
+                log.Add(new ActivityEntry
+                {
+                    Id = Guid.NewGuid().ToString("N")[..8],
+                    T = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Tool = tool, Args = args, Ok = false, Res = hard,
+                });
+                return new CallToolResult { IsError = true, Content = [new TextContentBlock { Text = hard }] };
+            }
+            if (!browser.FullControl && !browser.Belt.Strict && tool.Equals("browser_upload", StringComparison.OrdinalIgnoreCase))
+            {
+                // the first upload asks where agents may upload from (once); later ones inside that folder just run
+                var utab = ResolveTab(browser, args);
+                var uhost = "";
+                try { uhost = new Uri(utab?.LastUrl ?? "").Host; } catch { }
+                var udenied = await browser.Belt.UploadScopeAsync(args["path"]?.ToString() ?? "", uhost, ct);
+                if (udenied is not null)
+                {
+                    log.Add(new ActivityEntry
+                    {
+                        Id = Guid.NewGuid().ToString("N")[..8],
+                        T = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        Tool = tool, Args = args, Ok = false, Url = utab?.LastUrl, Res = udenied,
+                    });
+                    return new CallToolResult { IsError = true, Content = [new TextContentBlock { Text = udenied }] };
+                }
+            }
+            if (!browser.FullControl && Seatbelt.ClassifySensitive(tool, args, browser.Belt.Strict) is { } sens)
+            {
+                var stab = ResolveTab(browser, args);
+                var shost = "";
+                try { shost = new Uri(stab?.LastUrl ?? "").Host; } catch { }
+                var sdenied = await browser.Belt.AskAsync(tool, shost, sens.Label, sens.Why, ct, sens.Category, sens.Once);
+                if (sdenied is not null)
+                {
+                    log.Add(new ActivityEntry
+                    {
+                        Id = Guid.NewGuid().ToString("N")[..8],
+                        T = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        Tool = tool, Args = args, Ok = false, Url = stab?.LastUrl, Res = sdenied,
+                    });
+                    return new CallToolResult { IsError = true, Content = [new TextContentBlock { Text = sdenied }] };
+                }
+            }
+
             var url = browser.Tabs.Active?.LastUrl;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             CallToolResult? result = null;

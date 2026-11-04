@@ -66,6 +66,7 @@ public sealed class Updater
     private bool _userFlow;         // the user has started something: errors may open the card
     private CancellationTokenSource? _dlCts;
     private RelAsset? _asset;
+    private RelAsset? _sig;        // the signature file that goes with _asset (see UpdateTrust)
     private string? _file;          // downloaded installer/dmg/tarball, ready to apply
     private int _applying;          // Linux: the archive is being unpacked / handed to the helper
     private DateTime _checkedAt;
@@ -79,7 +80,11 @@ public sealed class Updater
     /// <summary>Last phase + version as a short log line ("available 1.0.3").</summary>
     public override string ToString()
     {
-        lock (_lock) return _version.Length > 0 ? $"{_phase.ToString().ToLowerInvariant()} {_version}" : _phase.ToString().ToLowerInvariant();
+        lock (_lock)
+        {
+            var s = _version.Length > 0 ? $"{_phase.ToString().ToLowerInvariant()} {_version}" : _phase.ToString().ToLowerInvariant();
+            return _phase == Phase.Error && _error.Length > 0 ? s + ": " + _error : s;
+        }
     }
 
     /// <summary>Serializable state for the chrome.</summary>
@@ -167,8 +172,9 @@ public sealed class Updater
             var latest = ParseVersion(rel.Tag);
             var current = ParseVersion(Current);
             var asset = PickAsset(rel);
+            var sig = asset is null ? null : rel.Assets.FirstOrDefault(a => a.Name == asset.Name + ".sig");
             _checkedAt = DateTime.UtcNow;
-            lock (_lock) _asset = asset;
+            lock (_lock) { _asset = asset; _sig = sig; }
 
             await Linger();
             if (latest <= current)
@@ -193,6 +199,16 @@ public sealed class Updater
                     err: canApply ? "no installer for this platform in the release" : NoApplyReason());
                 return;
             }
+            // An update is only offered when it can be proven genuine: its files are where this project publishes them, and
+            // a signature from the maintainer's key (UpdateTrust) comes with it. Otherwise say why, and install nothing.
+            var refusal = !UpdateTrust.IsSafeAssetName(asset.Name) || !UpdateTrust.IsTrustedUrl(asset.Url, Repo)
+                ? "this release's installer is not at the address BrAIn trusts, so it will not be downloaded"
+                : sig is null
+                    ? "this release is not signed, so BrAIn will not install it by itself — download it from the website"
+                    : !UpdateTrust.IsSafeAssetName(sig.Name) || !UpdateTrust.IsTrustedUrl(sig.Url, Repo)
+                        ? "this release's signature is not at the address BrAIn trusts, so it will not be downloaded"
+                        : null;
+            if (refusal is not null) { Set(Phase.Error, rel.Tag.TrimStart('v'), err: refusal); return; }
             Set(Phase.Available, rel.Tag.TrimStart('v'));
         }
         catch (Exception ex)
@@ -205,12 +221,13 @@ public sealed class Updater
     /// <summary>Download the pending release asset and verify its SHA-256.</summary>
     public async Task DownloadAsync(CancellationToken ct)
     {
-        RelAsset? asset;
+        RelAsset? asset, sigAsset;
+        string version;
         CancellationTokenSource cts;
         lock (_lock)
         {
-            if (_phase != Phase.Available || _asset is null) return;
-            asset = _asset;
+            if (_phase != Phase.Available || _asset is null || _sig is null) return;
+            asset = _asset; sigAsset = _sig; version = _version;
             _phase = Phase.Downloading; _pct = 0; _got = 0; _size = asset.Size; _error = "";
             _dlCts = cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         }
@@ -242,16 +259,29 @@ public sealed class Updater
             }
             Set(Phase.Verifying, pct: 100, got: asset.Size > 0 ? asset.Size : _got);
 
-            // GitHub publishes a sha256 digest per asset; verify when present.
-            var sha = asset.Digest is { } d && d.StartsWith("sha256:", StringComparison.Ordinal)
-                ? d[7..] : null;
-            if (sha is not null)
+            // 1. GitHub's own sha256 digest of the asset. Required: a release without one is not installed. (It catches a damaged
+            //    or swapped download; it proves nothing about WHO published it — that is the signature's job, next.)
+            if (asset.Digest is not { } d || !d.StartsWith("sha256:", StringComparison.Ordinal))
+                throw new InvalidOperationException("this release has no checksum, so BrAIn cannot verify it and will not install it");
+            string hex;
+            await using (var fs = File.OpenRead(tmp))
+                hex = Convert.ToHexString(await SHA256.HashDataAsync(fs, cts.Token)).ToLowerInvariant();
+            if (!hex.Equals(d[7..], StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("checksum mismatch — download may be corrupt");
+
+            // 2. The maintainer's signature over (version, file name, sha256): see UpdateTrust. Fails closed.
+            string signature;
+            using (var req = new HttpRequestMessage(HttpMethod.Get, sigAsset.Url))
+            using (var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token))
             {
-                await using var fs = File.OpenRead(tmp);
-                var hex = Convert.ToHexString(await SHA256.HashDataAsync(fs, cts.Token)).ToLowerInvariant();
-                if (!hex.Equals(sha, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("checksum mismatch — download may be corrupt");
+                resp.EnsureSuccessStatusCode();
+                if (resp.Content.Headers.ContentLength is > 1024) throw new InvalidOperationException("the release signature is not a signature");
+                var raw = await resp.Content.ReadAsByteArrayAsync(cts.Token);
+                if (raw.Length > 1024) throw new InvalidOperationException("the release signature is not a signature");
+                signature = System.Text.Encoding.ASCII.GetString(raw);
             }
+            if (!UpdateTrust.Verify(version, asset.Name, hex, signature))
+                throw new InvalidOperationException("the signature of this update is not valid, so it will not be installed");
 
             lock (_lock) _file = tmp;
             Set(Phase.Ready, pct: 100);
@@ -313,18 +343,25 @@ public sealed class Updater
         if (OperatingSystem.IsMacOS())
         {
             // A detached script swaps the .app once this process is gone.
+            // The file, the app and the process id reach the script as ARGUMENTS, never pasted into its text: nothing in a name or a
+            // path can become shell code. (The bundle is also checked to be intact before it replaces the installed one.)
             var script = Path.Combine(Path.GetTempPath(), "brain-update.sh");
-            File.WriteAllText(script, $"""
+            File.WriteAllText(script, """
                 #!/bin/bash
-                while kill -0 {Environment.ProcessId} 2>/dev/null; do sleep 0.2; done
-                MNT=$(hdiutil attach -nobrowse -readonly "{file}" | grep -o '/Volumes/.*' | head -1)
-                [ -n "$MNT" ] && ditto "$MNT/BrAIn.app" "{root}" && hdiutil detach "$MNT" -quiet
-                rm -f "{file}"
-                open "{root}"
-                rm -f "{script}"
+                PID=$1 FILE=$2 ROOT=$3 SELF=$0
+                while kill -0 "$PID" 2>/dev/null; do sleep 0.2; done
+                MNT=$(hdiutil attach -nobrowse -readonly "$FILE" | grep -o '/Volumes/.*' | head -1)
+                if [ -n "$MNT" ] && codesign --verify --deep --strict "$MNT/BrAIn.app" 2>/dev/null; then
+                  ditto "$MNT/BrAIn.app" "$ROOT"
+                fi
+                [ -n "$MNT" ] && hdiutil detach "$MNT" -quiet
+                rm -f "$FILE"
+                open "$ROOT"
+                rm -f "$SELF"
                 """);
-            Process.Start(new ProcessStartInfo("/bin/bash", script)
-            { CreateNoWindow = true, UseShellExecute = false });
+            var psi = new ProcessStartInfo("/bin/bash") { CreateNoWindow = true, UseShellExecute = false };
+            foreach (var a in new[] { script, Environment.ProcessId.ToString(), file, root }) psi.ArgumentList.Add(a);
+            Process.Start(psi);
             Environment.Exit(0);
         }
         else if (OperatingSystem.IsWindows())

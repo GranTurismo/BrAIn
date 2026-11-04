@@ -5,6 +5,10 @@
 (function () {
     if (window.__brain && window.__brain.v === 6) return;
 
+    // The host's messages carry a per-view secret that only this script's closure holds (WkTabs.ShimFor): a handle taken now, before any page
+    // script runs, and removed from window right after the library bundle. Without it (older embeds, the fallback injection) the plain bridge is used.
+    var CAP = window.__brainCap, EXT = CAP ? { sendMessage: CAP.send, receiveMessage: CAP.recv } : window.external;
+
     var REF = 'data-brain-ref';
     // Continue after the highest ref already on the page, so re-injecting this script never hands out a ref twice.
     var refCounter = (function () {
@@ -793,14 +797,14 @@
                         try { return typeof a === 'object' ? JSON.stringify(a) : String(a); }
                         catch (e) { return String(a); }
                     }).join(' ');
-                    window.external && window.external.sendMessage(JSON.stringify({ b: 2, level: level, text: text.slice(0, 2000) }));
+                    EXT && EXT.sendMessage(JSON.stringify({ b: 2, level: level, text: text.slice(0, 2000) }));
                 } catch (e) { }
                 return orig && orig.apply(console, arguments);
             };
         });
         rawOn(window, 'error', function (e) {
             try {
-                window.external && window.external.sendMessage(JSON.stringify({
+                EXT && EXT.sendMessage(JSON.stringify({
                     b: 2, level: 'error', text: String(e.message || e.error || 'page error').slice(0, 2000),
                 }));
             } catch (e2) { }
@@ -919,7 +923,7 @@
     // {b:31}. Secret fields send a mask only; the value never leaves the page.
     var REC = null;
     function recSend(ev) {
-        try { window.external && window.external.sendMessage(JSON.stringify({ b: 31, ev: ev })); } catch (e) { }
+        try { EXT && EXT.sendMessage(JSON.stringify({ b: 31, ev: ev })); } catch (e) { }
     }
     function recIgnore(el) { return !el || el.nodeType !== 1 || el.id === '__brain-chrome-host'; }
     function recTextLike(el) {
@@ -2000,7 +2004,7 @@
         var rec = { m: req.m, u: req.u, o: location.origin, h: st, l: live, b: req.b && req.b.length <= 30000 ? req.b : null, bt: req.bt, s: status, ct: ct };
         var t = apiTrim(text);
         if (t != null) rec.r = t;
-        try { window.external.sendMessage('brain:apirec:' + JSON.stringify(rec)); } catch (e) { }
+        try { EXT.sendMessage('brain:apirec:' + JSON.stringify(rec)); } catch (e) { }
     }
 
     function apiWatchFetch(input, init, promise) {
@@ -2128,7 +2132,7 @@
     // document is interactive, or auto-heals if the navigation aborted.
     rawOn(window, 'pagehide', function () {
         try {
-            window.external && window.external.sendMessage(JSON.stringify({ b: 30 }));
+            EXT && EXT.sendMessage(JSON.stringify({ b: 30 }));
         } catch (e) { }
     });
 
@@ -2140,7 +2144,7 @@
     // the doc unloads before the timer runs, the pagehide beacon covers it.
     var navBeacon = function () {
         try {
-            window.external && window.external.sendMessage(JSON.stringify({ b: 30 }));
+            EXT && EXT.sendMessage(JSON.stringify({ b: 30 }));
         } catch (err) { }
     };
     var qualifiesNavTarget = function (t) {

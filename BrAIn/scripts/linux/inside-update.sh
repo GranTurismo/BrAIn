@@ -21,6 +21,11 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout "$FAKE/key.pem" -out "$FAKE/ce
   -subj "/CN=api.github.com" -addext "subjectAltName=DNS:api.github.com,DNS:github.com" 2>/dev/null || { echo "openssl failed"; exit 2; }
 cp "$FAKE/cert.pem" /usr/local/share/ca-certificates/fake-github.crt
 update-ca-certificates >/dev/null 2>&1
+# the fake releases are signed with a throw-away key that the app is told to trust (Browser/UpdateTrust.cs, BRAIN_UPDATE_TEST_KEY); the
+# real release key is not involved. update-user.sh also makes releases that are signed wrongly, to see them refused.
+openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null | openssl pkcs8 -topk8 -nocrypt -out "$FAKE/sign.pem" || { echo "openssl failed"; exit 2; }
+BRAIN_UPDATE_TEST_KEY=$(openssl pkey -in "$FAKE/sign.pem" -pubout -outform DER | base64 | tr -d '\n')
+export BRAIN_TEST_SIGN_KEY="$FAKE/sign.pem" BRAIN_UPDATE_TEST_KEY
 python3 /rig/fake-github.py "$FAKE" "$FAKE/cert.pem" "$FAKE/key.pem" >"$FAKE/server.log" 2>&1 &
 python3 /rig/set-release.py "$FAKE" v0.0.1 "$NEW" >/dev/null
 chmod -R a+rwX "$FAKE"            # the test (as the user) replaces latest.json and the archive as it goes
@@ -36,4 +41,5 @@ cp -a "$FOLDER" /srv/shared/brain-browser                          # owned by ro
 chmod 755 /home/tester
 
 export OLD NEW FAKE
-exec runuser -u tester -- env HOME=/home/tester DISPLAY="${DISPLAY:-:99}" OLD="$OLD" NEW="$NEW" FAKE="$FAKE" bash /rig/update-user.sh
+exec runuser -u tester -- env HOME=/home/tester DISPLAY="${DISPLAY:-:99}" OLD="$OLD" NEW="$NEW" FAKE="$FAKE" \
+  BRAIN_TEST_SIGN_KEY="$BRAIN_TEST_SIGN_KEY" BRAIN_UPDATE_TEST_KEY="$BRAIN_UPDATE_TEST_KEY" bash /rig/update-user.sh
