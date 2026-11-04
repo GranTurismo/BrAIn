@@ -57,6 +57,8 @@ internal static unsafe partial class LinuxBar
         _applied = "bar";
         ApplyLayout(win);
 
+        _barHtml = html;
+        GLib.Connect(view, "web-process-terminated", (delegate* unmanaged[Cdecl]<IntPtr, int, IntPtr, void>)&OnChromeProcessTerminated);
         WebKit.webkit_web_view_load_html(view, html, "https://brain-bar.invalid/");
         Console.Error.WriteLine("[BrAIn] split: bar view created");
         AttachDebug(win, view);
@@ -209,8 +211,36 @@ internal static unsafe partial class LinuxBar
         Gtk.gtk_widget_set_size_request(view, (int)SidePanelWidth, -1);
         Gtk.gtk_box_pack_start(LinuxWindow.Row, view, 0, 0, 0); // after the page stack; the bar overlay paints over it
         _side = view;
+        _sideHtml = html;
+        GLib.Connect(view, "web-process-terminated", (delegate* unmanaged[Cdecl]<IntPtr, int, IntPtr, void>)&OnChromeProcessTerminated);
         WebKit.webkit_web_view_load_html(view, html, "https://brain-side.invalid/");
         return true;
+    }
+
+    private static string _barHtml = "", _sideHtml = "";
+    private static long _crashWindowStart;
+    private static int _crashes;
+
+    /// <summary>The web process of the toolbar (or side panel) died — out of memory, a renderer fault. Nothing else
+    /// would bring the view back: it stays a dead, empty rectangle (a "crashed" browser) until the app restarts. Load its
+    /// document again; the page script announces itself with <c>barready</c> and the controller pushes the state. The
+    /// controller is told too (<c>brain:barcrash</c>) so a welcome film that took the process down is not replayed on
+    /// every launch. A view that keeps dying (3 times in 30 s) is left alone rather than reloaded in a loop.</summary>
+    [System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
+    private static void OnChromeProcessTerminated(IntPtr view, int reason, IntPtr data)
+    {
+        try
+        {
+            var isBar = view == _bar;
+            var now = Environment.TickCount64;
+            if (now - _crashWindowStart > 30_000) { _crashWindowStart = now; _crashes = 0; }
+            _crashes++;
+            Console.Error.WriteLine($"[BrAIn] {(isBar ? "toolbar" : "side panel")} web process terminated (reason {reason}, #{_crashes} in this window)");
+            if (isBar) try { OnBarMessage?.Invoke("brain:barcrash"); } catch { }
+            if (_crashes > 3) return;
+            WebKit.webkit_web_view_load_html(view, isBar ? _barHtml : _sideHtml, isBar ? "https://brain-bar.invalid/" : "https://brain-side.invalid/");
+        }
+        catch { }
     }
 
     /// <summary>Shows or hides the panel and re-lays-out the page area. Returns the new state.</summary>

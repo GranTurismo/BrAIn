@@ -17,6 +17,7 @@ internal static unsafe partial class LinuxBar
  function say(m){try{window.external.sendMessage('brain:dbg:'+m)}catch(_){}}
  window.addEventListener('error',function(e){say('JSERR '+e.message+' @'+(e.filename||'').slice(-40)+':'+e.lineno)});
  window.addEventListener('unhandledrejection',function(e){say('REJECT '+(e.reason&&e.reason.message||e.reason))});
+ (function(){var n=0,t0=performance.now(),worst=0,prev=t0;(function f(t){n++;worst=Math.max(worst,t-prev);prev=t;if(t-t0>=2000){say('FPS '+(n*1000/(t-t0)).toFixed(1)+' worst-frame='+worst.toFixed(0)+'ms'+(window.__brainWelcomeOpen?' (welcome open)':''));n=0;worst=0;t0=t}requestAnimationFrame(f)})(t0)})();
  document.addEventListener('keydown',function(e){say('KEY '+(e.ctrlKey?'ctrl+':'')+e.key+' target='+(e.target&&e.target.tagName)+' focus='+(document.hasFocus()?'doc':'NOFOCUS'))},true);
  function d(x,y){var out=[],seen=new Set();(function walk(root){if(seen.has(root))return;seen.add(root);
    var els=root.elementsFromPoint(x,y);for(var i=0;i<els.length;i++){var e=els[i],cs=getComputedStyle(e);

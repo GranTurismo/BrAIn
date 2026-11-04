@@ -2,6 +2,21 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.8.1 — 2026-11-04
+
+**macOS and Windows:** nothing changes for you in this release — it is a Linux fix. It still ships as a new version with rebuilt installers, because the version number and the update feed are shared by every platform.
+
+### Fixed
+- **Linux: the welcome film no longer lags** — the first report from a real desktop said BrAIn "crashes and lags on the welcome screen". On Linux the toolbar (where the film plays) is painted on the CPU, and the full film — film grain, a drifting glow, a full-window neural-field canvas, large soft shadows and a dozen looping animations — ran at about 11 frames per second on a 1080p screen and under 4 on a HiDPI one, with the toolbar's web process at 100% CPU. On Linux the film now drops what only decorates (large soft shadows, blur filters, endlessly looping CSS animations, grain, the 3D tilt), draws its canvas at 1× and about 15 times a second, and sheds the canvas altogether when it still cannot hold 30 fps. Measured in the test container over the whole film: 11 → 47 fps at 1080p, 4 → 38 fps on a 3200×2000 HiDPI screen. The film looks the same otherwise.
+- **Linux: a toolbar whose web process dies now comes back** — before, the window became a blank white rectangle (a frozen strip of the film, no toolbar, nothing to click) until you restarted BrAIn. The toolbar and the side panel now reload (up to three times in 30 seconds), and a welcome film that was playing is counted as seen so it cannot crash BrAIn again on every launch; **Welcome tour** in the command palette plays it on demand.
+
+### Added
+- `BRAIN_DEBUG_BAR=1` also reports the toolbar's frame rate (`FPS n worst-frame=…`) every two seconds, and a new Linux end-to-end test (`20_welcome_film`) checks the film's frame rate and the toolbar's recovery.
+
+### Known
+- We could not reproduce what kills the toolbar's web process on the reporting machine; if BrAIn still crashes, please send the output of running `brain` from a terminal, your distro, GPU, X11 or Wayland, and display scale.
+- The "Flows & scripts" scene is the heaviest part of the film (about 15 fps on a HiDPI screen in the test container). Everything was measured in containers, not on real desktops.
+
 ## 1.8.0 — 2026-11-02
 
 ### Added

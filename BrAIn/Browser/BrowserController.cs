@@ -2316,6 +2316,13 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "ghostlogins": SetGhostLogins(arg == "" ? !_ghostLogins : arg == "1"); break;
                         case "welcome": ShowWelcome(); break;
                         case "welcomed": MarkWelcomed(); break;
+                        case "barcrash":
+                            // Linux: the toolbar view's web process died and was reloaded (LinuxBar). If the welcome film was
+                            // playing there it is gone and cannot resume — and if it is what kills the process, replaying it on
+                            // every launch would be a crash loop. Count it as seen; "Welcome tour" in the palette plays it again.
+                            Log("toolbar web process crashed" + (_welcomeShown && !_welcomed ? " during the welcome film — not replaying it" : ""));
+                            if (_welcomeShown && !_welcomed) { _welcomed = true; SavePrefs(); }
+                            break;
                         case "pin":
                             if (Tabs.FindByPrefix(arg) is { } pt)
                             {
@@ -3147,6 +3154,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         {
             exe = Environment.ProcessPath ?? "",
             mac = IsMac,
+            lite = IsLinux, // Linux paints the toolbar view (where the film runs) on the CPU: the film drops its decoration (see welcome.js LITE)
             pages = new { flows = Assets.FlowsHtml, personality = Assets.PersonalityHtml },
             tpls = UserScriptStore.Templates,
         }, UsJson);

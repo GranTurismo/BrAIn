@@ -38,6 +38,7 @@ Needs Docker and the .NET SDK. Exit status = number of failed tests.
 | `17_selftest_tabs` | the app's own `--selftest-tabs` |
 | `18_import_vault_keyring_pam` | a real account: importing fake Chrome/Chromium/Opera/Snap/Flatpak/Firefox profiles (v10 + v11 cookies and passwords), the vault key in the keyring, a password reveal gated by the real PAM dialog |
 | `19_import_vault_no_keyring` | a minimal session: key file (0600) fallback, Allow/Cancel fallback, importing through the MCP tool |
+| `20_welcome_film` | a fresh profile: the welcome film keeps >= 30 fps on the CPU-painted toolbar view (it ran at 10-18), and a toolbar whose web process is killed comes back (strip painted, film not replayed, pages load). Native CPU only: not under x64-on-arm emulation |
 
 ## Writing a test
 

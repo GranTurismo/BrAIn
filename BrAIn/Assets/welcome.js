@@ -7,8 +7,15 @@
     const prev = window.__brainWelcome;
     if (prev && prev.isOpen && prev.isOpen()) return;
 
-    const CFG = Object.assign({ exe: '', mac: /Mac/i.test(navigator.platform), test: false }, window.__brainWelcomeCfg || {});
+    const CFG = Object.assign({ exe: '', mac: /Mac/i.test(navigator.platform), test: false, lite: false }, window.__brainWelcomeCfg || {});
     const REDUCE = (() => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } })();
+    // LITE: the host paints this view on the CPU (Linux: the toolbar view is software-painted, see LinuxEngine.NewSettings), so
+    // every frame re-rasters whatever changed. Anything that animates across the whole window (grain, the drifting glow, the
+    // neural-field canvas) repaints ALL of it, and blurred shadows / filters are paid for per pixel: the full film ran at
+    // ~10 fps with the web process pinned at 100% CPU on a 1080p screen. Lite keeps the story and the look (flat shadows, the
+    // hairline rings and glows stay) and drops what only decorates; a governor (see `govern`) sheds the canvas too if even
+    // that cannot hold ~24 fps (4K / HiDPI screens).
+    const LITE = !!CFG.lite;
     const MOD = CFG.mac ? '\u2318' : 'Ctrl+';
     const send = cmd => {
         if (CFG.test) { (window.__welcomeLog = window.__welcomeLog || []).push(cmd); return; }
@@ -381,6 +388,43 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
 @media (prefers-reduced-motion:reduce){#wl *,#wl *::before,#wl *::after{animation-duration:.01ms!important;animation-iteration-count:1!important}}
 `;
 
+    // Lite styling: drop the big soft box-shadow layers (blur > 16px; hairline rings and small glows stay) and every
+    // backdrop blur / glow filter, and let no CSS animation loop. Applied to the film's own stylesheet and to the real
+    // toolbar's (the demo windows).
+    function liteCss(css) {
+        const blurred = layer => {
+            // lengths only: take the colour functions (rgba(...), var(...)) and `inset` out, hex colours start with '#'
+            const nums = layer.replace(/\([^)]*\)/g, '').replace(/\binset\b/, '').trim().split(/\s+/).filter(x => /^-?[\d.]/.test(x));
+            return nums.length >= 3 && parseFloat(nums[2]) > 16; // small glows on small dots are cheap; the big soft shadows are not
+        };
+        const shadows = css.replace(/box-shadow:([^;}]+)/g, (m, v) => {
+            const parts = []; let depth = 0, cur = '';
+            for (const ch of v) {
+                if (ch === '(') depth++; else if (ch === ')') depth--;
+                if (ch === ',' && !depth) { parts.push(cur); cur = ''; } else cur += ch;
+            }
+            parts.push(cur);
+            const keep = parts.filter(p => !blurred(p));
+            return 'box-shadow:' + (keep.length ? keep.join(',') : 'none');
+        });
+        // backdrop blur and glow / blur filters (colour filters such as invert() or brightness() are left alone)
+        return shadows.replace(/(?:-webkit-)?backdrop-filter:[^;}]+/g, 'backdrop-filter:none')
+            .replace(/filter:[^;}]*(?:drop-shadow|blur)\([^;}]*/g, 'filter:none');
+    }
+    // No CSS animation loops forever. On a CPU-painted view every running animation of a property that cannot be composited
+    // (box-shadow, background-position, ...) makes WebKit run a whole rendering update each frame, whatever its size: one 8px
+    // pulsing dot took the agent scene from 55 to 12 fps on a HiDPI screen. (Scripted animations are not affected.)
+    const NO_LOOPS = '*,*::before,*::after{animation-iteration-count:1!important}';
+    // the film's own extras, on top of liteCss
+    const LITE_RULES = `
+#wl.lite *,#wl.lite *::before,#wl.lite *::after{animation-iteration-count:1!important}
+#wl.lite,#wl.lite *{filter:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+#wl.lite .grain{display:none}
+#wl.lite .bg{animation:none}
+#wl.lite .stage{perspective:none}
+#wl.lite canvas.field,#wl.lite .vign{transition:opacity .9s}
+#wl.flat canvas.field,#wl.flat .vign{opacity:0}`;
+
     // ---------------------------------------------------------------- DOM shell
     const host = document.createElement('div');
     host.id = '__brain-welcome';
@@ -388,8 +432,8 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
     host.setAttribute('role', 'dialog');
     host.setAttribute('aria-label', 'Welcome to BrAIn');
     const shadow = host.attachShadow({ mode: 'open' });
-    shadow.innerHTML = `<style>${CSS}</style>
-      <div id="wl" class="${CFG.mac ? 'mac' : ''}" tabindex="-1">
+    shadow.innerHTML = `<style>${LITE ? liteCss(CSS) + LITE_RULES : CSS}</style>
+      <div id="wl" class="${CFG.mac ? 'mac' : ''}${LITE ? ' lite' : ''}" tabindex="-1">
         <div class="bg bgA"></div><div class="bg bgV"></div>
         <canvas class="field"></canvas>
         <div class="vign"></div>
@@ -415,7 +459,23 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
         rafId = requestAnimationFrame(loop);
         const dt = lastNow ? Math.min(50, now - lastNow) : 16;
         lastNow = now;
+        if (LITE) govern(now);
         tick(dt, now);
+    }
+    // Frame governor (lite only). Measures the real frame rate over 2 s windows; two slow windows in a row while the film
+    // is playing (a paused film or a hidden window gets no frames, that is not slowness) and the canvas and the vignette are
+    // shed (they fade out) — the last things that repaint the whole window.
+    let govT0 = 0, govN = 0, govSlow = 0, shed = false;
+    function govern(now) {
+        if (shed) return;
+        if (!govT0) { govT0 = now; govN = 0; return; }
+        govN++;
+        if (now - govT0 < 2000) return;
+        const fps = govN * 1000 / (now - govT0);
+        govT0 = now; govN = 0;
+        if (!playing || document.hidden) { govSlow = 0; return; }
+        govSlow = fps < 30 ? govSlow + 1 : 0;
+        if (govSlow >= 2) { shed = true; wl.classList.add('flat'); field.off(); }
     }
     function tick(dt, now) {
         if (playing) clock += dt;
@@ -603,10 +663,10 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
         let px = -1e4, py = -1e4, spawn = 0;
         const LINK = 150;
         function resize() {
-            dpr = Math.min(1.5, window.devicePixelRatio || 1);
+            dpr = LITE ? 1 : Math.min(1.5, window.devicePixelRatio || 1);
             W = cvs.clientWidth || innerWidth; H = cvs.clientHeight || innerHeight;
             cvs.width = Math.round(W * dpr); cvs.height = Math.round(H * dpr);
-            const n = Math.round(clamp(W * H / 14500, 46, 118));
+            const n = Math.round(clamp(W * H / (LITE ? 24000 : 14500), 46, LITE ? 64 : 118));
             nodes = Array.from({ length: n }, () => ({ x: rnd(0, W), y: rnd(0, H), vx: rnd(-9, 9), vy: rnd(-9, 9), r: rnd(.8, 2.1), f: 0 }));
             sparks = []; waves = [];
         }
@@ -702,7 +762,16 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
         }
         return {
             resize,
-            frame(dt) { if (REDUCE) { if (!this._drawn) { this._drawn = 1; draw(); } return; } step(dt); draw(); },
+            frame(dt) {
+                if (REDUCE) { if (!this._drawn) { this._drawn = 1; draw(); } return; }
+                if (this._off) return;
+                // lite: every canvas change repaints the whole window on the CPU, so redraw ~15x a second (the dots drift
+                // at a few px/s: nobody can tell) and let the other frames stay cheap
+                if (LITE) { this._acc = (this._acc || 0) + dt; if (this._acc < 62) return; dt = this._acc; this._acc = 0; }
+                step(dt); draw();
+            },
+            /** The governor gave up on the canvas: stop drawing (the last frame fades out, see `.flat`), then clear it for good. */
+            off() { this._off = true; setTimeout(() => g.clearRect(0, 0, cvs.width, cvs.height), 1000); },
             pointer(x, y) { px = x; py = y; },
             wave(x, y) { waves.push({ x, y, r: 0, max: Math.hypot(W, H) * .75 }); },
             tint(rgb, ms = 1200) { tintFrom = tint.slice(); tintTo = rgb; tintT = 0; tintDur = ms; },
@@ -733,7 +802,7 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
     function kit() {
         if (KIT === undefined) {
             KIT = null;
-            try { const k = window.__brainChrome && window.__brainChrome.kit && window.__brainChrome.kit(); if (k && k.css) KIT = k; } catch (e) { }
+            try { const k = window.__brainChrome && window.__brainChrome.kit && window.__brainChrome.kit(); if (k && k.css) KIT = LITE ? Object.assign({}, k, { css: liteCss(k.css) + NO_LOOPS }) : k; } catch (e) { }
         }
         return KIT;
     }
@@ -1016,6 +1085,7 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
                 w.addEventListener('pointerdown', () => { if (c.alive) c.touch(); }, true);
                 res(w);
             }, { once: true });
+            if (LITE) html = liteCss(html).replace(/<head>/i, '<head><style>' + NO_LOOPS + '</style>'); // the real page, minus its big shadows and loops
             ifr.srcdoc = html.replace(/<head>/i, '<head>' + stub);
         });
     }
@@ -1867,7 +1937,7 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
         });
     });
     frameFns.add(dt => {
-        if (!run || REDUCE) return;
+        if (!run || REDUCE || LITE) return; // lite: no 3D tilt — it re-renders the whole demo window offscreen on every mouse move
         const tl = run.tl || (run.tl = run.el.querySelector('.tilt'));
         if (!tl) return;
         const tx = run.drag ? 0 : ptx, ty = run.drag ? 0 : pty, k = 1 - Math.pow(.0025, dt / 1000);
