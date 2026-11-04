@@ -2,6 +2,19 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.8.2 — 2026-11-04
+
+**macOS and Windows:** nothing changes for you in this release — it is a Linux fix. It still ships as a new version with rebuilt installers, because the version number and the update feed are shared by every platform.
+
+### Fixed
+- **Linux: BrAIn no longer dies a few seconds after start on systems without OpenSSL 3 (Fedora 45 and newer)** — BrAIn's .NET runtime needs OpenSSL 3 (`libssl.so.3`; 1.1 also works) for TLS and crypto: the update check, hashing, the password vault. Fedora 45 ships OpenSSL 4 and keeps OpenSSL 3 in a separate package, and when the runtime finds no version it knows it does not throw — it aborts the whole process ("No usable version of libssl was found"), about a second after the home screen appears. BrAIn now checks for the library first. If it is missing, a desktop launch shows a dialog that names the package for your distribution (Fedora: `sudo dnf install openssl3-libs`) and BrAIn exits cleanly; started by an MCP client over pipes it prints the same message to stderr and exits with status 1, without a dialog. Nothing changes when OpenSSL 3 is present.
+- **Linux: `install.sh` warns about a missing OpenSSL 3** along with the other required libraries, with the right package name for Debian/Ubuntu, Fedora/RHEL, openSUSE and Arch; the README and the archive's README list it.
+
+### Known
+- On Fedora 45 and newer you still have to install OpenSSL 3 yourself once: `sudo dnf install openssl3-libs`. Setting `CLR_OPENSSL_VERSION_OVERRIDE=4` does not help. Bundling OpenSSL 3 so no extra step is needed is possible but not done.
+- The self-updater needs TLS too, so a Linux system without OpenSSL 3 cannot update itself until the package is installed.
+- Verified on Fedora 45 (WebKitGTK 2.54) in a container, not on a real desktop.
+
 ## 1.8.1 — 2026-11-04
 
 **macOS and Windows:** nothing changes for you in this release — it is a Linux fix. It still ships as a new version with rebuilt installers, because the version number and the update feed are shared by every platform.

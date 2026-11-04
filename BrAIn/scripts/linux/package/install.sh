@@ -59,6 +59,9 @@ have_lib() {
 }
 hard='' soft=''
 for l in libwebkit2gtk-4.1.so.0 libgtk-3.so.0; do have_lib "$l" || hard="$hard $l"; done
+# the .NET runtime inside BrAIn needs OpenSSL 3 (1.1 also works). Fedora 45+ ships OpenSSL 4 and keeps 3 in its own package;
+# without a version .NET knows it aborts the process a few seconds after start
+have_lib libssl.so.3 || have_lib libssl.so.1.1 || hard="$hard libssl.so.3(OpenSSL-3)"
 for l in libnotify.so.4 libsecret-1.so.0; do have_lib "$l" || soft="$soft $l"; done
 if [ -n "$hard$soft" ]; then
   [ -n "$hard" ] && warn "BrAIn will not start without:$hard"
@@ -66,11 +69,11 @@ if [ -n "$hard$soft" ]; then
   ID=; LIKE=
   [ -r /etc/os-release ] && { ID=$(. /etc/os-release; echo "${ID:-}"); LIKE=$(. /etc/os-release; echo "${ID_LIKE:-}"); }
   case " $ID $LIKE " in
-    *" debian "*|*" ubuntu "*) warn "install them with:  sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0" ;;
-    *" fedora "*|*" rhel "*)   warn "install them with:  sudo dnf install webkit2gtk4.1 gtk3 libnotify libsecret" ;;
-    *" arch "*)                warn "install them with:  sudo pacman -S webkit2gtk-4.1 gtk3 libnotify libsecret" ;;
-    *" suse "*|*" opensuse "*) warn "install them with:  sudo zypper install libwebkit2gtk-4_1-0 libgtk-3-0 libnotify4 libsecret-1-0" ;;
-    *) warn "packages: WebKitGTK 4.1, GTK 3, libnotify, libsecret (names differ per distribution)" ;;
+    *" debian "*|*" ubuntu "*) warn "install them with:  sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0 libssl3" ;;
+    *" fedora "*|*" rhel "*)   warn "install them with:  sudo dnf install webkit2gtk4.1 gtk3 libnotify libsecret openssl3-libs   (openssl-libs before Fedora 45)" ;;
+    *" arch "*)                warn "install them with:  sudo pacman -S webkit2gtk-4.1 gtk3 libnotify libsecret   (and an OpenSSL that provides libssl.so.3)" ;;
+    *" suse "*|*" opensuse "*) warn "install them with:  sudo zypper install libwebkit2gtk-4_1-0 libgtk-3-0 libnotify4 libsecret-1-0 libopenssl3" ;;
+    *) warn "packages: WebKitGTK 4.1, GTK 3, libnotify, libsecret, OpenSSL 3 (names differ per distribution)" ;;
   esac
 fi
 

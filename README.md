@@ -63,7 +63,7 @@ embedded MCP server and its tools — in a GTK 3 window with one WebKitGTK view 
 ```bash
 # 1. the system libraries (Debian / Ubuntu names; install.sh prints the right ones for your distribution)
 sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0
-#    Fedora: sudo dnf install webkit2gtk4.1 gtk3 libnotify libsecret
+#    Fedora: sudo dnf install webkit2gtk4.1 gtk3 libnotify libsecret openssl3-libs   # Fedora 45+ ships OpenSSL 4; BrAIn needs OpenSSL 3
 #    Arch:   sudo pacman -S webkit2gtk-4.1 gtk3 libnotify libsecret
 
 # 2. unpack the archive for your CPU (uname -m: x86_64 = x64, aarch64 = arm64) and run the installer

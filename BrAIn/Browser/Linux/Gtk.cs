@@ -125,6 +125,8 @@ internal static unsafe partial class Gtk
     [LibraryImport(LibGtk)] internal static partial void gtk_style_context_add_provider(IntPtr ctx, IntPtr provider, uint priority);
     [LibraryImport(LibGtk)] internal static partial void gtk_style_context_add_provider_for_screen(IntPtr screen, IntPtr provider, uint priority);
 
+    [LibraryImport(LibGtk)] internal static partial int gtk_init_check(ref int argc, IntPtr argv);
+
     // ---- dialogs ----
     [LibraryImport(LibGtk)] internal static partial IntPtr gtk_dialog_new();
     [LibraryImport(LibGtk, StringMarshalling = StringMarshalling.Utf8)] internal static partial IntPtr gtk_dialog_add_button(IntPtr dlg, string text, int response);

@@ -64,6 +64,10 @@ public static class Program
             return 0;
         }
 
+        // Linux: without a usable OpenSSL the .NET runtime abort()s the whole process the first time anything needs crypto or TLS
+        // (the update check, a favicon hash, the vault) — a few seconds in, uncatchable. Say what is missing instead.
+        if (OperatingSystem.IsLinux() && !Browser.Linux.LinuxPreflight.Ok()) return 1;
+
         var selfTest = args.Contains("--selftest-tabs");
         if (selfTest && args.Contains("--selftest-evict")) Environment.SetEnvironmentVariable("BRAIN_MAXLIVE", "3"); // opt-in cap to exercise eviction
         BrowserController.Mark("main");
