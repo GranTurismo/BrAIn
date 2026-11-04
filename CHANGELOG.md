@@ -2,6 +2,17 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.8.3 — 2026-11-04
+
+**macOS and Windows:** nothing changes for you in this release — it is a Linux change. It still ships as a new version with rebuilt installers, because the version number and the update feed are shared by every platform.
+
+### Changed
+- **Linux: BrAIn works out of the box on Fedora 45 and newer — no extra package** — 1.8.2 told you what was missing when a system had no OpenSSL 3 (Fedora 45 ships OpenSSL 4, which BrAIn's .NET runtime cannot use). The Linux archives now carry OpenSSL 3.5 themselves, in an `openssl/` folder next to the program, and BrAIn loads it at start **only when the system has no OpenSSL it can use** — a system copy always wins, so the distribution's security updates still apply. The same dialog / stderr message as in 1.8.2 remains for the case where even the bundled copy cannot load (a glibc older than 2.38). `install.sh` no longer asks for `openssl3-libs`; it prints a note when it sees the system has none. The archives are about 2.8 MB larger. The libraries are Fedora's own `openssl3-libs-3.5.9` build, Apache-2.0 licensed, with the licence in `openssl/LICENSE.txt` and the provenance and checksums in `third_party/openssl/README.md`.
+
+### Known
+- GTK 3, WebKitGTK 4.1, libnotify and libsecret are still system packages (`sudo dnf install webkit2gtk4.1 gtk3 libnotify libsecret` on Fedora); they are too large and too tied to the graphics stack to ship inside the archive.
+- Verified on Fedora 45 (WebKitGTK 2.54) in an arm64 container, not on a real desktop; the x64 library is the same package for x86-64 and was checked for architecture only.
+
 ## 1.8.2 — 2026-11-04
 
 **macOS and Windows:** nothing changes for you in this release — it is a Linux fix. It still ships as a new version with rebuilt installers, because the version number and the update feed are shared by every platform.

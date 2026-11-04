@@ -60,8 +60,15 @@ have_lib() {
 hard='' soft=''
 for l in libwebkit2gtk-4.1.so.0 libgtk-3.so.0; do have_lib "$l" || hard="$hard $l"; done
 # the .NET runtime inside BrAIn needs OpenSSL 3 (1.1 also works). Fedora 45+ ships OpenSSL 4 and keeps 3 in its own package;
-# without a version .NET knows it aborts the process a few seconds after start
-have_lib libssl.so.3 || have_lib libssl.so.1.1 || hard="$hard libssl.so.3(OpenSSL-3)"
+# without a version .NET knows it aborts the process a few seconds after start. The archive carries a copy (openssl/) that
+# BrAIn uses when the system has none, so this is only a problem for an archive without it.
+if ! have_lib libssl.so.3 && ! have_lib libssl.so.1.1; then
+  if [ -s "$SRC/openssl/libssl.so.3" ] && [ -s "$SRC/openssl/libcrypto.so.3" ]; then
+    echo "note: this system has no OpenSSL 3; BrAIn will use the copy it ships in openssl/"
+  else
+    hard="$hard libssl.so.3(OpenSSL-3)"
+  fi
+fi
 for l in libnotify.so.4 libsecret-1.so.0; do have_lib "$l" || soft="$soft $l"; done
 if [ -n "$hard$soft" ]; then
   [ -n "$hard" ] && warn "BrAIn will not start without:$hard"

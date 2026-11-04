@@ -18,7 +18,7 @@ Or just run it from here, nothing to install:  ./BrAIn
 
 Needs (Debian / Ubuntu names; install.sh prints the right ones for your distribution)
     sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0
-    Fedora: sudo dnf install webkit2gtk4.1 gtk3 libnotify libsecret openssl3-libs   (OpenSSL 3 is its own package since Fedora 45)
+    Fedora: sudo dnf install webkit2gtk4.1 gtk3 libnotify libsecret
 
 Let an AI agent drive it (any MCP client, e.g. Claude Desktop / Claude Code):
     { "mcpServers": { "brain": { "command": "/home/YOU/.local/share/brain-browser/BrAIn" } } }
@@ -30,6 +30,7 @@ Files
     Assets/              window icon
     icons/               menu icons, copied to ~/.local/share/icons by install.sh
     brain.desktop        menu entry template
+    openssl/             OpenSSL 3 (Apache-2.0), used only when the system has none (Fedora 45+ ships OpenSSL 4)
     install.sh, uninstall.sh, release.txt (lists the files above for the self-updater)
 
 If something is off

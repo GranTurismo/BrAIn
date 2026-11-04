@@ -8,7 +8,9 @@ namespace BrAIn.Browser.Linux;
 /// favicon name, the password vault — and when no version it knows can be loaded the runtime does not throw: it prints
 /// "No usable version of libssl was found" and <c>abort()</c>s the whole process, a few seconds after the window appeared
 /// (nothing in managed code can catch that). Fedora 45 ships OpenSSL 4 (<c>libssl.so.4</c>) and keeps OpenSSL 3 in a
-/// separate package, so a stock Fedora 45 desktop hit exactly that. Here the user gets an explanation instead.
+/// separate package, so a stock Fedora 45 desktop hit exactly that. The Linux archives therefore carry OpenSSL 3 in
+/// <c>openssl/</c> (third_party/openssl/README.md): it is loaded here, only when the system has nothing usable, and the
+/// runtime then finds it by name. Failing that, the user gets an explanation instead of an abort.
 /// </summary>
 internal static unsafe class LinuxPreflight
 {
@@ -24,11 +26,34 @@ internal static unsafe class LinuxPreflight
                 if (NativeLibrary.TryLoad(name, out var h)) { NativeLibrary.Free(h); return true; }
         }
         catch { return true; } // the check itself must never be the thing that stops the browser
-        Explain();
+        if (TryBundled(out var bundledButBroken)) return true;
+        Explain(bundledButBroken);
         return false;
     }
 
-    private static void Explain()
+    /// <summary>Loads the OpenSSL 3 that ships next to the program. The runtime opens "libssl.so.3" by NAME, and the dynamic
+    /// loader answers that from a library already loaded under the same SONAME — so loading ours by absolute path is enough
+    /// (libcrypto first: libssl lists it as a dependency, and that is satisfied the same way). The handles stay loaded on purpose.</summary>
+    private static bool TryBundled(out bool presentButBroken)
+    {
+        presentButBroken = false;
+        try
+        {
+            var dir = Path.Combine(AppContext.BaseDirectory, "openssl");
+            var crypto = Path.Combine(dir, "libcrypto.so.3");
+            var ssl = Path.Combine(dir, "libssl.so.3");
+            if (!File.Exists(crypto) || !File.Exists(ssl)) return false;
+            presentButBroken = true; // until it loads: a system with a glibc older than the library's needs lands here
+            if (!NativeLibrary.TryLoad(crypto, out _) || !NativeLibrary.TryLoad(ssl, out _)) return false;
+            if (!NativeLibrary.TryLoad("libssl.so.3", out _)) return false; // what the runtime will do: it must now succeed
+            presentButBroken = false;
+            Console.Error.WriteLine("[BrAIn] this system has no OpenSSL 3: using the copy that ships with BrAIn (" + dir + ")");
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private static void Explain(bool bundledButBroken)
     {
         var (distro, hint) = Hint();
         var text =
@@ -36,6 +61,7 @@ internal static unsafe class LinuxPreflight
             (distro == "fedora"
                 ? "Fedora 45 and newer ship OpenSSL 4, which the .NET runtime inside BrAIn cannot use yet; OpenSSL 3 is a separate package.\n\n"
                 : "") +
+            (bundledButBroken ? "(The copy that ships with BrAIn could not be loaded on this system either.)\n\n" : "") +
             "Install it with:\n    " + hint + "\n\nThen start BrAIn again.";
         Console.Error.WriteLine("[BrAIn] " + text.Replace("\n", "\n[BrAIn] "));
         // a desktop launch (no terminal, nobody reading stderr) gets a window; an MCP client that started us over pipes only

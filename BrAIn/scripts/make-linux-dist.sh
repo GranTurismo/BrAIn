@@ -10,6 +10,7 @@
 # Each archive holds ONE folder, BrAIn-<ver>-linux-<arch>/ (not "BrAIn/": that is also the name of the data
 # folder under ~/.local/share, and a versioned name keeps two unpacked releases from mixing):
 #   BrAIn  Photino.Native.so  Assets/icon.png  icons/hicolor/<n>x<n>/apps/brain-browser.png
+#   openssl/libssl.so.3  openssl/libcrypto.so.3  openssl/LICENSE.txt   (OpenSSL 3, a fallback: third_party/openssl/README.md)
 #   brain.desktop  install.sh  uninstall.sh  README.txt  release.txt
 # release.txt lists those entries: the self-updater (Browser/Updater.cs) only swaps a folder that holds nothing
 # but what is listed there. The archive name must stay BrAIn-<ver>-linux-<x64|arm64>.tar.gz: the updater, the
@@ -69,8 +70,8 @@ for ARCH in "${ARCHES[@]}"; do
     # shellcheck disable=SC2010
     ls "$PUB" | grep -Fx "$f" >/dev/null || { echo "$PUB/$f missing (wrong case?)"; ls "$PUB"; exit 1; }
   done
+  want="x86-64"; [ "$ARCH" = arm64 ] && want="aarch64"
   if command -v file >/dev/null; then
-    want="x86-64"; [ "$ARCH" = arm64 ] && want="aarch64"
     kind=$(file "$PUB/BrAIn")
     case "$kind" in *"$want"*) ;; *) echo "$PUB/BrAIn is not a $ARCH build: $kind"; exit 1 ;; esac
   fi
@@ -84,6 +85,16 @@ for ARCH in "${ARCHES[@]}"; do
     mkdir -p "$D/icons/hicolor/${s}x${s}/apps"
     resize "$s" "$D/icons/hicolor/${s}x${s}/apps/brain-browser.png"
   done
+  # OpenSSL 3, used only when the system has none .NET can use (Fedora 45+): see third_party/openssl/README.md
+  SSL="third_party/openssl/linux-$ARCH"
+  for f in libssl.so.3 libcrypto.so.3; do [ -s "$SSL/$f" ] || { echo "$SSL/$f missing"; exit 1; }; done
+  if command -v file >/dev/null; then
+    for f in libssl.so.3 libcrypto.so.3; do
+      case "$(file "$SSL/$f")" in *"$want"*) ;; *) echo "$SSL/$f is not a $ARCH library"; exit 1 ;; esac
+    done
+  fi
+  mkdir -p "$D/openssl"
+  cp "$SSL/libssl.so.3" "$SSL/libcrypto.so.3" third_party/openssl/LICENSE.txt "$D/openssl/"
   cp "$PKG/brain.desktop" "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/README.txt" "$D/"
   {
     echo "# BrAIn $VER linux-$ARCH: the files this release put in this folder."

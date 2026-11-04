@@ -21,6 +21,7 @@ expect_eq "holds exactly one folder, named like the archive" "$NAME" "$(ls -A "$
 cd "$W/x/$NAME" || exit 1
 for f in BrAIn Photino.Native.so install.sh uninstall.sh; do check "$f is executable" test -x "$f"; done
 for f in brain.desktop release.txt README.txt Assets/icon.png; do check "$f is there" test -f "$f"; done
+for f in openssl/libssl.so.3 openssl/libcrypto.so.3 openssl/LICENSE.txt; do check "$f is there (bundled OpenSSL 3)" test -s "$f"; done
 for s in $SIZES; do check "icon ${s}x${s}" test -s "icons/hicolor/${s}x${s}/apps/brain-browser.png"; done
 expect_eq "release.txt lists exactly the folder's entries" \
   "$(ls -A | LC_ALL=C sort)" "$(grep -v '^#' release.txt | LC_ALL=C sort)"
@@ -37,6 +38,7 @@ verify_install() { # <program dir> <bin dir> <data dir (share)>
   check "native library installed"          test -f "$P/Photino.Native.so"
   check "window icon installed"             test -f "$P/Assets/icon.png"
   check "release.txt installed"             test -f "$P/release.txt"
+  check "bundled OpenSSL 3 installed"       test -s "$P/openssl/libssl.so.3" -a -s "$P/openssl/libcrypto.so.3"
   check "uninstall.sh installed"            test -x "$P/uninstall.sh"
   check "no .new / .old left beside it"     bash -c "! ls -d '$P.new' '$P.old' 2>/dev/null | grep ."
   expect_eq "brain command is a link to the program" "$P/BrAIn" "$(readlink -f "$BIN/brain")"
