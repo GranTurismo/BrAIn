@@ -266,16 +266,12 @@ internal static partial class WkTabs
         ObjC.SendNInt(wv, ObjC.Sel("setHidden:"), 1);
         if (zoomPct != 100) SetZoom(wv, zoomPct);
 
-        var bar = WkBar.BarView;
-        if (bar != IntPtr.Zero)
-            ObjC.SendViewPosView(content, ObjC.Sel("addSubview:positioned:relativeTo:"), wv, NSWindowBelow, bar);
-        else
-            ObjC.SendViewPosView(content, ObjC.Sel("addSubview:positioned:relativeTo:"), wv, NSWindowAbove, _boot);
-
         // The controller (ucc) holds the handler; our +1 refs are no longer needed.
         ObjC.Send(handler, ObjC.Sel("release"));
         ObjC.Send(ucc, ObjC.Sel("release"));
 
+        // Not in the window yet: a tab opened in the background stays out of it (see Detach) and Show puts it in.
+        // Our +1 from alloc is what keeps the view alive while it is out; Destroy releases it.
         _views[wv] = new ViewInfo { View = wv, Handler = handler, Ucc = ucc, Tab = tab, Private = priv, Ghost = ghost, Lib = libSource, Token = token };
         return wv;
     }
@@ -381,11 +377,14 @@ internal static partial class WkTabs
         }
         _fsWaits.Remove(view);
         if (!_views.Remove(view, out var info)) return;
+        if (_painting == view) _painting = IntPtr.Zero; // closed while it painted for a switch: whatever is shown next replaces it
         try
         {
-            // still on screen = the closed tab's page crossfading into its neighbour: it goes
-            // dead now, but leaves the window only once that fade has run
-            var onScreen = (ObjC.SendNInt(view, ObjC.Sel("isHidden")) & 0xFF) == 0 && Later is not null && !ReduceMotion();
+            // still on screen = the closed tab's page crossfading into its neighbour (or covering it while it paints, see Show):
+            // it goes dead now, but leaves the window only once the switch and its fade have run
+            var waiting = _painting != IntPtr.Zero;
+            var onScreen = (ObjC.SendNInt(view, ObjC.Sel("isHidden")) & 0xFF) == 0 && ObjC.Send(view, ObjC.Sel("superview")) != IntPtr.Zero
+                && Later is not null && (waiting || !ReduceMotion());
             ObjC.Send(view, ObjC.Sel("stopLoading"));
             ObjC.Send(view, ObjC.Sel("setNavigationDelegate:"), IntPtr.Zero);
             ObjC.Send(view, ObjC.Sel("setUIDelegate:"), IntPtr.Zero);
@@ -393,9 +392,10 @@ internal static partial class WkTabs
             ObjC.Send(info.Ucc, ObjC.Sel("removeAllUserScripts"));
             void Remove()
             {
+                if (_shown == view) _shown = IntPtr.Zero; // never touch it again once released
                 try { ObjC.Send(view, ObjC.Sel("removeFromSuperview")); ObjC.Send(view, ObjC.Sel("release")); } catch { }
             }
-            if (onScreen) Later!((int)(FadeSecs * 1000) + 40, Remove);
+            if (onScreen) Later!((int)(FadeSecs * 1000) + 40 + (waiting ? PaintWaitMs : 0), Remove);
             else Remove();
         }
         catch { }
@@ -422,14 +422,83 @@ internal static partial class WkTabs
     private const double FadeSecs = 0.18;
     private static int _switchGen;
 
+    // Background tabs are out of the window, the way Safari's and Chrome's are; their pages keep running (audio, timers, downloads,
+    // agents driving them, screenshots). WebKit only treats a page as backgrounded for memory once its view has left the window:
+    // about 10 s later it drops the page's layer and tile memory, later it purges caches and collects garbage. A view that is merely
+    // hidden keeps all of that for as long as the tab lives. Measured on 12 real sites in one window: 3.6 GB stayed 3.6 GB with
+    // hidden views, and fell to 2.9-3.0 GB within three minutes with detached ones.
+    // The price: a view that comes back has no pixels until WebKit repaints it (30-200 ms on real sites). So it goes in UNDER the
+    // page that is showing and the switch completes once WebKit has presented its first frame — Chrome does the same.
+
+    /// <summary>The longest a tab switch waits for the new page's first frame.</summary>
+    private const int PaintWaitMs = 350;
+    private static IntPtr _shown;       // the page view the user sees; may be a closed tab's (Destroy keeps it up until the switch is done)
+    private static IntPtr _painting;    // in the window under _shown, painting its first frame before it is revealed
+    private static IntPtr _paintingWin;
+    private static int _paintGen;
+
     /// <summary>Makes <paramref name="view"/> the visible page view, crossfading from the
     /// page that was showing: whichever of the two sits higher in the view stack fades
     /// (the new page in, or the old page out), so the other is always fully drawn
     /// underneath and the dark window never flashes through. Keyboard focus only moves
-    /// if it was inside a view that is being hidden (a focused address bar keeps its focus).</summary>
+    /// if it was inside a view that is being hidden (a focused address bar keeps its focus).
+    /// A view coming back into the window paints under the page that is showing first (at most <see cref="PaintWaitMs"/>).</summary>
     internal static void Show(IntPtr nsWindow, IntPtr view)
     {
-        if (view == IntPtr.Zero || !_views.ContainsKey(view)) return;
+        if (view == IntPtr.Zero || !_views.ContainsKey(view) || view == _painting) return;
+        var gen = ++_paintGen;
+        Active = view;
+        if (_painting != IntPtr.Zero) Abandon(_painting); // a newer switch replaces one still painting
+        _painting = IntPtr.Zero;
+        var shown = Showing();
+        if (ObjC.Send(view, ObjC.Sel("superview")) == IntPtr.Zero && shown != IntPtr.Zero && shown != view && Later is not null
+            && AttachUnder(nsWindow, view, shown))
+        {
+            ClearFade(view);
+            ObjC.SendNInt(view, ObjC.Sel("setHidden:"), 0); // WebKit paints only a view that is not hidden; the page on top covers it
+            _painting = view;
+            _paintingWin = nsWindow;
+            AfterNextPaint(view, gen);
+            Later(PaintWaitMs, () => Painted(gen));
+            return;
+        }
+        Reveal(nsWindow, view, false);
+    }
+
+    /// <summary>The new page has presented its first frame (or waited long enough): finish that switch, unless a newer one replaced it.</summary>
+    private static void Painted(int gen)
+    {
+        if (gen != _paintGen || _painting == IntPtr.Zero) return;
+        var view = _painting;
+        _painting = IntPtr.Zero;
+        if (_views.ContainsKey(view)) Reveal(_paintingWin, view, true);
+    }
+
+    /// <summary>A view that was painting for a switch the user has already moved past goes back out of the window.</summary>
+    private static void Abandon(IntPtr view)
+    {
+        if (!_views.ContainsKey(view)) return;
+        ObjC.SendNInt(view, ObjC.Sel("setHidden:"), 1);
+        ClearFade(view);
+        Detach(view);
+    }
+
+    /// <summary>The page view on screen right now: <see cref="_shown"/> while it is in the window and not hidden.</summary>
+    private static IntPtr Showing()
+    {
+        var s = _shown;
+        if (s == IntPtr.Zero) return IntPtr.Zero;
+        try
+        {
+            return ObjC.Send(s, ObjC.Sel("superview")) != IntPtr.Zero && (ObjC.SendNInt(s, ObjC.Sel("isHidden")) & 0xFF) == 0 ? s : IntPtr.Zero;
+        }
+        catch { return IntPtr.Zero; }
+    }
+
+    /// <summary>The switch itself. <paramref name="fresh"/>: the view is not hidden any more but the user has not seen it yet
+    /// (it painted under the old page), so it crossfades like one that was hidden.</summary>
+    private static void Reveal(IntPtr nsWindow, IntPtr view, bool fresh)
+    {
         var fr = nsWindow == IntPtr.Zero ? IntPtr.Zero : ObjC.Send(nsWindow, ObjC.Sel("firstResponder"));
         var focusWasInHidden = false;
         bool InsideView(IntPtr v) =>
@@ -437,14 +506,18 @@ internal static partial class WkTabs
             ObjC.SendBool(fr, ObjC.Sel("respondsToSelector:"), ObjC.Sel("isDescendantOf:")) != 0 &&
             ObjC.SendBool(fr, ObjC.Sel("isDescendantOf:"), v) != 0;
         bool Hidden(IntPtr v) => (ObjC.SendNInt(v, ObjC.Sel("isHidden")) & 0xFF) != 0;
-        var wasHidden = Hidden(view);
-        var prev = Active != view && _views.ContainsKey(Active) && !Hidden(Active) ? Active : IntPtr.Zero;
+        var prev = Showing();
+        if (prev == view) prev = IntPtr.Zero;
+        if (ObjC.Send(view, ObjC.Sel("superview")) == IntPtr.Zero) AttachTop(nsWindow, view);
+        var wasHidden = fresh || Hidden(view);
         ClearFade(view);
         ObjC.SendNInt(view, ObjC.Sel("setHidden:"), 0);
         var still = ReduceMotion();
         var crossfade = wasHidden && prev != IntPtr.Zero && Later is not null && !still;
         if (crossfade && StackIndex(view) < StackIndex(prev)) FadeOut(prev); // the old page is on top: it fades away
         else if (wasHidden && !still) FadeIn(view);
+        if (prev != IntPtr.Zero && InsideView(prev)) focusWasInHidden = true; // (prev may be a tab that was just closed)
+        var leaving = new List<IntPtr>();
         foreach (var v in _views.Keys)
         {
             if (v == view) continue;
@@ -452,11 +525,16 @@ internal static partial class WkTabs
             if (crossfade && v == prev) continue; // hidden once the fade is done
             ObjC.SendNInt(v, ObjC.Sel("setHidden:"), 1);
             ClearFade(v);
+            leaving.Add(v);
         }
+        // a closed tab's page that stayed up for this switch: with no fade to run it goes now (Destroy releases it)
+        if (prev != IntPtr.Zero && !crossfade && !_views.ContainsKey(prev)) ObjC.SendNInt(prev, ObjC.Sel("setHidden:"), 1);
         // the window starts with focus in Photino's (now hidden) bootstrap view
         if (_boot != IntPtr.Zero && (fr == _boot || InsideView(_boot))) focusWasInHidden = true;
         Active = view;
+        _shown = view;
         if (focusWasInHidden) ObjC.Send(nsWindow, ObjC.Sel("makeFirstResponder:"), view);
+        foreach (var v in leaving) Detach(v); // after the focus moved: never pull the first responder out of the window
         if (crossfade)
         {
             var gen = ++_switchGen;
@@ -465,8 +543,100 @@ internal static partial class WkTabs
                 if (gen != _switchGen || !_views.ContainsKey(prev) || prev == Active) return;
                 ObjC.SendNInt(prev, ObjC.Sel("setHidden:"), 1);
                 ClearFade(prev);
+                Detach(prev);
             });
         }
+    }
+
+    /// <summary>Takes a hidden background tab's view out of the window (see the note above). Never the active view, and never one in
+    /// element fullscreen (it lives in WebKit's own window then). Main thread.</summary>
+    private static void Detach(IntPtr view)
+    {
+        try
+        {
+            if (view == IntPtr.Zero || view == Active || !_views.ContainsKey(view)) return;
+            if (ObjC.Send(view, ObjC.Sel("superview")) == IntPtr.Zero) return; // already out
+            if (FullscreenState(view) > 0) return;
+            var home = _boot == IntPtr.Zero ? IntPtr.Zero : ObjC.Send(_boot, ObjC.Sel("window"));
+            var w = ObjC.Send(view, ObjC.Sel("window"));
+            if (home != IntPtr.Zero && w != IntPtr.Zero && w != home) return;
+            ObjC.Send(view, ObjC.Sel("removeFromSuperview")); // the +1 from Create keeps it alive
+        }
+        catch { }
+    }
+
+    private static IntPtr ContentOf(IntPtr nsWindow) =>
+        nsWindow != IntPtr.Zero ? ObjC.Send(nsWindow, ObjC.Sel("contentView"))
+        : _boot != IntPtr.Zero ? ObjC.Send(_boot, ObjC.Sel("superview")) : IntPtr.Zero;
+
+    /// <summary>Puts a page view into the window on top of the other pages, under the toolbar. Its frame is current already:
+    /// <see cref="ApplyFrame"/> sizes views that are out of the window too.</summary>
+    private static void AttachTop(IntPtr nsWindow, IntPtr view)
+    {
+        try
+        {
+            var content = ContentOf(nsWindow);
+            if (content == IntPtr.Zero) return;
+            var sel = ObjC.Sel("addSubview:positioned:relativeTo:");
+            if (WkBar.BarView != IntPtr.Zero) ObjC.SendViewPosView(content, sel, view, NSWindowBelow, WkBar.BarView);
+            else ObjC.SendViewPosView(content, sel, view, NSWindowAbove, _boot);
+        }
+        catch { }
+    }
+
+    /// <summary>Puts a page view into the window directly under <paramref name="cover"/> (the page the user sees).</summary>
+    private static bool AttachUnder(IntPtr nsWindow, IntPtr view, IntPtr cover)
+    {
+        try
+        {
+            var content = ContentOf(nsWindow);
+            if (content == IntPtr.Zero || ObjC.Send(cover, ObjC.Sel("superview")) != content) return false;
+            ObjC.SendViewPosView(content, ObjC.Sel("addSubview:positioned:relativeTo:"), view, NSWindowBelow, cover);
+            return ObjC.Send(view, ObjC.Sel("superview")) == content;
+        }
+        catch { return false; }
+    }
+
+    // ---- "after the next frame": -[WKWebView _doAfterNextPresentationUpdate:] (WebKit SPI) takes an Objective-C block. Each call gets
+    // its own heap block that carries the switch it belongs to, built like the compiler would build one and refcounted by the blocks
+    // runtime: WebKit copies it, both sides release it, and the runtime frees it when the last one does.
+
+    [LibraryImport("/usr/lib/libSystem.B.dylib", EntryPoint = "_Block_release")]
+    private static partial void BlockRelease(IntPtr block);
+
+    private const int BlockNeedsFree = 1 << 24, BlockRefcountOne = 2, PaintBlockSize = 40; // isa, flags+reserved, invoke, descriptor, gen
+    private static IntPtr _mallocBlockIsa, _paintBlockDesc;
+
+    [UnmanagedCallersOnly]
+    private static void OnPaintBlock(IntPtr block)
+    {
+        try { Painted((int)Marshal.ReadInt64(block, 32)); } catch { }
+    }
+
+    private static unsafe void AfterNextPaint(IntPtr view, int gen)
+    {
+        try
+        {
+            var sel = ObjC.Sel("_doAfterNextPresentationUpdate:");
+            if (ObjC.SendBool(view, ObjC.Sel("respondsToSelector:"), sel) == 0) return; // the time limit reveals it
+            if (_mallocBlockIsa == IntPtr.Zero)
+            {
+                _mallocBlockIsa = NativeLibrary.GetExport(NativeLibrary.Load("/usr/lib/libSystem.B.dylib"), "_NSConcreteMallocBlock");
+                _paintBlockDesc = (IntPtr)NativeMemory.Alloc(16); // forever: shared by every block
+                Marshal.WriteInt64(_paintBlockDesc, 0, 0);
+                Marshal.WriteInt64(_paintBlockDesc, 8, PaintBlockSize);
+            }
+            var blk = (IntPtr)NativeMemory.Alloc(PaintBlockSize); // malloc: the blocks runtime free()s it
+            Marshal.WriteIntPtr(blk, 0, _mallocBlockIsa);
+            Marshal.WriteInt32(blk, 8, BlockNeedsFree | BlockRefcountOne);
+            Marshal.WriteInt32(blk, 12, 0);
+            Marshal.WriteIntPtr(blk, 16, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPaintBlock);
+            Marshal.WriteIntPtr(blk, 24, _paintBlockDesc);
+            Marshal.WriteInt64(blk, 32, gen);
+            ObjC.Send(view, sel, blk);
+            BlockRelease(blk); // ours; WebKit holds its own copy until it has called it
+        }
+        catch { }
     }
 
     /// <summary>System Settings → Accessibility → Display → Reduce motion.</summary>

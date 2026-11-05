@@ -53,7 +53,54 @@ internal static unsafe partial class MacMemory
         return proc_pid_rusage(pid, 0, b) == 0 ? *(ulong*)(b + PhysFootprintOffset) : 0;
     }
 
-    /// <summary>The summed footprint, in MB, of BrAIn and its WebKit helper processes; null when it cannot be read.</summary>
+    /// <summary>Main thread. The pids of this app's own WebKit helpers, the way WebKit itself lists them (class SPI on WKProcessPool, the
+    /// same lists Safari's per-tab memory readout uses): every web content process — prewarmed and back/forward-cached ones included —
+    /// the GPU process and the network processes. Exact whatever started BrAIn: the scan in <see cref="TreeFootprintMb"/> also counts
+    /// WebKit helpers of other apps launched from the same terminal. Null where the SPI is missing.</summary>
+    internal static int[]? WebKitHelperPids()
+    {
+        try
+        {
+            var pool = ObjC.GetClass("WKProcessPool");
+            var responds = ObjC.Sel("respondsToSelector:");
+            var wc = ObjC.Sel("_webContentProcessInfo");
+            if (pool == IntPtr.Zero || ObjC.SendBool(pool, responds, wc) == 0) return null;
+            var pidSel = ObjC.Sel("pid");
+            var pids = new HashSet<int>();
+            void Add(IntPtr info)
+            {
+                if (info == IntPtr.Zero || ObjC.SendBool(info, responds, pidSel) == 0) return;
+                var pid = (int)ObjC.SendNInt(info, pidSel); // pid_t: only the low 32 bits are the value
+                if (pid > 0) pids.Add(pid);
+            }
+            void AddAll(IntPtr list) // an array of _WKProcessInfo, or a single one (the GPU process)
+            {
+                if (list == IntPtr.Zero) return;
+                if (!ObjC.IsKindOf(list, "NSArray")) { Add(list); return; }
+                var n = ObjC.ArrayCount(list);
+                for (nint i = 0; i < n; i++) Add(ObjC.ArrayAt(list, i));
+            }
+            AddAll(ObjC.Send(pool, wc));
+            foreach (var name in new[] { "_gpuProcessInfo", "_networkingProcessInfo" })
+            {
+                var sel = ObjC.Sel(name);
+                if (ObjC.SendBool(pool, responds, sel) != 0) AddAll(ObjC.Send(pool, sel));
+            }
+            return pids.ToArray();
+        }
+        catch { return null; }
+    }
+
+    /// <summary>The summed footprint, in MB, of BrAIn plus the given helper processes (from <see cref="WebKitHelperPids"/>). Any thread.</summary>
+    internal static double FootprintMb(int[] helperPids)
+    {
+        var total = Footprint(Environment.ProcessId);
+        foreach (var pid in helperPids) total += Footprint(pid);
+        return total / 1048576.0;
+    }
+
+    /// <summary>The summed footprint, in MB, of BrAIn and its WebKit helper processes found by scanning the process table; null when it
+    /// cannot be read. The fallback for <see cref="WebKitHelperPids"/>.</summary>
     internal static double? TreeFootprintMb()
     {
         try

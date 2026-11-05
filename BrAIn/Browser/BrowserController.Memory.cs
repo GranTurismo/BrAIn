@@ -32,7 +32,8 @@ public sealed partial class BrowserController
         try
         {
             if (!_macFs) return;
-            var mb = Mac.MacMemory.TreeFootprintMb();
+            var pids = InvokeOnUi(Mac.MacMemory.WebKitHelperPids); // WebKit's own list: main thread
+            var mb = pids is not null ? Mac.MacMemory.FootprintMb(pids) : Mac.MacMemory.TreeFootprintMb();
             if (mb is null) return;
             var json = "{\"b\":110,\"mb\":" + Math.Round(mb.Value).ToString(CultureInfo.InvariantCulture) + "}";
             InvokeOnUi(() =>

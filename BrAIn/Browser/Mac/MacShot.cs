@@ -140,6 +140,11 @@ internal static partial class MacWindow
         var tcs = new TaskCompletionSource<IntPtr>(TaskCreationOptions.RunContinuationsAsynchronously);
         _snapTcs = tcs;
         var cfg = ObjC.Send(ObjC.Send(ObjC.GetClass("WKSnapshotConfiguration"), ObjC.Sel("alloc")), ObjC.Sel("init"));
+        // A background tab is out of the window (WkTabs.Detach) and presents no frames, so waiting for the next one can wait
+        // forever (seen in testing): its page is drawn as it is right now instead.
+        var after = ObjC.Sel("setAfterScreenUpdates:");
+        if (cfg != IntPtr.Zero && ObjC.Send(view, ObjC.Sel("window")) == IntPtr.Zero && ObjC.SendBool(cfg, ObjC.Sel("respondsToSelector:"), after) != 0)
+            ObjC.SendNInt(cfg, after, 0);
         ObjC.Send(view, ObjC.Sel("takeSnapshotWithConfiguration:completionHandler:"), cfg, SnapBlock());
         if (cfg != IntPtr.Zero) ObjC.Send(cfg, ObjC.Sel("release"));
         return tcs.Task;
