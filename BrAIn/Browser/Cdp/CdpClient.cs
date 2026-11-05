@@ -36,14 +36,22 @@ public sealed class CdpClient : IAsyncDisposable
 
     private async Task ConnectInternalAsync(int port, CancellationToken ct)
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
         var baseUrl = $"http://127.0.0.1:{port}";
 
         // Wait for the debugging endpoint (browser process may still be starting).
+        // A request that lands while the port is open but the server is not serving yet can hang for its whole
+        // timeout, and a shared HttpClient kept hanging after it: start-up lost about 8 s on half of the launches.
+        // So every attempt gets its own connection (and no system-proxy lookup for a loopback address), with a
+        // short timeout that grows — a healthy answer takes milliseconds.
         string? browserWs = null;
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
-        while (DateTime.UtcNow < deadline)
+        int[] timeoutMs = { 300, 500, 1000, 2000, 3000 };
+        for (var attempt = 0; DateTime.UtcNow < deadline; attempt++)
         {
+            using var http = new HttpClient(new SocketsHttpHandler { UseProxy = false })
+            {
+                Timeout = TimeSpan.FromMilliseconds(timeoutMs[Math.Min(attempt, timeoutMs.Length - 1)]),
+            };
             try
             {
                 var json = await http.GetStringAsync($"{baseUrl}/json/version", ct);
@@ -53,7 +61,7 @@ public sealed class CdpClient : IAsyncDisposable
             }
             catch when (!ct.IsCancellationRequested)
             {
-                await Task.Delay(250, ct);
+                await Task.Delay(100, ct);
             }
         }
 

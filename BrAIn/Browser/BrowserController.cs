@@ -4411,6 +4411,10 @@ public sealed partial class BrowserController : IAsyncDisposable
                 var root = doc.RootElement;
                 // Still the previous owner's page (tab just switched) — not this tab's info.
                 if (ReferenceEquals(tab, DocTab) && IsStaleDocUrl(root.GetProperty("u").GetString())) return;
+                // A per-tab view starts on a blank placeholder document (WinTabs.BuildViewAsync): it is not the tab's page,
+                // and adopting its address and title left the first tab on a black "braintab-…" screen instead of the start page.
+                if ((root.GetProperty("t").GetString() ?? "").StartsWith("braintab-", StringComparison.Ordinal)
+                    && (root.GetProperty("u").GetString() ?? "").StartsWith("data:text/html", StringComparison.Ordinal)) return;
                 // Our start page is served via LoadRawString, so location.href
                 // reads about:blank — the doc flags itself so tab switching
                 // reloads the start page instead of a literal blank page.
