@@ -2,6 +2,22 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.8.5 — 2026-11-05
+
+**Scope:** a Windows fix release. **Windows** gets both fixes below. **macOS and Linux** change only in the tab logo (shared toolbar script, not run on either). The version number and the update feed are shared by every platform, which is why they also get a new installer.
+
+### Fixed
+- **Windows: the first tab opens on the start page again, not a black screen** — a new tab's view starts on a blank placeholder page titled `braintab-<id>`, and BrAIn took that page's address and title as the tab's own. The first tab then showed a black window with a `data:text/html…` address, a `braintab-…` title and a letter tile instead of the New Tab page, and startup "navigated" it back to the placeholder. BrAIn now ignores the placeholder.
+- **Windows: BrAIn no longer loses about 8 s at startup on roughly half of launches** — BrAIn connects to WebView2's debugging endpoint by polling it from the first fraction of a second with one shared HTTP client and a 3 s timeout. A request that lands between the port opening and the server answering can hang for its whole timeout (reproduced with a minimal WebView2 host and a plain .NET client, so it is not BrAIn's own code), and the shared client kept hanging after it. Each attempt now gets its own connection, skips the system-proxy lookup and starts with a short timeout (300 ms, growing to 3 s). Measured on one machine: the New Tab page appeared in 9–14 s on about half of launches before, and in 1.8–2.6 s on 6 of 6 launches after.
+
+### Changed
+- **BrAIn's own pages show the app logo on their tab** (New Tab, Help, History, Passwords, Flows, Site APIs, Personality, Planned features, Ollama and the rest) instead of a coloured letter tile. The logo is the one in the app icon; it also shows in the command palette's tab list.
+
+### Known
+- **Windows: WebView2 helper processes can outlive BrAIn** — after closing BrAIn normally, its two WebView2 helper processes per launch were still running on the test machine (about 30 after a day of test launches, a couple of GB). Not investigated yet, so not fixed.
+- The two Windows security gaps listed under 1.8.4 are still open.
+- Verified on Windows 11 only (release build, six launches). macOS and Linux were not run for this release.
+
 ## 1.8.4 — 2026-11-04
 
 **Scope:** mainly a security release. **macOS and Linux** get everything below. **Windows** gets the shared parts (the update signature check, the agent protections, cookie scoping) — built, but not run on Windows — and **two Windows security problems are not fixed** (see Known). The version number and the update feed are shared by every platform, which is why Windows also gets a new installer.
