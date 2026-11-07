@@ -2,7 +2,9 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
-## Unreleased
+## 1.8.7 — 2026-11-07
+
+**Scope:** a text-only release for **all platforms**: nothing changes in how BrAIn behaves.
 
 ### Changed
 - **BrAIn no longer compares its RAM use with Chrome** — the comparison is gone from the welcome film, the Personality page, the README and the website. The film's slide now shows only the command palette and passwords.
