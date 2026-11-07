@@ -101,7 +101,7 @@ docker run -d --name brainweb --restart unless-stopped --network caddynet brainw
 ## Conventions
 
 - No CDNs or external requests — the page must work offline.
-- All demos are client-side simulations of real app behavior; claims match `README.md` /
-  `BENCHMARK.md` (benchmark numbers are the macOS run, marked with caveats in the page).
+- All demos are client-side simulations of real app behavior; claims match `README.md`,
+  `RAM-BENCHMARK.md` (memory) and `BENCHMARK.md` (load times only). Benchmark numbers are the macOS runs, marked with caveats in the page.
 - Test changes at ≥1440px and 390px widths; `prefers-reduced-motion` disables the shader
   and animations.

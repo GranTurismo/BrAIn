@@ -438,29 +438,31 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
 /* ------------------------------------------------------------------ benchmarks */
 (function bench() {
   const sites = ['example.com', 'news.ycombinator.com', 'en.wikipedia.org', 'stackoverflow.com', 'developer.mozilla.org', 'github.com', 'bing.com', 'arstechnica.com', 'apple.com', 'cloudflare.com', 'reddit.com', 'amazon.com', 'youtube.com', 'bbc.com', 'cnn.com', 'nytimes.com', 'twitch.tv', 'medium.com', 'forbes.com', 'weather.com', 'ebay.com', 'imdb.com', 'wordpress.com', 'office.com', 'x.com'];
-  const chromeRam = [1601, 1812, 2026, 2176, 2521, 3377, 5678, 6977, 7700, 8114, 8660, 8817, 9583, 11873, 11712, 11738, 12167, 12355, 12670, 13075, 13600, 14078, 14150, 14079, 14102];
-  const brainRam = [176, 185, 191, 181, 199, 193, 199, 186, 198, 182, 192, 194, 197, 195, 170, 189, 167, 156, 163, 163, 145, 145, 181, 181, 174];
-  const load = [[369, 399], [1459, 1017], [1120, 1346], [928, 135], [937, 921], [4469, 1452], [1572, 1951], [4804, null], [2072, 2948], [3857, 2206], [3000, 3382], [1830, 5070], [1902, 1726], [null, 5146], [null, null], [7120, 2580], [2721, 2925], [1836, 2969], [11767, 8505], [null, 6941], [2751, 3430], [2046, 2667], [3583, 3268], [1603, 2467], [2236, 2614]];
+  // Memory: RAM-BENCHMARK.md, total after each site loaded, mean of 2 runs. The load times below come from BENCHMARK.md's 25 sites.
+  const memSites = ['en.wikipedia.org', 'news.ycombinator.com', 'bbc.com', 'github.com', 'reddit.com (Chrome: check page only)', 'developer.mozilla.org', 'nytimes.com', 'stackoverflow.com', 'theverge.com', 'edition.cnn.com', 'youtube.com', 'amazon.com'];
+  const chromeRam = [469, 427, 772, 1277, 1273, 1357, 1868, 2129, 2807, 3320, 3584, 4002];
+  const brainRam = [404, 394, 665, 911, 1220, 1254, 2073, 2422, 2890, 3168, 3650, 4292];
+  const last = memSites.length - 1;
+  const load =[[369, 399], [1459, 1017], [1120, 1346], [928, 135], [937, 921], [4469, 1452], [1572, 1951], [4804, null], [2072, 2948], [3857, 2206], [3000, 3382], [1830, 5070], [1902, 1726], [null, 5146], [null, null], [7120, 2580], [2721, 2925], [1836, 2969], [11767, 8505], [null, 6941], [2751, 3430], [2046, 2667], [3583, 3268], [1603, 2467], [2236, 2614]];
 
   // bars
   const bars = $('#bars');
   if (bars) new IntersectionObserver((es, o) => { if (!es[0].isIntersecting) return; o.disconnect();
     $$('.bar-fill', bars).forEach(b => b.style.width = b.dataset.w + '%');
     $$('[data-to]', bars).forEach(el => { const to = +el.dataset.to, t0 = performance.now(); (function s(now) { const p = clamp((now - t0) / 1600, 0, 1); el.textContent = fmt(Math.round(to * (1 - Math.pow(1 - p, 3)))) + ' MB'; if (p < 1) requestAnimationFrame(s); })(t0); });
-    const r = $('[data-ratio]', bars), to = +r.dataset.ratio, t0 = performance.now(); (function s(now) { const p = clamp((now - t0) / 1600, 0, 1); r.textContent = Math.round(to * (1 - Math.pow(1 - p, 3))) + '×'; if (p < 1) requestAnimationFrame(s); })(t0);
   }, { threshold: .4 }).observe(bars);
 
   // line chart
   const svg = $('#chart'); if (!svg) return;
-  const W = 700, H = 300, L = 48, R = 12, T = 12, B = 30, max = 15000;
-  const x = i => L + (W - L - R) * i / 24, y = v => T + (H - T - B) * (1 - v / max);
+  const W = 700, H = 300, L = 48, R = 12, T = 12, B = 30, max = 5000;
+  const x = i => L + (W - L - R) * i / last, y = v => T + (H - T - B) * (1 - v / max);
   const path = a => a.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)).join('');
   let g = '';
-  [0, 5000, 10000, 15000].forEach(v => { g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(255,255,255,.08)"/><text x="${L - 8}" y="${y(v) + 4}" text-anchor="end" fill="#8a827b" font-size="11">${v ? v / 1000 + ' GB' : '0'}</text>`; });
-  [1, 5, 10, 15, 20, 25].forEach(n => g += `<text x="${x(n - 1)}" y="${H - 8}" text-anchor="middle" fill="#8a827b" font-size="11">${n}</text>`);
-  g += `<text x="${(L + W) / 2}" y="${H + 8}" text-anchor="middle" fill="#8a827b" font-size="11">tabs open</text>`;
+  [0, 1000, 2000, 3000, 4000, 5000].forEach(v => { g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(255,255,255,.08)"/><text x="${L - 8}" y="${y(v) + 4}" text-anchor="end" fill="#8a827b" font-size="11">${v ? v / 1000 + ' GB' : '0'}</text>`; });
+  memSites.forEach((_, i) => { const n = i + 1; g += `<text x="${x(n - 1)}" y="${H - 8}" text-anchor="middle" fill="#8a827b" font-size="11">${n}</text>`; });
+  g += `<text x="${(L + W) / 2}" y="${H + 8}" text-anchor="middle" fill="#8a827b" font-size="11">sites open</text>`;
   g += `<defs><linearGradient id="lg" x1="0" x2="1"><stop offset="0" stop-color="#ffb36b"/><stop offset="1" stop-color="#ff7a9c"/></linearGradient><linearGradient id="ar" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#aba49d" stop-opacity=".22"/><stop offset="1" stop-color="#aba49d" stop-opacity="0"/></linearGradient></defs>`;
-  g += `<path d="${path(chromeRam)}L${x(24)} ${y(0)}L${x(0)} ${y(0)}Z" fill="url(#ar)" id="cArea" opacity="0"/>`;
+  g += `<path d="${path(chromeRam)}L${x(last)} ${y(0)}L${x(0)} ${y(0)}Z" fill="url(#ar)" id="cArea" opacity="0"/>`;
   g += `<path id="cLine" d="${path(chromeRam)}" fill="none" stroke="#aba49d" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
   g += `<path id="bLine" d="${path(brainRam)}" fill="none" stroke="url(#lg)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>`;
   g += `<g id="hov" opacity="0"><line id="hl" y1="${T}" y2="${H - B}" stroke="rgba(255,255,255,.25)"/><circle id="hc" r="5" fill="#aba49d"/><circle id="hb" r="5" fill="#ff8f86"/></g><rect id="hit" x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent"/>`;
@@ -469,10 +471,10 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
   new IntersectionObserver((es, o) => { if (!es[0].isIntersecting) return; o.disconnect(); draw('#cLine'); draw('#bLine'); setTimeout(() => { $('#cArea').style.transition = 'opacity 1s'; $('#cArea').setAttribute('opacity', 1); }, 900); }, { threshold: .35 }).observe(svg);
   const tip = $('#tip'), hov = $('#hov', svg), card = $('#chartCard');
   $('#hit', svg).addEventListener('pointermove', e => {
-    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) / r.width * W, i = clamp(Math.round((px - L) / (W - L - R) * 24), 0, 24);
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) / r.width * W, i = clamp(Math.round((px - L) / (W - L - R) * last), 0, last);
     hov.setAttribute('opacity', 1); $('#hl', svg).setAttribute('x1', x(i)); $('#hl', svg).setAttribute('x2', x(i));
     $('#hc', svg).setAttribute('cx', x(i)); $('#hc', svg).setAttribute('cy', y(chromeRam[i])); $('#hb', svg).setAttribute('cx', x(i)); $('#hb', svg).setAttribute('cy', y(brainRam[i]));
-    tip.innerHTML = `<b>${i + 1} tabs</b> · ${sites[i]}<br><span style="color:#d6cfc8">Chrome</span> <b>${fmt(chromeRam[i])} MB</b><br><span style="color:#ffb38a">BrAIn</span> <b>${fmt(brainRam[i])} MB</b>`;
+    tip.innerHTML = `<b>${i + 1} ${i ? 'sites' : 'site'}</b> · ${memSites[i]}<br><span style="color:#d6cfc8">Chrome</span> <b>${fmt(chromeRam[i])} MB</b><br><span style="color:#ffb38a">BrAIn</span> <b>${fmt(brainRam[i])} MB</b>`;
     const cr = card.getBoundingClientRect(); let tx = e.clientX - cr.left + 16; if (tx > cr.width - 190) tx = e.clientX - cr.left - 190;
     tip.style.left = tx + 'px'; tip.style.top = (e.clientY - cr.top - 20) + 'px'; tip.style.opacity = 1;
   });
