@@ -27,7 +27,7 @@
 <meta name="twitter:image:alt" content="BrAIn — a desktop browser with a built-in AI agent, Rewind page time-travel and a human kill switch.">
 <link rel="icon" type="image/png" href="assets/favicon.png?v=2">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=2">
-<link rel="stylesheet" href="assets/style.css?v=3">
+<link rel="stylesheet" href="assets/style.css?v=4">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -53,7 +53,6 @@
     { "@type": "Question", "name": "What about CAPTCHAs and logins?", "acceptedAnswer": { "@type": "Answer", "text": "BrAIn doesn't try to defeat them. browser_ask_human brings the tab to the front, shows you a card, waits while you do the step, then the agent carries on. Passwords are never typed by the agent — the vault needs your OS authentication." } },
     { "@type": "Question", "name": "Is Rewind recording everything I do?", "acceptedAnswer": { "@type": "Answer", "text": "No. It is off by default and asks before it starts. When on, it keeps compressed DOM snapshots in memory only (never on disk), skips private tabs, login pages and sites you exclude, drops a tab's history when the tab closes, and enforces age and size budgets." } },
     { "@type": "Question", "name": "Does BrAIn send data anywhere?", "acceptedAnswer": { "@type": "Answer", "text": "There is no telemetry or analytics. The only call BrAIn makes on its own is the self-updater asking GitHub for the latest release (and downloading it, SHA-256 verified, when you accept). Otherwise it talks to the sites you visit, to your MCP client over stdio, and to a local Ollama server if you use the built-in agent." } },
-    { "@type": "Question", "name": "How much RAM does BrAIn use?", "acceptedAnswer": { "@type": "Answer", "text": "On macOS, about 277 MB at launch (Chrome: 387 MB) and about the same as Chrome with sites open: roughly 3.7 GB with 12 real sites. Most of that is the sites and WebKit; plain WebKit views with no BrAIn code use about the same. Windows uses WebView2, which is Chromium, and Linux uses WebKitGTK, the same engine family as macOS. Neither has been benchmarked." } },
     { "@type": "Question", "name": "Why does my OS warn me about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The builds are not code-signed yet. Verify the SHA-256 on this page, then: on macOS right-click the app → Open; on Windows choose More info → Run anyway in SmartScreen. Linux has no such gate: unpack the archive and run install.sh." } },
     { "@type": "Question", "name": "Can I use it as my daily browser?", "acceptedAnswer": { "@type": "Answer", "text": "It has the daily-driver basics — tabs, bookmarks, history, autocomplete, downloads, private tabs, password vault, import, PiP, find, zoom, print, session restore. It does not have an extension store or sync." } }
   ]
@@ -173,7 +172,7 @@
     <div class="stats">
       <div class="card stat rv spot"><div class="n grad" data-count="60" data-suffix="+">60+</div><div class="t">MCP tools — navigate, snapshot, click, type, tabs, network, cookies, rewind…</div></div>
       <div class="card stat rv spot" style="--d:.06s"><div class="n grad" data-count="1">1</div><div class="t">process — the browser <i>is</i> the MCP server. No extension, no relay.</div></div>
-      <div class="card stat rv spot" style="--d:.12s"><div class="n grad" data-count="277" data-suffix=" MB">277 MB</div><div class="t">RAM at launch on macOS, vs 387 MB in Chrome. Level with Chrome once sites are open <a href="#speed">(how we measured)</a></div></div>
+      <div class="card stat rv spot" style="--d:.12s"><div class="n grad" data-count="3">3</div><div class="t">desktop platforms — macOS, Windows and Linux.</div></div>
       <div class="card stat rv spot" style="--d:.18s"><div class="n grad" data-count="0">0</div><div class="t">telemetry. The app has no analytics or phone-home code.</div></div>
     </div>
   </div>
@@ -201,7 +200,7 @@
       <div class="card b-c spot rv">
         <div class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 9h18M8 5v4"/></svg></div>
         <h3>25 live tabs, agent-proof</h3>
-        <p>Each tab is its own native view — the agent jumps between pages and nothing reloads: no lost drafts, dead sockets or re-verification. And it uses <a href="#speed">about the same memory as Chrome</a> doing it.</p>
+        <p>Each tab is its own native view — the agent jumps between pages and nothing reloads: no lost drafts, dead sockets or re-verification.</p>
       </div>
       <div class="card b-d spot rv" style="--d:.05s">
         <div class="icon"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg></div>
@@ -353,23 +352,10 @@
 <!-- ============ BENCHMARK ============ -->
 <section id="speed">
   <div class="wrap">
-    <div class="head rv"><span class="eyebrow">Benchmarks</span><h2>Real sites. <span class="grad">Every process counted.</span></h2>
-      <p class="lead">Memory: 12 real sites opened as tabs in one window, adding up every process of each browser, using the number Activity Monitor shows. Load speed: 25 real sites, timed with the page's own <code>loadEventEnd</code>.</p></div>
-    <div class="benchgrid">
-      <div class="card bigbars rv" id="bars">
-        <h3>Memory with 12 sites open, after settling</h3>
-        <div class="bar-row"><div class="hd"><span>Chrome</span><b data-to="3697">3,697 MB</b></div><div class="bar-bg"><div class="bar-fill chrome" data-w="98.6"></div></div></div>
-        <div class="bar-row"><div class="hd"><span>BrAIn</span><b data-to="3748">3,748 MB</b></div><div class="bar-bg"><div class="bar-fill brain" data-w="100"></div></div></div>
-        <div class="ratio"><b class="grad">Level</b>with Chrome once sites are open. Just launched, BrAIn is lighter: <b style="display:inline;font-size:inherit;color:var(--ink)">277 MB</b> vs Chrome's <b style="display:inline;font-size:inherit;color:var(--ink)">387 MB</b>.</div>
-      </div>
-      <div class="card chartwrap rv" style="--d:.08s" id="chartCard">
-        <div class="legend"><span><i style="background:#aba49d"></i>Chrome</span><span><i style="background:linear-gradient(90deg,#ffb36b,#ff7a9c)"></i>BrAIn</span><span style="margin-left:auto">RAM right after each site loads — hover</span></div>
-        <svg id="chart" viewBox="0 0 700 300" role="img" aria-label="Memory as 12 sites open: both browsers grow together to about 4 GB"></svg>
-        <div class="tip" id="tip"></div>
-      </div>
-    </div>
-    <div class="caveat rv"><b>Read this before quoting it.</b> Memory: macOS on Apple Silicon (16 GB), 2 runs per browser, same machine and network, Chrome 157 with a fresh profile and no extensions. Live sites change from load to load, so treat differences under about 5% as a tie. Reddit showed Chrome a check page instead of the real site, so Chrome's totals are missing one real page. Earlier versions of this page said 81× less memory. That was wrong: it left out the WebKit processes that hold BrAIn's pages. Load speed, measured separately with Chrome 131, is a near tie (<b style="color:var(--ink)">BrAIn faster on 11 sites, Chrome on 13</b>; differences under ~200 ms are noise). <b>Windows and Linux have not been benchmarked yet.</b> Full method and raw data: <a href="https://github.com/GranTurismo/BrAIn/blob/main/RAM-BENCHMARK.md" rel="noopener">RAM-BENCHMARK.md</a> for memory, <a href="https://github.com/GranTurismo/BrAIn/blob/main/BENCHMARK.md" rel="noopener">BENCHMARK.md</a> for load times.</div>
-    <details class="card tbl rv">
+    <div class="head rv"><span class="eyebrow">Benchmarks</span><h2>25 real sites. <span class="grad">A near tie on load speed.</span></h2>
+      <p class="lead">Each site opened as a new tab in one window, timed with the page's own <code>loadEventEnd</code>.</p></div>
+    <div class="caveat rv"><b>Read this before quoting it.</b> macOS on Apple Silicon, one sample per site, same machine and network, Chrome 131 with a fresh profile and no extensions. <b style="color:var(--ink)">BrAIn was faster on 11 sites, Chrome on 13</b>; differences under ~200 ms are noise. <b>Windows and Linux have not been benchmarked yet.</b> Full method and raw data in <a href="https://github.com/GranTurismo/BrAIn/blob/main/BENCHMARK.md" rel="noopener">BENCHMARK.md</a>.</div>
+    <details class="card tbl rv" open>
       <summary>Per-site load times <span style="font-weight:400;color:var(--mut);font-size:14px;margin-left:auto;margin-right:14px">click a column to sort</span></summary>
       <div class="scrollx"><table class="t" id="loadTable"><thead><tr><th data-k="site">Site</th><th data-k="c">Chrome (ms)</th><th data-k="b">BrAIn (ms)</th><th data-k="d">Δ</th></tr></thead><tbody></tbody></table></div>
     </details>
@@ -460,7 +446,6 @@
       <details><summary>What about CAPTCHAs and logins?</summary><div class="ans"><p>BrAIn doesn't try to defeat them. <code>browser_ask_human</code> brings the tab to the front, shows you a card, waits while you do the step, then the agent carries on. Passwords are never typed by the agent from memory — the vault needs your OS authentication.</p></div></details>
       <details><summary>Is Rewind recording everything I do?</summary><div class="ans"><p>No. It is off by default and asks before it starts. When on, it keeps compressed DOM snapshots in memory only (never on disk), skips private tabs, login pages and sites you exclude, drops a tab's history when the tab closes, and enforces age and size budgets. The agent can only read it if you separately allow that.</p></div></details>
       <details><summary>Does BrAIn send data anywhere?</summary><div class="ans"><p>There is no telemetry or analytics. The only call BrAIn makes on its own is the self-updater asking GitHub for the latest release (and downloading it, SHA-256 verified, when you accept). Otherwise it talks to the sites you visit, to your MCP client over stdio, and to a local Ollama server if you use the built-in agent. Whatever your AI client does with tool results is governed by that client.</p></div></details>
-      <details><summary>How much RAM does BrAIn use?</summary><div class="ans"><p>On macOS, about 277 MB at launch (Chrome: 387 MB) and about the same as Chrome with sites open: roughly 3.7 GB with 12 real sites. Most of that is the sites and WebKit; plain WebKit views with no BrAIn code use about the same. Every tab stays live, so memory grows with your tabs. Windows uses WebView2, which is Chromium, and Linux uses WebKitGTK, the same engine family as macOS. I haven't measured either yet, so I won't quote a number.</p></div></details>
       <details><summary>Why does my OS warn me about the installer?</summary><div class="ans"><p>The builds are not code-signed yet (that needs a paid certificate on each platform). Verify the SHA-256 on this page, then: on macOS right-click the app → Open (or <code>xattr -dr com.apple.quarantine /Applications/BrAIn.app</code>); on Windows choose <b>More info → Run anyway</b> in SmartScreen. Linux has no such warning: unpack the archive and run <code>install.sh</code>.</p></div></details>
       <details><summary>Can I use it as my daily browser?</summary><div class="ans"><p>It has the daily-driver basics — tabs, bookmarks, history, autocomplete, downloads, private tabs, password vault, import, PiP, find, zoom, print, session restore. It does not have an extension store or sync. Try it for a week and tell us what's missing.</p></div></details>
       <details><summary>Does it run on Linux — and what if the window is blank?</summary><div class="ans"><p>Yes: x64 and arm64, on X11 and Wayland, with the same toolbar, tabs and MCP tools as on macOS. It needs GTK&nbsp;3 and WebKitGTK&nbsp;4.1 (<code>libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0</code> on Debian and Ubuntu). <code>install.sh</code> in the archive installs it for you alone, without root, and the app then updates itself. If the window comes up blank or black (seen with some NVIDIA setups), start it with <code>WEBKIT_DISABLE_DMABUF_RENDERER=1 brain</code>; if something misbehaves on Wayland, <code>GDK_BACKEND=x11 brain</code> runs it through XWayland. Linux is new, so please report what you find.</p></div></details>
@@ -481,6 +466,6 @@
   </div>
 </footer>
 <div id="toast" role="status"></div>
-<script src="assets/app.js?v=4"></script>
+<script src="assets/app.js?v=5"></script>
 </body>
 </html>

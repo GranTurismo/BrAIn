@@ -340,28 +340,9 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
 .c-vid i{position:absolute;left:9px;top:9px;padding:2px 7px;border-radius:4px;background:#ff3b3b;font-style:normal}
 .c-vid svg{width:36px;height:36px;opacity:.9}
 
-/* ---------- performance ---------- */
+/* ---------- built in ---------- */
 .bench{position:absolute;inset:0}
-.big{position:absolute;right:-4px;top:-40px;font:900 150px/1 var(--sans);letter-spacing:-.07em;color:transparent;-webkit-text-stroke:1.5px rgba(255,138,76,.32);opacity:0;pointer-events:none}
-.modes{position:absolute;left:0;top:10px;display:flex;gap:4px;padding:4px;border-radius:12px;background:var(--glass);box-shadow:inset 0 0 0 1px var(--line);z-index:2}
-.modes button{appearance:none;border:0;padding:7px 14px;border-radius:9px;font:700 11.5px var(--sans);color:var(--mut);background:none;cursor:pointer;transition:background .25s,color .25s}
-.modes button.on{background:rgba(255,138,76,.2);color:#fff;box-shadow:inset 0 0 0 1px rgba(255,138,76,.4)}
-.brow{position:absolute;left:0;right:0}
-.brow.chrome{top:126px}.brow.brain{top:202px}
-.blab{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px}
-.blab b{font:750 15px var(--sans);color:var(--ink);display:flex;align-items:center;gap:9px}
-.blab b i{width:10px;height:10px;border-radius:50%;background:#8b8f98}
-.brow.brain .blab b i{background:var(--ac);box-shadow:0 0 12px var(--ac)}
-.blab .val{font:800 30px/1 var(--sans);letter-spacing:-.04em;color:#fff;font-variant-numeric:tabular-nums}
-.blab .val small{font:650 13px var(--sans);color:var(--mut);letter-spacing:0;margin-left:4px}
-.bar{position:relative;height:34px;border-radius:10px;background:rgba(255,240,230,.05);box-shadow:inset 0 0 0 1px rgba(255,240,230,.06);overflow:hidden}
-.bar i{position:absolute;left:0;top:0;bottom:0;width:100%;transform-origin:0 50%;transform:scaleX(0);border-radius:10px}
-.brow.chrome .bar i{background:repeating-linear-gradient(135deg,rgba(255,255,255,.06) 0 10px,transparent 10px 20px),linear-gradient(90deg,#5c5f68,#8b8f98 60%,#c45a4a);animation:stripes 1.2s linear infinite}
-.brow.brain .bar i{background:linear-gradient(90deg,var(--gold),var(--ac));box-shadow:0 0 24px rgba(255,138,76,.9)}
-@keyframes stripes{to{background-position:28px 0,0 0}}
-.pertab{position:absolute;top:284px;left:0;right:0;display:flex;gap:26px;font:600 12px var(--sans);color:var(--mut);opacity:0}
-.pertab b{color:var(--ink);font-weight:750}
-.minis{position:absolute;left:0;right:0;top:330px;display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.minis{position:absolute;left:0;right:0;top:172px;display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
 .mini{position:relative;height:186px;border-radius:16px;padding:14px 16px;background:linear-gradient(180deg,rgba(40,33,30,.9),rgba(24,20,18,.92));box-shadow:inset 0 0 0 1px rgba(255,236,222,.09);overflow:hidden;opacity:0}
 .mini h6{font:700 12.5px var(--sans);color:var(--ink)}
 .mini p{font:500 11.5px var(--sans);color:var(--dim);margin-top:2px}
@@ -1722,8 +1703,7 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
         },
     };
 
-    // ---- 4. Performance (numbers from RAM-BENCHMARK.md: 12 real sites on macOS, Chrome 157 vs BrAIn, every process counted)
-    const BENCH = { launch: { chrome: 387, brain: 277, big: '−28%' }, sites: { chrome: 3697, brain: 3748, big: '≈' } };
+    // ---- 4. Built in: the command palette and the password card
     // A real piece of BrAIn's UI (chrome.js kit) drawn at a reduced scale inside a tile.
     function kitMini(stage, html, natW) {
         const K = kit(); if (!K) return null;
@@ -1738,23 +1718,16 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
             `#pwsave{position:relative;top:0;right:0;width:100%;max-width:none}</style>${html}`;
         return r;
     }
-    const S_PERF = {
-        label: 'Performance', dur: 13500, tint: EMBER, level: .5, cv: [760, 530],
+    const S_BUILTIN = {
+        label: 'Built in', dur: 9000, tint: EMBER, level: .5, cv: [760, 530],
         html: () => `
           <div class="copy"><div class="cp">
-            <div class="eyebrow">Performance</div>
-            <h1 class="hl"><em>Lighter at launch.</em><br>Level with Chrome under load.</h1>
-            <p class="sub">Just launched, BrAIn uses <b>277 MB</b> of RAM to Chrome's <b>387 MB</b>. With 12 real sites open, both sit at about <b>3.7 GB</b>.</p>
-            <p class="foot">Chrome 157 vs BrAIn on macOS, same Apple Silicon Mac and network, every process counted. Methodology in RAM-BENCHMARK.md.</p>
-            <div class="try"><i></i>Switch between launch and 12 sites</div>
+            <div class="eyebrow">Built in</div>
+            <h1 class="hl"><em>Jump anywhere.</em><br>Sign in anywhere.</h1>
+            <p class="sub">One box finds your tabs, your history and every action. Passwords are built in, so you don't need an extension.</p>
           </div></div>
           <div class="stage"><div class="tilt"><div class="cv">
             <div class="bench">
-              <div class="big"></div>
-              <div class="modes"><button class="on" data-m="launch" type="button">Launch</button><button data-m="sites" type="button">12 sites</button></div>
-              <div class="brow chrome"><div class="blab"><b><i></i>Chrome 157</b><span class="val">0<small>MB</small></span></div><div class="bar"><i></i></div></div>
-              <div class="brow brain"><div class="blab"><b><i></i>BrAIn</b><span class="val">0<small>MB</small></span></div><div class="bar"><i></i></div></div>
-              <div class="pertab"><span>After closing 6 of the tabs: Chrome <b>3,240 MB</b></span><span>BrAIn <b>3,049 MB</b></span></div>
               <div class="minis">
                 <div class="mini"><h6>Command palette</h6><p>Tabs, history, every action — ${MOD}K</p><div class="mstage mpal"></div></div>
                 <div class="mini"><h6>Passwords, built in</h6><p>Saved and filled for you — never in Ghost mode</p><div class="mstage mpw"></div></div>
@@ -1763,37 +1736,10 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
           </div></div></div>`,
         async play(c, el) {
             const cv = el.querySelector('.cv'), cp = el.querySelector('.cp'), K = kit();
-            const rc = cv.querySelector('.brow.chrome'), rb = cv.querySelector('.brow.brain'), big = cv.querySelector('.big');
-            const vc = rc.querySelector('.val'), vb = rb.querySelector('.val'), bc = rc.querySelector('.bar i'), bb = rb.querySelector('.bar i');
-            const modes = Array.from(cv.querySelectorAll('.modes button'));
             showCopy(c, cp, 0);
-            [cv.querySelector('.modes'), rc, rb].forEach((e, i) => fadeUp(c, e, 200 + i * 120, 16, 800));
-            const MAX = BENCH.sites.brain;
-            let cur = { chrome: 0, brain: 0 }, shown = 0, picked = false;
-            const fmt = v => Math.round(v).toLocaleString('en-US') + '<small>MB</small>';
-            async function show(m, dur = 1500) {
-                const d = BENCH[m], from = Object.assign({}, cur), me = ++shown;
-                modes.forEach(b => b.classList.toggle('on', b.getAttribute('data-m') === m));
-                big.textContent = d.big;
-                c.anim(big, [{ opacity: 0, transform: 'scale(.9)' }, { opacity: 1, transform: 'none' }], { duration: 900, delay: dur * .55 });
-                await c.tween(dur, p => {
-                    if (me !== shown) return; // a newer choice took over
-                    cur.chrome = lerp(from.chrome, d.chrome, p); cur.brain = lerp(from.brain, d.brain, p);
-                    vc.innerHTML = fmt(cur.chrome); vb.innerHTML = fmt(cur.brain);
-                    bc.style.transform = `scaleX(${(cur.chrome / MAX).toFixed(4)})`;
-                    bb.style.transform = `scaleX(${Math.max(.012, cur.brain / MAX).toFixed(4)})`;
-                }, easeOutExpo);
-            }
-            await c.wait(600);
-            await show('launch', 1500);
-            // goes on to the 12 sites by itself, so nobody leaves this scene having seen only the launch numbers
-            c.fork((async () => { await c.wait(1400); if (!picked) await show('sites', 1500); })());
-            fadeUp(c, cv.querySelector('.pertab'), 0, 8, 600);
-            c.anim(rb.querySelector('.bar'), [{ boxShadow: '0 0 0 0 rgba(255,138,76,0)' }, { boxShadow: '0 0 0 6px rgba(255,138,76,.25)' }, { boxShadow: '0 0 0 0 rgba(255,138,76,0)' }], { duration: 1200, fill: 'none' });
-            modes.forEach(b => c.on(b, 'click', e => { e.stopPropagation(); c.touch(); picked = true; c.fork(show(b.getAttribute('data-m'), 900)); }));
+            await c.wait(500);
             const minis = Array.from(cv.querySelectorAll('.mini'));
             minis.forEach((m, i) => c.anim(m, [{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'none' }], { duration: 700, delay: 200 + i * 130 }));
-            showTry(c, cp, 900);
             // the real command palette, typing "rewind"; the real save-password card
             const pal = K && kitMini(cv.querySelector('.mpal'), `<div class="pbox"><div class="pin">${K.svg.mag}<input id="pq" readonly tabindex="-1" placeholder="Jump to a tab, search history, run an action, or type a URL"><span class="pesc">esc</span></div><div id="pres"></div></div>`, 470);
             const pws = K && kitMini(cv.querySelector('.mpw'), `<div id="pwsave">${K.pwsave('github.com', 'you@example.com')}</div>`, 330);
@@ -1874,7 +1820,7 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
         },
     };
 
-    const SCENES = [S_INTRO, S_AGENT, S_REWIND, S_FLOWS, S_PERF, S_FINAL];
+    const SCENES = [S_INTRO, S_AGENT, S_REWIND, S_FLOWS, S_BUILTIN, S_FINAL];
     const CHAPTERS = SCENES.filter(s => s.label);
     segsEl.innerHTML = CHAPTERS.map((s, i) => `<button class="seg" type="button" data-i="${i}"><i><b></b></i><span>${s.label}</span></button>`).join('');
     const segs = Array.from(segsEl.querySelectorAll('.seg'));

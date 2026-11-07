@@ -419,35 +419,11 @@ scripts that BrAIn runs automatically every time a matching site loads.
 
 Scripts are stored in `userscripts.json` next to the other profile data.
 
-## Performance vs Chrome
-
-### Memory
-
-12 real sites on macOS (Apple Silicon, 16 GB), one browser at a time, 2 runs each. Chrome 157 had a fresh
-profile with no extensions. Every process of each browser is counted, using the number Activity Monitor shows.
-Full data and methodology: [RAM-BENCHMARK.md](RAM-BENCHMARK.md).
-
-| Moment | Chrome 157 | BrAIn |
-|---|---:|---:|
-| Just launched | 387 MB | **277 MB** |
-| 12 sites open, left alone for 1–2.5 min | **3,697 MB** | 3,748 MB |
-| After clicking through every tab | 4,014 MB | **3,856 MB** |
-| After closing 6 of the tabs | 3,240 MB | **3,049 MB** |
-
-**BrAIn is lighter at launch and level with Chrome once sites are open.** Differences under about 5% are
-noise, because live sites change from load to load. Most of the memory goes to the sites and to WebKit: plain
-WebKit views with no BrAIn code use about the same. BrAIn's own code adds roughly 100–300 MB.
-Reddit showed Chrome a check page instead of the real site, so Chrome's totals are missing one real page.
-
-Earlier versions of this README claimed "81× less RAM than Chrome". That was wrong: it counted only BrAIn's
-app process, without the WebKit processes that hold the pages. [RAM-BENCHMARK.md](RAM-BENCHMARK.md#why-the-old-benchmark-said-81)
-explains the error.
-
-### Page load
+## Page load vs Chrome
 
 25 real sites opened as 25 tabs in a single window (tabs never closed), `loadEventEnd` timing per page.
 macOS, Apple Silicon, same machine, same network, sequential runs, Chrome 131, October 2026.
-Data and methodology: [BENCHMARK.md](BENCHMARK.md) (its RAM numbers are the wrong ones described above).
+Data and methodology: [BENCHMARK.md](BENCHMARK.md).
 
 Page-load speed is competitive: BrAIn won 11 of 24 comparable sites and Chrome won 13, mostly within TTFB
 variance. Notable BrAIn wins: GitHub −67%, NYT −64%, Cloudflare −43%, Forbes −28%.

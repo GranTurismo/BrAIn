@@ -2,6 +2,11 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## Unreleased
+
+### Changed
+- **BrAIn no longer compares its RAM use with Chrome** — the comparison is gone from the welcome film, the Personality page, the README and the website. The film's slide now shows only the command palette and passwords.
+
 ## 1.8.6 — 2026-11-07
 
 **Scope:** **macOS** gets the memory fix and the two smaller fixes below. **All platforms** get the corrected RAM comparison. 1.8.5 shipped only a Windows installer and was never offered as an update, so its changes also first reach people through the updater here: **Windows** gets its startup fixes, and **macOS and Linux** get the app logo on BrAIn's own tabs (details under 1.8.5).
@@ -12,7 +17,7 @@ All notable changes to BrAIn. Releases and installers: https://github.com/GranTu
 - **The fullscreen memory readout counts only BrAIn (macOS)** — started from a terminal or by an MCP client, it also counted other apps' WebKit processes started from that terminal.
 
 ### Changed
-- **The RAM comparison with Chrome is corrected (all platforms)** — the welcome film, the Personality page and the README said BrAIn uses 81× less RAM than Chrome. That was wrong: it counted only BrAIn's app process, not the WebKit processes that hold the pages. Measured properly on macOS: 277 MB vs 387 MB at launch, and level at about 3.7 GB with 12 real sites open. Details in [RAM-BENCHMARK.md](RAM-BENCHMARK.md).
+- **The 81× RAM claim is withdrawn (all platforms)** — the welcome film, the Personality page and the README said BrAIn uses 81× less RAM than Chrome. That was wrong: it counted only BrAIn's app process, not the WebKit processes that hold the pages.
 
 ### Known
 - What 1.8.5 lists as known is still open: WebView2 helper processes can outlive BrAIn on Windows, and the two Windows security gaps from 1.8.4 remain.
