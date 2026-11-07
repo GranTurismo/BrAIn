@@ -1,5 +1,7 @@
 # BrAIn vs Chrome — 25-Tab Benchmark
 
+> **Correction (2026-11-07): the RAM numbers on this page are wrong, including "81×".** BrAIn was counted without its WebKit processes, and Chrome's memory was added up in a way that counts shared memory many times. See [RAM-BENCHMARK.md](RAM-BENCHMARK.md) for the real comparison: level with Chrome at 12 sites. The page-load timings here are unaffected. The page is kept as it was published.
+
 > Date: 2026-10-11 · Machine: macOS (Apple Silicon), same machine, same network
 > Builds: BrAIn `dist/BrAIn.app` (local release build) · Google Chrome (installed stable)
 > Method scripts: `/tmp/bench25_brain.py`, `/tmp/bench25_chrome.mjs` (harness described below)

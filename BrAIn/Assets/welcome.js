@@ -1722,8 +1722,8 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
         },
     };
 
-    // ---- 4. Performance (numbers from BENCHMARK.md: 25 real sites, Chrome 131 vs BrAIn, Apple Silicon)
-    const BENCH = { tabs: { chrome: 14102, brain: 174, label: '25 tabs open' }, idle: { chrome: 1211, brain: 156, label: 'Idle (new tab)' } };
+    // ---- 4. Performance (numbers from RAM-BENCHMARK.md: 12 real sites on macOS, Chrome 157 vs BrAIn, every process counted)
+    const BENCH = { launch: { chrome: 387, brain: 277, big: '−28%' }, sites: { chrome: 3697, brain: 3748, big: '≈' } };
     // A real piece of BrAIn's UI (chrome.js kit) drawn at a reduced scale inside a tile.
     function kitMini(stage, html, natW) {
         const K = kit(); if (!K) return null;
@@ -1743,18 +1743,18 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
         html: () => `
           <div class="copy"><div class="cp">
             <div class="eyebrow">Performance</div>
-            <h1 class="hl"><em>81× less memory</em><br>than Chrome.</h1>
-            <p class="sub">25 real sites in 25 tabs: Chrome used <b>14.1 GB</b> of RAM. BrAIn used <b>174 MB</b> — less than Chrome uses sitting idle.</p>
-            <p class="foot">Chrome 131 vs BrAIn, same Apple Silicon Mac and network, sequential runs. Methodology in BENCHMARK.md.</p>
-            <div class="try"><i></i>Switch between idle and 25 tabs</div>
+            <h1 class="hl"><em>Lighter at launch.</em><br>Level with Chrome under load.</h1>
+            <p class="sub">Just launched, BrAIn uses <b>277 MB</b> of RAM to Chrome's <b>387 MB</b>. With 12 real sites open, both sit at about <b>3.7 GB</b>.</p>
+            <p class="foot">Chrome 157 vs BrAIn on macOS, same Apple Silicon Mac and network, every process counted. Methodology in RAM-BENCHMARK.md.</p>
+            <div class="try"><i></i>Switch between launch and 12 sites</div>
           </div></div>
           <div class="stage"><div class="tilt"><div class="cv">
             <div class="bench">
-              <div class="big">81×</div>
-              <div class="modes"><button class="on" data-m="tabs" type="button">25 tabs</button><button data-m="idle" type="button">Idle</button></div>
-              <div class="brow chrome"><div class="blab"><b><i></i>Chrome 131</b><span class="val">0<small>MB</small></span></div><div class="bar"><i></i></div></div>
+              <div class="big"></div>
+              <div class="modes"><button class="on" data-m="launch" type="button">Launch</button><button data-m="sites" type="button">12 sites</button></div>
+              <div class="brow chrome"><div class="blab"><b><i></i>Chrome 157</b><span class="val">0<small>MB</small></span></div><div class="bar"><i></i></div></div>
               <div class="brow brain"><div class="blab"><b><i></i>BrAIn</b><span class="val">0<small>MB</small></span></div><div class="bar"><i></i></div></div>
-              <div class="pertab"><span>Per tab: Chrome <b>~516 MB</b></span><span>BrAIn <b>~7 MB</b></span></div>
+              <div class="pertab"><span>After closing 6 of the tabs: Chrome <b>3,240 MB</b></span><span>BrAIn <b>3,049 MB</b></span></div>
               <div class="minis">
                 <div class="mini"><h6>Command palette</h6><p>Tabs, history, every action — ${MOD}K</p><div class="mstage mpal"></div></div>
                 <div class="mini"><h6>Passwords, built in</h6><p>Saved and filled for you — never in Ghost mode</p><div class="mstage mpw"></div></div>
@@ -1768,16 +1768,16 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
             const modes = Array.from(cv.querySelectorAll('.modes button'));
             showCopy(c, cp, 0);
             [cv.querySelector('.modes'), rc, rb].forEach((e, i) => fadeUp(c, e, 200 + i * 120, 16, 800));
-            const MAX = BENCH.tabs.chrome;
-            let cur = { chrome: 0, brain: 0 };
+            const MAX = BENCH.sites.brain;
+            let cur = { chrome: 0, brain: 0 }, shown = 0, picked = false;
             const fmt = v => Math.round(v).toLocaleString('en-US') + '<small>MB</small>';
             async function show(m, dur = 1500) {
-                const d = BENCH[m], from = Object.assign({}, cur);
+                const d = BENCH[m], from = Object.assign({}, cur), me = ++shown;
                 modes.forEach(b => b.classList.toggle('on', b.getAttribute('data-m') === m));
-                const ratio = d.chrome / d.brain;
-                big.textContent = (ratio >= 10 ? Math.round(ratio) : ratio.toFixed(1)) + '×';
+                big.textContent = d.big;
                 c.anim(big, [{ opacity: 0, transform: 'scale(.9)' }, { opacity: 1, transform: 'none' }], { duration: 900, delay: dur * .55 });
                 await c.tween(dur, p => {
+                    if (me !== shown) return; // a newer choice took over
                     cur.chrome = lerp(from.chrome, d.chrome, p); cur.brain = lerp(from.brain, d.brain, p);
                     vc.innerHTML = fmt(cur.chrome); vb.innerHTML = fmt(cur.brain);
                     bc.style.transform = `scaleX(${(cur.chrome / MAX).toFixed(4)})`;
@@ -1785,10 +1785,12 @@ kbd.k{font:600 .86em var(--mono);padding:2px 7px;border-radius:6px;background:rg
                 }, easeOutExpo);
             }
             await c.wait(600);
-            await show('tabs', 1700);
+            await show('launch', 1500);
+            // goes on to the 12 sites by itself, so nobody leaves this scene having seen only the launch numbers
+            c.fork((async () => { await c.wait(1400); if (!picked) await show('sites', 1500); })());
             fadeUp(c, cv.querySelector('.pertab'), 0, 8, 600);
             c.anim(rb.querySelector('.bar'), [{ boxShadow: '0 0 0 0 rgba(255,138,76,0)' }, { boxShadow: '0 0 0 6px rgba(255,138,76,.25)' }, { boxShadow: '0 0 0 0 rgba(255,138,76,0)' }], { duration: 1200, fill: 'none' });
-            modes.forEach(b => c.on(b, 'click', e => { e.stopPropagation(); c.touch(); c.fork(show(b.getAttribute('data-m'), 900)); }));
+            modes.forEach(b => c.on(b, 'click', e => { e.stopPropagation(); c.touch(); picked = true; c.fork(show(b.getAttribute('data-m'), 900)); }));
             const minis = Array.from(cv.querySelectorAll('.mini'));
             minis.forEach((m, i) => c.anim(m, [{ opacity: 0, transform: 'translateY(18px)' }, { opacity: 1, transform: 'none' }], { duration: 700, delay: 200 + i * 130 }));
             showTry(c, cp, 900);

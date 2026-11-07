@@ -2,6 +2,21 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.8.6 — 2026-11-07
+
+**Scope:** **macOS** gets the memory fix and the two smaller fixes below. **All platforms** get the corrected RAM comparison. 1.8.5 shipped only a Windows installer and was never offered as an update, so its changes also first reach people through the updater here: **Windows** gets its startup fixes, and **macOS and Linux** get the app logo on BrAIn's own tabs (details under 1.8.5).
+
+### Fixed
+- **Background tabs use less memory (macOS)** — background tabs stayed inside the window, only hidden, and WebKit frees a page's memory only once it has left the window. They now leave it, the way Safari's and Chrome's do. Pages keep running: audio, timers, downloads, agents and screenshots all still work. On 12 real sites this saves about 390–470 MB (8–12%). A tab that has been in the background for more than about 10 s needs 30–200 ms to repaint when you return; the old page stays on screen until the new one is ready, so there is no white flash.
+- **A screenshot of a background tab can no longer hang (macOS)** — it could wait forever for a screen update that an out-of-window tab never produces.
+- **The fullscreen memory readout counts only BrAIn (macOS)** — started from a terminal or by an MCP client, it also counted other apps' WebKit processes started from that terminal.
+
+### Changed
+- **The RAM comparison with Chrome is corrected (all platforms)** — the welcome film, the Personality page and the README said BrAIn uses 81× less RAM than Chrome. That was wrong: it counted only BrAIn's app process, not the WebKit processes that hold the pages. Measured properly on macOS: 277 MB vs 387 MB at launch, and level at about 3.7 GB with 12 real sites open. Details in [RAM-BENCHMARK.md](RAM-BENCHMARK.md).
+
+### Known
+- What 1.8.5 lists as known is still open: WebView2 helper processes can outlive BrAIn on Windows, and the two Windows security gaps from 1.8.4 remain.
+
 ## 1.8.5 — 2026-11-05
 
 **Scope:** a Windows fix release. **Windows** gets both fixes below. **macOS and Linux** change only in the tab logo (shared toolbar script, not run on either). The version number and the update feed are shared by every platform, which is why they also get a new installer.

@@ -255,7 +255,7 @@ Notes on the design:
   state, audio and in-flight work survive. (Photino itself embeds exactly one
   webview per window, so the extra views are created by BrAIn: `Browser/Mac/WkTabs.cs`,
   `Browser/Win/WinTabs.cs` and `Browser/Linux/LinuxTabs.cs`.) Every tab stays live; background tabs are only
-  throttled. Machines short on RAM can opt in to `BRAIN_MAXLIVE=n` (older Windows
+  throttled (on macOS they also leave the window, so WebKit can free their drawing memory and caches). Machines short on RAM can opt in to `BRAIN_MAXLIVE=n` (older Windows
   views are then evicted and reload on demand, scroll restored) or `BRAIN_SUSPEND=1`
   (hidden Windows tabs freeze after 20 s). If per-tab
   views can't be created (or with `BRAIN_PERTAB=0`, or `--no-split` / `--no-toolbar`
@@ -421,24 +421,36 @@ Scripts are stored in `userscripts.json` next to the other profile data.
 
 ## Performance vs Chrome
 
-25 real sites opened as 25 tabs in a single window (tabs never closed),
-`loadEventEnd` timing per page and total process-tree RSS sampled after each
-tab. macOS, Apple Silicon, same machine, same network, sequential runs.
-Full data and methodology: [BENCHMARK.md](BENCHMARK.md).
+### Memory
 
-| | Chrome 131 | BrAIn |
+12 real sites on macOS (Apple Silicon, 16 GB), one browser at a time, 2 runs each. Chrome 157 had a fresh
+profile with no extensions. Every process of each browser is counted, using the number Activity Monitor shows.
+Full data and methodology: [RAM-BENCHMARK.md](RAM-BENCHMARK.md).
+
+| Moment | Chrome 157 | BrAIn |
 |---|---:|---:|
-| RAM — idle (new tab) | 1,211 MB | **156 MB** |
-| RAM — 25 tabs open | 14,102 MB | **174 MB** |
-| RAM per tab (avg) | ~516 MB | **~7 MB** |
-| Page-load wins (24 comparable sites) | 13 | 11 |
+| Just launched | 387 MB | **277 MB** |
+| 12 sites open, left alone for 1–2.5 min | **3,697 MB** | 3,748 MB |
+| After clicking through every tab | 4,014 MB | **3,856 MB** |
+| After closing 6 of the tabs | 3,240 MB | **3,049 MB** |
 
-**The memory gap is the story: ~81×.** Chrome's site isolation keeps a
-dedicated renderer per site; BrAIn's WebKit webviews share a process pool
-and suspend background pages aggressively — after 25 real sites it still
-uses less than Chrome does *sitting idle*. Page-load speed is competitive
-(11 wins, 13 losses, mostly within TTFB variance; notable BrAIn wins on
-GitHub −67%, NYT −64%, Cloudflare −43%, Forbes −28%).
+**BrAIn is lighter at launch and level with Chrome once sites are open.** Differences under about 5% are
+noise, because live sites change from load to load. Most of the memory goes to the sites and to WebKit: plain
+WebKit views with no BrAIn code use about the same. BrAIn's own code adds roughly 100–300 MB.
+Reddit showed Chrome a check page instead of the real site, so Chrome's totals are missing one real page.
+
+Earlier versions of this README claimed "81× less RAM than Chrome". That was wrong: it counted only BrAIn's
+app process, without the WebKit processes that hold the pages. [RAM-BENCHMARK.md](RAM-BENCHMARK.md#why-the-old-benchmark-said-81)
+explains the error.
+
+### Page load
+
+25 real sites opened as 25 tabs in a single window (tabs never closed), `loadEventEnd` timing per page.
+macOS, Apple Silicon, same machine, same network, sequential runs, Chrome 131, October 2026.
+Data and methodology: [BENCHMARK.md](BENCHMARK.md) (its RAM numbers are the wrong ones described above).
+
+Page-load speed is competitive: BrAIn won 11 of 24 comparable sites and Chrome won 13, mostly within TTFB
+variance. Notable BrAIn wins: GitHub −67%, NYT −64%, Cloudflare −43%, Forbes −28%.
 
 <details>
 <summary><b>Per-site load times</b> (ms, loadEventEnd — click to expand)</summary>
