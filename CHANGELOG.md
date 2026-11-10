@@ -2,6 +2,16 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.8.8 — 2026-11-10
+
+**Scope:** **all platforms** (the MCP tool is shared code). Nothing else changes.
+
+### Changed
+- **`browser_upload` takes files up to 5 GB (was 64 MB)** — the file used to be read whole and sent as one text string, which cannot hold more than about 1–2 GB. It is now read and sent to the page in pieces of about 450 KB, and the page assembles them into the file.
+
+### Known
+- The page keeps the whole file in memory while it is attached, so a multi-GB file needs about that much free RAM, and attaching one takes a while: every byte goes through the page's JavaScript.
+
 ## 1.8.7 — 2026-11-07
 
 **Scope:** a text-only release for **all platforms**: nothing changes in how BrAIn behaves.

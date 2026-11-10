@@ -831,7 +831,29 @@ public sealed class BrowserTools(BrowserController browser)
 
     // ============================================================== FILES
 
-    [McpServerTool(Name = "browser_upload"), Description("Load a local file into an <input type=file> by injecting a File via a DataTransfer — no native dialog. The bytes are read by the browser process itself, so nothing traverses the network.")]
+    private const long MaxUploadBytes = 5L << 30;   // 5 GiB
+    private const int RawPiece = 450_000;           // divisible by 3: a piece is whole base64 (600 000 characters), padding only ever ends the last one
+    private const int FoldPieces = 32;              // decoded pieces kept as plain arrays before they are folded into the Blob (about 14 MB)
+
+    private static async Task<int> ReadFullAsync(Stream s, byte[] buf, CancellationToken ct)
+    {
+        var got = 0;
+        while (got < buf.Length)
+        {
+            var n = await s.ReadAsync(buf.AsMemory(got), ct);
+            if (n == 0) break;
+            got += n;
+        }
+        return got;
+    }
+
+    private static string PieceJs(string holder, string b64) =>
+        "(function(h){var s=atob(" + Js(b64) + "),n=s.length,a=new Uint8Array(n);" +
+        "for(var i=0;i<n;i++)a[i]=s.charCodeAt(i);h.p.push(a);" +
+        "if(h.p.length>=" + FoldPieces + "){h.b=new Blob([h.b].concat(h.p));h.p=[]}" +
+        "return 'piece-ok'})(window." + holder + ")";
+
+    [McpServerTool(Name = "browser_upload"), Description("Load a local file into an <input type=file> by injecting a File via a DataTransfer — no native dialog. The bytes are read by the browser process itself, so nothing traverses the network. Files up to 5 GB are accepted; they reach the page in pieces.")]
     public async Task<string> Upload(
         [Description("Absolute path to the local file")] string path,
         [Description(SelHelp + " Defaults to the first input[type=file] (preferring one that accepts .aab).")] string? element = null,
@@ -844,39 +866,58 @@ public sealed class BrowserTools(BrowserController browser)
         await EnsureLibAsync(t, ct);
         var info = new FileInfo(path);
         if (!info.Exists) return $"ERROR: no such file: {path}";
-        if (info.Length > 64L << 20) return "ERROR: files over 64 MB cannot be uploaded this way";
-        var bytes = await File.ReadAllBytesAsync(path, ct);
+        if (info.Length > MaxUploadBytes) return "ERROR: files over 5 GB cannot be uploaded this way";
         var name = Path.GetFileName(path);
-        var b64 = Convert.ToBase64String(bytes);
 
-        // The bytes travel through the page's own JavaScript world, in a variable with a name nobody could guess beforehand, which
+        // The file never exists whole on this side: a byte[] stops near 2 GB and a base64 string near 1 G characters, and the page's
+        // atob cannot take that either. It is read piece by piece, each piece is decoded in the page and folded into one Blob (a Blob
+        // made of Blobs refers to them, it does not copy them), and the Blob becomes the File at the end.
+        // The pieces travel through the page's own JavaScript world, in a variable with a name nobody could guess beforehand, which
         // is deleted again as soon as the File has been built (a page watching for a fixed name never sees one).
         var holder = "__u" + Guid.NewGuid().ToString("N")[..16];
-        await browser.EvaluateTextAsync($"window.{holder}=''", t, ct);
-        const int CH = 600_000;
-        for (var i = 0; i < b64.Length; i += CH)
+        string? r;
+        try
         {
-            var part = b64.Substring(i, Math.Min(CH, b64.Length - i));
-            await browser.EvaluateTextAsync($"window.{holder}+={Js(part)}", t, ct);
-        }
+            await browser.EvaluateTextAsync($"window.{holder}={{b:new Blob([]),p:[]}}", t, ct);
+            var buf = new byte[RawPiece];
+            long sent = 0;
+            int got;
+            await using (var fs = new FileStream(path, new FileStreamOptions
+            {
+                Mode = FileMode.Open, Access = FileAccess.Read, Share = FileShare.ReadWrite,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+            }))
+            {
+                while ((got = await ReadFullAsync(fs, buf, ct)) > 0)
+                {
+                    var ack = await browser.EvaluateTextAsync(PieceJs(holder, Convert.ToBase64String(buf, 0, got)), t, ct);
+                    if (ack is null || !ack.Contains("piece-ok"))
+                        return $"upload {name}: ERROR: the page stopped taking the file after {sent} bytes ({ack})";
+                    sent += got;
+                }
+            }
 
-        var target = element is null
-            ? "(document.querySelector('input[type=file][accept*=\".aab\"]')||document.querySelector('input[type=file]'))"
-            : $"window.__brain.resolve({Js(element)})";
-        var js =
-            "(function(){try{" +
-            "var bin=atob(window." + holder + "),n=bin.length,arr=new Uint8Array(n);delete window." + holder + ";" +
-            "for(var i=0;i<n;i++)arr[i]=bin.charCodeAt(i);" +
-            "var f=new File([arr]," + Js(name) + ",{type:'application/octet-stream'});" +
-            "var dt=new DataTransfer(); dt.items.add(f);" +
-            "var inp=" + target + "; if(!inp) return 'no file input found';" +
-            "try{inp.files=dt.files}catch(e){}" +
-            "inp.dispatchEvent(new Event('input',{bubbles:true}));" +
-            "inp.dispatchEvent(new Event('change',{bubbles:true}));" +
-            "return 'injected '+f.name+' ('+f.size+' bytes); input.files='+inp.files.length;" +
-            "}catch(e){return 'ERR '+String(e&&e.stack||e)}})()";
-        var r = await browser.EvaluateTextAsync(js, t, ct);
-        try { await browser.EvaluateTextAsync($"delete window.{holder}", t, ct); } catch { /* already gone */ }
+            var target = element is null
+                ? "(document.querySelector('input[type=file][accept*=\".aab\"]')||document.querySelector('input[type=file]'))"
+                : $"window.__brain.resolve({Js(element)})";
+            var js =
+                "(function(){try{" +
+                "var h=window." + holder + ";delete window." + holder + ";" +
+                "var f=new File([h.b].concat(h.p)," + Js(name) + ",{type:'application/octet-stream'});" +
+                "if(f.size!==" + sent + ")return 'ERR the page holds '+f.size+' of " + sent + " bytes';" +
+                "var dt=new DataTransfer(); dt.items.add(f);" +
+                "var inp=" + target + "; if(!inp) return 'no file input found';" +
+                "try{inp.files=dt.files}catch(e){}" +
+                "inp.dispatchEvent(new Event('input',{bubbles:true}));" +
+                "inp.dispatchEvent(new Event('change',{bubbles:true}));" +
+                "return 'injected '+f.name+' ('+f.size+' bytes); input.files='+inp.files.length;" +
+                "}catch(e){return 'ERR '+String(e&&e.stack||e)}})()";
+            r = await browser.EvaluateTextAsync(js, t, ct);
+        }
+        finally
+        {
+            try { await browser.EvaluateTextAsync($"delete window.{holder}", t, CancellationToken.None); } catch { /* already gone */ }
+        }
         return $"upload {name}: {r}";
     }
 
