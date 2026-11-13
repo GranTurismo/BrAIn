@@ -9,237 +9,845 @@
   // about:ollama instead of the literal about:blank that location.href reports.
   window.__brainOllama = 1;
   // Docked in the browser's side panel (no BrAIn chrome above it) rather than shown as a tab.
-  if (window.__BRAIN_SIDE) document.documentElement.className = 'side';
+  // "compact" is the layout hook: the side panel, or any narrow window.
+  if (window.__BRAIN_SIDE) document.documentElement.className = 'side compact';
+  else if (window.innerWidth < 560) document.documentElement.className = 'compact';
   window.__brainOllamaData = __BRAIN_OLLAMA_JSON__;
 </script>
 <style>
 /*@THEME*/
-  body { padding: 84px 24px 24px; height: 100vh; overflow: hidden; }
-  .wrap { max-width: 900px; height: 100%; display: flex; flex-direction: column; gap: 14px; }
-  .head { display: flex; align-items: center; gap: 14px; flex: none; }
-  .head .logo { font-size: 26px; }
-  .pill { font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; padding: 4px 10px; border-radius: 99px;
-    border: 1px solid var(--line); color: var(--mut); background: var(--glass); }
-  .pill.ok { color: #6fe0c6; border-color: rgba(111,224,198,.35); }
-  .pill.bad { color: #ff9aa3; border-color: rgba(255,154,163,.35); }
-  .cfg { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 12px 14px; flex: none;
-    background: var(--glass); border: 1px solid var(--line); border-radius: 14px; }
-  .cfg label { font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--dim); }
-  input, select, textarea { font: 13px var(--font); color: var(--ink); background: rgba(0,0,0,.28); border: 1px solid var(--line);
-    border-radius: 9px; padding: 8px 10px; outline: none; }
-  input:focus, select:focus, textarea:focus { border-color: hsl(var(--h) 100% 74% / .5); }
-  #url { width: 230px; } #model { min-width: 190px; } #ctx { width: 84px; }
-  button { font: 600 13px var(--font); color: #fff; border: 0; border-radius: 9px; padding: 8px 14px; cursor: pointer;
-    background: hsl(var(--h) 70% 55% / .75); }
-  button:hover { background: hsl(var(--h) 70% 60% / .9); }
-  button.ghost { background: var(--glass-hi); color: var(--mut); }
-  button.ghost:hover { color: #fff; }
-  button.danger { background: rgba(255,90,110,.85); }
-  button.danger:hover { background: rgba(255,90,110,1); }
-  button:disabled { opacity: .45; cursor: default; }
-  .hint { font-size: 12px; color: var(--mut); line-height: 1.55; }
-  .hint code { font-family: var(--mono); color: var(--ac2); }
+  :root { --ok: #6fe0c6; --bad: #ff9aa3; --warn: #ffcf7a; }
 
-  #log { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px;
-    background: rgba(0,0,0,.2); border: 1px solid var(--line); border-radius: 16px; }
-  .m { max-width: 86%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-  .m.user { align-self: flex-end; background: hsl(var(--h) 70% 55% / .28); border: 1px solid hsl(var(--h) 100% 74% / .3); }
-  .m.assistant { align-self: flex-start; background: var(--glass-hi); border: 1px solid var(--line); }
-  .m.error { align-self: flex-start; color: #ff9aa3; background: rgba(255,90,110,.08); border: 1px solid rgba(255,154,163,.3); }
-  .m.note { align-self: center; color: var(--mut); font-size: 12px; padding: 2px 8px; }
-  .tool { align-self: flex-start; max-width: 92%; font: 12px var(--mono); color: var(--mut); padding: 6px 10px;
-    border-left: 2px solid hsl(var(--h) 100% 74% / .4); background: var(--glass); border-radius: 0 8px 8px 0; white-space: pre-wrap; word-break: break-word; }
-  .tool b { color: var(--ac); font-weight: 600; }
-  .tool.fail { border-left-color: #ff9aa3; }
-  .tool .res { display: block; margin-top: 3px; color: var(--dim); }
-  .think { align-self: flex-start; max-width: 86%; font-size: 12.5px; line-height: 1.55; color: var(--dim); font-style: italic;
-    padding: 6px 10px; border-left: 2px solid var(--line); white-space: pre-wrap; word-break: break-word; }
-  .think::before { content: 'Thinking'; display: block; font-style: normal; font-size: 10px; font-weight: 700; letter-spacing: .9px;
-    text-transform: uppercase; margin-bottom: 2px; }
-  .think.done { max-height: 3.4em; overflow: hidden; cursor: pointer; }
-  .think.done.open { max-height: none; }
-  .m.live::after { content: '\258D'; margin-left: 2px; color: var(--ac); animation: blink 1s steps(2) infinite; }
+  /* ---- reset for this page's controls (theme.css leaves buttons/inputs native) ---- */
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; text-align: inherit; }
+  button:disabled { cursor: default; }
+  input, select, textarea { font: 13px var(--font); color: var(--ink); outline: none; }
+  .i { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ---- shell ---- */
+  body { padding: 84px 24px 18px; height: 100vh; overflow: hidden; font-size: 14px; }
+  .wrap { max-width: 840px; height: 100%; min-width: 0; display: flex; flex-direction: column; }
+
+  /* ---- header ---- */
+  .head { display: flex; align-items: center; gap: 10px; flex: none; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+  .head .logo { font-size: 18px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--dim); transition: background .2s, box-shadow .2s; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 9px rgba(111,224,198,.65); }
+  .dot.bad { background: var(--bad); box-shadow: 0 0 9px rgba(255,154,163,.55); }
+  .dot.busy { background: var(--warn); box-shadow: 0 0 9px rgba(255,207,122,.6); animation: pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .sp { flex: 1; }
+  .ib { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 10px; color: var(--mut); transition: background .15s, color .15s; }
+  .ib:hover:not(:disabled) { background: var(--glass-hi); color: var(--ink); }
+  .ib.on { background: var(--glass-hi); color: var(--ac); }
+  .ib:disabled { opacity: .32; }
+  #close { display: none; }
+  html.side #close { display: grid; }
+
+  /* ---- settings drawer ---- */
+  .drawer { display: none; flex: none; flex-direction: column; gap: 12px; margin-top: 12px; padding: 14px;
+    background: var(--glass); border: 1px solid var(--line); border-radius: 14px; animation: fade .18s ease both; }
+  .drawer.open { display: flex; }
+  @keyframes fade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+  .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .field label { font-size: 10.5px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase; color: var(--dim); }
+  .field input { width: 100%; padding: 8px 10px; background: rgba(0,0,0,.28); border: 1px solid var(--line); border-radius: 9px; transition: border-color .15s; }
+  .field input:focus { border-color: hsl(var(--h) 100% 74% / .5); }
+  .field small { font-size: 11.5px; line-height: 1.5; color: var(--dim); }
+  .statline { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--mut); }
+  .statline span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sbtn { flex: none; padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--mut); background: var(--glass-hi); transition: color .15s, background .15s; }
+  .sbtn:hover { color: var(--ink); background: rgba(255,255,255,.11); }
+
+  /* ---- banner (offline / no models) ---- */
+  .banner { display: none; flex: none; gap: 10px; align-items: flex-start; margin-top: 12px; padding: 11px 13px; border-radius: 12px;
+    font-size: 12.5px; line-height: 1.55; color: var(--mut); background: var(--glass); border: 1px solid var(--line); }
+  .banner.show { display: flex; animation: fade .2s ease both; }
+  .banner.bad { background: rgba(255,90,110,.07); border-color: rgba(255,154,163,.28); }
+  .banner.bad > .i { color: var(--bad); }
+  .banner.info > .i { color: var(--ac); }
+  .banner > .i { margin-top: 1px; }
+  .banner .bt { flex: 1; min-width: 0; }
+  .banner .bt b { color: var(--ink); font-weight: 650; }
+  .banner .acts2 { display: flex; gap: 8px; margin-top: 9px; }
+  .banner code { cursor: pointer; }
+  .banner code:hover { color: var(--ink); }
+
+  /* ---- conversation ---- */
+  .logwrap { position: relative; flex: 1; min-height: 0; display: flex; }
+  #log { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 16px 4px 10px 0; display: flex; flex-direction: column; gap: 14px; }
+  .m { min-width: 0; font-size: 14px; line-height: 1.62; word-break: break-word; animation: pop .22s cubic-bezier(.16,1,.3,1) both; }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .m.user { align-self: flex-end; max-width: 88%; padding: 9px 14px; white-space: pre-wrap; border-radius: 16px 16px 5px 16px;
+    background: hsl(var(--h) 70% 55% / .24); border: 1px solid hsl(var(--h) 100% 74% / .28); }
+  .m.assistant { align-self: stretch; padding: 0 2px; }
+  .m.note { align-self: center; padding: 3px 11px; border-radius: 99px; font-size: 12px; line-height: 1.5; color: var(--mut); background: var(--glass); }
+  .m.error { align-self: stretch; display: flex; gap: 10px; align-items: flex-start; padding: 10px 13px; border-radius: 12px; font-size: 13px; line-height: 1.55;
+    color: #ffb4bb; background: rgba(255,90,110,.08); border: 1px solid rgba(255,154,163,.28); }
+  .m.error .i { margin-top: 2px; width: 16px; height: 16px; }
+  .m.error span { min-width: 0; white-space: pre-wrap; }
+
+  .acts { display: flex; gap: 2px; margin: 5px 0 0 -6px; opacity: 0; transition: opacity .15s; }
+  .m.assistant:hover .acts, .acts:focus-within { opacity: 1; }
+  .abtn { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 7px; font-size: 11.5px; font-weight: 600; color: var(--dim); transition: color .15s, background .15s; }
+  .abtn:hover { color: var(--ink); background: var(--glass-hi); }
+  .abtn .i { width: 13px; height: 13px; }
+  .abtn.done { color: var(--ok); }
+
+  /* markdown */
+  .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+  .md p { margin: .55em 0; }
+  .md .h { font-weight: 700; line-height: 1.35; margin: 1em 0 .4em; letter-spacing: -.1px; }
+  .md .h1 { font-size: 1.2em; } .md .h2 { font-size: 1.1em; } .md .h3 { font-size: 1em; }
+  .md ul, .md ol { margin: .5em 0; padding-left: 1.45em; }
+  .md li { margin: .22em 0; padding-left: .1em; }
+  .md li::marker { color: var(--dim); }
+  .md li > p { margin: .25em 0; }
+  .md blockquote { margin: .6em 0; padding: .1em 0 .1em .9em; color: var(--mut); border-left: 2px solid hsl(var(--h) 100% 74% / .4); }
+  .md hr { border: 0; border-top: 1px solid var(--line); margin: 1em 0; }
+  .md a { color: var(--ac); text-decoration: underline; text-decoration-color: hsl(var(--h) 100% 74% / .35); text-underline-offset: 2px; overflow-wrap: anywhere; }
+  .md a:hover { text-decoration-color: var(--ac); }
+  .md strong { font-weight: 650; color: #fff; }
+  .md del { color: var(--dim); }
+  .code { margin: .65em 0; border-radius: 10px; overflow: hidden; background: rgba(0,0,0,.34); border: 1px solid var(--line); }
+  .code-h { display: flex; align-items: center; justify-content: space-between; padding: 3px 5px 3px 11px; background: rgba(255,255,255,.04);
+    border-bottom: 1px solid var(--line); font: 600 10.5px var(--mono); letter-spacing: .3px; color: var(--dim); }
+  .code pre { margin: 0; padding: 10px 12px; overflow-x: auto; font: 12.5px/1.58 var(--mono); color: #e8e2dc; tab-size: 2; }
+  .code pre code { padding: 0; border: 0; background: none; font: inherit; color: inherit; }
+  .tw { margin: .65em 0; overflow-x: auto; }
+  .tw table { border-collapse: collapse; font-size: 12.5px; }
+  .tw th, .tw td { padding: 6px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+  .tw th { background: var(--glass-hi); font-weight: 650; }
+  .caret::after { content: '\258D'; margin-left: 2px; color: var(--ac); animation: blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
-  .empty { margin: auto; text-align: center; color: var(--dim); font-size: 14px; line-height: 1.8; }
 
-  html.side body { padding: 12px; }
-  html.side .wrap { max-width: none; gap: 10px; }
-  html.side .head .logo { font-size: 18px; }
-  html.side .m { max-width: 94%; font-size: 13px; }
-  html.side #url, html.side #model { width: 100%; min-width: 0; flex: 1 1 100%; }
-  html.side #ctx { flex: 1; }
-  #close { display: none; padding: 6px 10px; }
-  html.side #close { display: block; }
-  .bar { display: flex; gap: 10px; flex: none; align-items: flex-end; }
-  #msg { flex: 1; resize: none; height: 46px; max-height: 160px; font-size: 14px; padding: 12px 14px; border-radius: 12px; }
+  /* thinking */
+  .think { align-self: stretch; font-size: 12.5px; color: var(--dim); animation: pop .22s ease both; }
+  .think-h { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px 3px 4px; border-radius: 8px; font-size: 11px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: var(--dim); transition: color .15s, background .15s; }
+  .think-h:hover { color: var(--mut); background: var(--glass); }
+  .think-h .i { width: 13px; height: 13px; transition: transform .15s; }
+  .think.open .think-h .i { transform: rotate(90deg); }
+  .think.live .think-t { background: linear-gradient(90deg, var(--dim) 30%, #fff 50%, var(--dim) 70%); background-size: 220% 100%;
+    -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.8s linear infinite; }
+  @keyframes shimmer { from { background-position: 110% 0; } to { background-position: -110% 0; } }
+  .think-b { display: none; margin: 4px 0 0 10px; padding: 2px 0 2px 13px; border-left: 2px solid var(--line); font-style: italic; line-height: 1.58;
+    white-space: pre-wrap; word-break: break-word; max-height: 11em; overflow-y: auto; }
+  .think.open .think-b { display: block; }
+
+  /* tool steps */
+  .steps { align-self: stretch; display: flex; flex-direction: column; gap: 1px; animation: pop .22s ease both; }
+  .tool-h { display: flex; align-items: center; gap: 9px; width: 100%; padding: 5px 8px; border-radius: 9px; font-size: 12.5px; color: var(--mut); transition: background .15s; }
+  .tool-h:hover { background: var(--glass); }
+  .ti { width: 15px; height: 15px; flex: none; display: grid; place-items: center; }
+  .ti .i { width: 14px; height: 14px; stroke-width: 2.2; }
+  .tool .tn { flex: none; font-weight: 650; color: var(--ink); }
+  .tool .ta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--mono); color: var(--dim); }
+  .tool .tt { flex: none; font: 11px var(--mono); color: var(--dim); }
+  .tool.ok .ti { color: var(--ok); }
+  .tool.fail .ti, .tool.fail .tn { color: var(--bad); }
+  .tool.stopped .ti { color: var(--dim); }
+  .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--ac); animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .tool-b { display: none; margin: 2px 0 8px 32px; padding: 9px 11px; border-radius: 9px; background: rgba(0,0,0,.3); border: 1px solid var(--line);
+    font: 11.5px/1.55 var(--mono); color: var(--mut); max-height: 240px; overflow: auto; }
+  .tool.open .tool-b { display: block; }
+  .tool-b .k { margin: 0 0 3px; font: 700 10px var(--font); letter-spacing: .9px; text-transform: uppercase; color: var(--dim); }
+  .tool-b .k:not(:first-child) { margin-top: 9px; }
+  .tool-b pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
+
+  .working { display: none; align-self: flex-start; gap: 5px; padding: 6px 4px; }
+  .working.show { display: flex; }
+  .working i { width: 6px; height: 6px; border-radius: 50%; background: var(--ac); opacity: .3; animation: bounce 1.2s ease-in-out infinite; }
+  .working i:nth-child(2) { animation-delay: .15s; } .working i:nth-child(3) { animation-delay: .3s; }
+  @keyframes bounce { 0%, 60%, 100% { opacity: .3; transform: none; } 30% { opacity: 1; transform: translateY(-3px); } }
+
+  #jump { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); display: none; align-items: center; gap: 6px; padding: 6px 13px 6px 10px;
+    border-radius: 99px; font-size: 12px; font-weight: 600; color: var(--ink); background: rgba(40,34,30,.94); border: 1px solid hsl(var(--h) 100% 74% / .3);
+    box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+  #jump.show { display: inline-flex; animation: pop .18s ease both; }
+  #jump:hover { border-color: hsl(var(--h) 100% 74% / .6); }
+  #jump .i { width: 13px; height: 13px; }
+
+  /* empty state */
+  .empty { margin: auto; width: 100%; max-width: 440px; padding: 12px 2px 24px; text-align: center; }
+  .emblem { width: 48px; height: 48px; margin: 0 auto 16px; display: grid; place-items: center; border-radius: 15px; color: #fff;
+    background: linear-gradient(135deg, hsl(var(--h) 80% 64%), hsl(calc(var(--h) - 40) 70% 56%));
+    box-shadow: 0 12px 30px -8px hsl(var(--h) 90% 60% / .65), inset 0 1px 0 rgba(255,255,255,.28); }
+  .emblem .i { width: 22px; height: 22px; }
+  .empty h1 { font-size: 20px; font-weight: 700; letter-spacing: -.25px; margin-bottom: 7px; }
+  .empty p { margin: 0 auto 20px; max-width: 360px; font-size: 13px; line-height: 1.65; color: var(--mut); }
+  .sugg { display: flex; flex-direction: column; gap: 8px; text-align: left; }
+  .sugg button { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 12px; font-size: 13px; color: var(--ink);
+    background: var(--glass); border: 1px solid var(--line); transition: background .15s, border-color .15s, transform .1s; }
+  .sugg button span { flex: 1; min-width: 0; }
+  .sugg button .i { width: 15px; height: 15px; color: var(--dim); transition: color .15s, transform .15s; }
+  .sugg button:hover { background: var(--glass-hi); border-color: hsl(var(--h) 100% 74% / .32); }
+  .sugg button:hover .i { color: var(--ac); transform: translateX(2px); }
+  .sugg button:active { transform: scale(.985); }
+
+  /* ---- composer ---- */
+  .composer { flex: none; margin-top: 6px; padding: 11px 10px 9px 14px; border-radius: 16px; background: rgba(0,0,0,.3); border: 1px solid var(--line);
+    box-shadow: 0 10px 30px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.04); transition: border-color .15s, box-shadow .15s; }
+  .composer:focus-within { border-color: hsl(var(--h) 100% 74% / .45); box-shadow: 0 0 0 3px hsl(var(--h) 100% 74% / .1), 0 10px 30px rgba(0,0,0,.25); }
+  #msg { display: block; width: 100%; resize: none; border: 0; border-radius: 0; background: transparent; padding: 2px 0; margin-right: 4px;
+    font: 14px/1.55 var(--font); min-height: 24px; max-height: 190px; }
+  #msg::placeholder { color: var(--dim); }
+  #msg:focus-visible { outline: none; }
+  .cfoot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .chip { position: relative; min-width: 0; max-width: 70%; flex: 0 1 auto; }
+  #model { -webkit-appearance: none; appearance: none; max-width: 100%; padding: 5px 26px 5px 11px; border-radius: 99px; cursor: pointer;
+    font-size: 12px; font-weight: 600; color: var(--mut); text-overflow: ellipsis; background-color: var(--glass); border: 1px solid var(--line);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23706a64' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 9px center; transition: color .15s, border-color .15s, background-color .15s; }
+  #model:hover { color: var(--ink); background-color: var(--glass-hi); }
+  #model:focus-visible { border-color: hsl(var(--h) 100% 74% / .5); outline: none; }
+  #model:disabled { opacity: .5; cursor: default; }
+  #go { width: 34px; height: 34px; margin-left: auto; flex: none; display: grid; place-items: center; border-radius: 50%; color: #fff;
+    background: linear-gradient(120deg, hsl(var(--h) 80% 64%), hsl(calc(var(--h) - 40) 70% 56%));
+    box-shadow: 0 6px 16px -6px hsl(var(--h) 90% 60% / .75), inset 0 1px 0 rgba(255,255,255,.25); transition: filter .15s, transform .1s, opacity .15s; }
+  #go:hover:not(:disabled) { filter: brightness(1.1); }
+  #go:active:not(:disabled) { transform: scale(.93); }
+  #go:disabled { opacity: .3; filter: saturate(.3); box-shadow: none; }
+  #go .i { width: 17px; height: 17px; stroke-width: 2.3; }
+  #go .i-stop { display: none; } #go.stop .i-stop { display: block; } #go.stop .i-send { display: none; }
+  #go.stop { background: linear-gradient(120deg, #ff6b81, #e04860); box-shadow: 0 6px 16px -6px rgba(255,90,110,.75), inset 0 1px 0 rgba(255,255,255,.25); }
+  .khint { flex: none; margin-top: 9px; text-align: center; font-size: 11px; color: var(--dim); line-height: 1.4; }
+  .khint kbd { padding: 0 5px; font-size: 10.5px; }
+  .nudge { animation: nudge .38s ease; }
+  @keyframes nudge { 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
+
+  /* ---- compact: side panel or narrow window ---- */
+  html.compact body { padding-left: 12px; padding-right: 12px; padding-bottom: 12px; }
+  html.side body { padding-top: 10px; }
+  html.compact .wrap { max-width: none; }
+  html.compact .head { padding-bottom: 10px; }
+  html.compact .head .logo { font-size: 15px; letter-spacing: 1.4px; }
+  html.compact .grid { grid-template-columns: 1fr; }
+  html.compact .m { font-size: 13.5px; }
+  html.compact .m.user { max-width: 92%; }
+  html.compact .empty { padding-bottom: 12px; }
+  html.compact .empty h1 { font-size: 18px; }
+  html.compact #log { gap: 12px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition: none !important; }
+  }
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+  <symbol id="i-newchat" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5v.01"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-pointer" viewBox="0 0 24 24"><path d="M4 4l7.5 17 2.4-7.1L21 11.5 4 4z"/></symbol>
+</svg>
+
 <div class="wrap">
   <div class="head">
+    <span class="dot" id="dot" title="Checking…"></span>
     <div class="logo">OLLAMA</div>
-    <span class="pill" id="status">checking…</span>
-    <span style="flex:1"></span>
-    <button class="ghost" id="clear">New chat</button>
-    <button class="ghost" id="close" title="Close panel">&#10005;</button>
+    <span class="sp"></span>
+    <button class="ib" id="gear" title="Connection settings" aria-label="Connection settings" aria-expanded="false"><svg class="i"><use href="#i-sliders"/></svg></button>
+    <button class="ib" id="clear" title="New chat" aria-label="New chat" disabled><svg class="i"><use href="#i-newchat"/></svg></button>
+    <button class="ib" id="close" title="Close panel" aria-label="Close panel"><svg class="i"><use href="#i-x"/></svg></button>
   </div>
 
-  <div class="cfg">
-    <label for="url">Server</label><input id="url" spellcheck="false" />
-    <label for="model">Model</label><select id="model"></select>
-    <label for="ctx" title="Context window in tokens. Page snapshots are large: 16384 or more works best.">Context</label><input id="ctx" type="number" min="2048" step="1024" />
-    <button class="ghost" id="refresh">Refresh</button>
+  <div class="drawer" id="drawer">
+    <div class="statline"><span id="stxt">Checking for Ollama…</span><button class="sbtn" id="refresh">Check again</button></div>
+    <div class="grid">
+      <div class="field"><label for="url">Server</label><input id="url" type="text" spellcheck="false" autocomplete="off" /></div>
+      <div class="field"><label for="ctx">Context</label><input id="ctx" type="number" min="2048" step="1024" /></div>
+    </div>
+    <div class="field"><small>Context is the window in tokens. Page snapshots are large, so 16384 or more works best.</small></div>
   </div>
-  <div class="hint" id="help" style="display:none"></div>
 
-  <div id="log"><div class="empty" id="empty">Ask the model to do something in the browser.<br>It uses the same tools as any MCP client, including the seatbelt and the Agent pause button.</div></div>
+  <div class="banner" id="banner" role="status"></div>
 
-  <div class="bar">
-    <textarea id="msg" placeholder="Ask the agent… (Enter or ⌘/Ctrl+Enter to send, Shift+Enter for a new line)" rows="1"></textarea>
-    <button id="send">Send</button>
-    <button id="stop" class="danger" style="display:none" title="Stop the agent, abort the current action and discard this task">Cancel</button>
+  <div class="logwrap">
+    <div id="log" role="log" aria-live="polite">
+      <div class="empty" id="empty">
+        <div class="emblem"><svg class="i"><use href="#i-pointer"/></svg></div>
+        <h1>What should I do in the browser?</h1>
+        <p>A local model drives your tabs with the same guarded tools as any MCP client. You can pause or cancel it at any time.</p>
+        <div class="sugg" id="sugg"></div>
+      </div>
+      <div class="working" id="working" aria-label="Working"><i></i><i></i><i></i></div>
+    </div>
+    <button id="jump" type="button"><svg class="i"><use href="#i-down"/></svg>Latest</button>
   </div>
+
+  <div class="composer" id="composer">
+    <textarea id="msg" rows="1" placeholder="Ask the agent to do something…" aria-label="Message"></textarea>
+    <div class="cfoot">
+      <div class="chip"><select id="model" title="Model" aria-label="Model"></select></div>
+      <button id="go" type="button" title="Send (Enter)" aria-label="Send" disabled>
+        <svg class="i i-send"><use href="#i-send"/></svg><svg class="i i-stop"><use href="#i-stop"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="khint" id="hint"></div>
 </div>
+
 <script>
+(function () {
+  'use strict';
   function send(cmd) {
     try { window.external && window.external.sendMessage('brain:' + cmd); } catch (e) { }
   }
   function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function ico(name, cls) {
+    var h = document.createElement('span');
+    h.innerHTML = '<svg class="i' + (cls ? ' ' + cls : '') + '"><use href="#i-' + name + '"/></svg>'; // static strings only
+    return h.firstChild;
+  }
 
   var D = window.__brainOllamaData || {};
-  var running = false;
+  var logEl = $('log'), msg = $('msg'), working = $('working'), emptyEl = $('empty');
+  var running = false, connected = null, sending = false, stick = true, hasMsgs = false;
+  var models = [], bannerKey = null;
+
   $('url').value = D.url || 'http://localhost:11434';
   $('ctx').value = D.numCtx || 16384;
   fillModels([], D.model || '');
 
+  // The window shape decides the layout: narrow tabs get the same compact layout as the side panel.
+  window.addEventListener('resize', function () {
+    if (!document.documentElement.classList.contains('side'))
+      document.documentElement.classList.toggle('compact', window.innerWidth < 560);
+  });
+
+  // ---------------------------------------------------------------- settings & models
   function fillModels(list, current) {
+    models = list.slice();
     var sel = $('model'); sel.textContent = '';
     var names = list.slice();
     if (current && names.indexOf(current) < 0) names.unshift(current);
-    if (!names.length) { var o = document.createElement('option'); o.value = ''; o.textContent = '(no models)'; sel.appendChild(o); return; }
-    names.forEach(function (n) {
-      var o = document.createElement('option'); o.value = n; o.textContent = n; if (n === current) o.selected = true; sel.appendChild(o);
-    });
+    if (!names.length) {
+      var o = el('option', null, 'No models'); o.value = ''; sel.appendChild(o); sel.disabled = true; return;
+    }
+    sel.disabled = false;
+    names.forEach(function (n) { var o = el('option', null, n); o.value = n; if (n === current) o.selected = true; sel.appendChild(o); });
     if (!current) sel.value = names[0];
   }
-
   function saveCfg() {
     send('olset:' + JSON.stringify({ url: $('url').value, model: $('model').value, numCtx: parseInt($('ctx').value, 10) || 16384 }));
   }
-  $('url').addEventListener('change', saveCfg);
-  $('model').addEventListener('change', saveCfg);
-  $('ctx').addEventListener('change', saveCfg);
-  $('refresh').addEventListener('click', saveCfg);
+  ['url', 'model', 'ctx'].forEach(function (id) { $(id).addEventListener('change', saveCfg); });
+  $('url').addEventListener('keydown', function (e) { if (e.key === 'Enter') this.blur(); });
+  $('refresh').addEventListener('click', function () { $('stxt').textContent = 'Checking…'; saveCfg(); });
+  $('gear').addEventListener('click', function () { toggleDrawer(); });
   $('close').addEventListener('click', function () { send('olside'); });
-  $('clear').addEventListener('click', function () { $('log').textContent = ''; log.empty(); send('olclear'); });
+  function toggleDrawer(open) {
+    var d = $('drawer'), on = open == null ? !d.classList.contains('open') : open;
+    d.classList.toggle('open', on);
+    $('gear').classList.toggle('on', on);
+    $('gear').setAttribute('aria-expanded', on ? 'true' : 'false');
+  }
 
-  var log = {
-    empty: function () { var e = $('empty'); if (!e) return; $('log').appendChild(e); },
-    add: function (cls, text) {
-      var e = $('empty'); if (e && e.parentNode) e.parentNode.removeChild(e);
-      var d = document.createElement('div'); d.className = cls; d.textContent = text;
-      var box = $('log'); box.appendChild(d); box.scrollTop = box.scrollHeight; return d;
+  // ---------------------------------------------------------------- status
+  function refreshStatus() {
+    var d = $('dot');
+    d.className = 'dot' + (running ? ' busy' : connected === true ? ' ok' : connected === false ? ' bad' : '');
+    d.title = running ? 'Working…' : connected === true ? 'Connected' : connected === false ? 'Ollama is offline' : 'Checking…';
+    var go = $('go');
+    go.classList.toggle('stop', running);
+    go.title = running ? 'Cancel: stop the agent, abort the current action and discard this task' : 'Send (Enter)';
+    go.setAttribute('aria-label', running ? 'Cancel task' : 'Send');
+    go.disabled = running ? false : !msg.value.trim();
+    $('clear').disabled = running || !hasMsgs;
+    msg.placeholder = running ? 'The agent is working…' : 'Ask the agent to do something…';
+    $('hint').innerHTML = running
+      ? 'Working. Press <kbd>■</kbd> to cancel and discard this task.'
+      : '<kbd>Enter</kbd> to send · <kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line'; // static strings only
+    working.classList.toggle('show', running && !curAnswer && !(curThink && curThink.classList.contains('live')));
+  }
+  function setRunning(r) { running = r; refreshStatus(); if (stick) toBottom(); }
+
+  function setBanner(kind, key, build) {
+    if (key === bannerKey) return;
+    bannerKey = key;
+    var b = $('banner'); b.textContent = '';
+    if (!kind) { b.className = 'banner'; return; }
+    b.className = 'banner show ' + kind;
+    b.appendChild(ico(kind === 'bad' ? 'alert' : 'info'));
+    var t = el('div', 'bt'); build(t); b.appendChild(t);
+  }
+
+  function applyState(j) {
+    connected = !!j.ok;
+    var n = (j.models || []).length;
+    if (j.ok) {
+      $('stxt').textContent = 'Connected · ' + n + (n === 1 ? ' model' : ' models') + ' installed';
+      if (!n) setBanner('info', 'nomodels', function (t) {
+        t.appendChild(el('b', null, 'No models installed.'));
+        t.appendChild(document.createTextNode(' Run '));
+        var c = el('code', null, 'ollama pull qwen3'); c.title = 'Click to copy'; c.setAttribute('data-copy-text', 'ollama pull qwen3');
+        t.appendChild(c);
+        t.appendChild(document.createTextNode(' in a terminal (any tool-capable model works), then check again.'));
+        retryButtons(t, false);
+      });
+      else setBanner('', 'ok');
+    } else {
+      $('stxt').textContent = 'Offline';
+      var err = j.err || 'Cannot reach Ollama.';
+      setBanner('bad', 'bad:' + err, function (t) {
+        t.appendChild(el('b', null, 'Ollama is not reachable.'));
+        t.appendChild(document.createElement('br'));
+        t.appendChild(document.createTextNode(err));
+        retryButtons(t, true);
+      });
     }
+    if (document.activeElement !== $('url')) $('url').value = j.url;
+    if (document.activeElement !== $('ctx')) $('ctx').value = j.numCtx;
+    if (document.activeElement !== $('model')) fillModels(j.models || [], j.model || '');
+    running = !!j.running;
+    refreshStatus();
+    focusSoon();
+  }
+  function retryButtons(t, withSettings) {
+    var row = el('div', 'acts2');
+    var r = el('button', 'sbtn', 'Check again'); r.type = 'button';
+    r.addEventListener('click', function () { r.textContent = 'Checking…'; saveCfg(); setTimeout(function () { r.textContent = 'Check again'; }, 1500); });
+    row.appendChild(r);
+    if (withSettings) { var s = el('button', 'sbtn', 'Server settings'); s.type = 'button'; s.addEventListener('click', function () { toggleDrawer(true); $('url').focus(); }); row.appendChild(s); }
+    t.appendChild(row);
+  }
+
+  // ---------------------------------------------------------------- log plumbing
+  function toBottom() { logEl.scrollTop = logEl.scrollHeight; }
+  logEl.addEventListener('scroll', function () {
+    var gap = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight;
+    stick = gap < 48;
+    $('jump').classList.toggle('show', gap > 160);
+  });
+  $('jump').addEventListener('click', function () { stick = true; toBottom(); $('jump').classList.remove('show'); msg.focus(); });
+
+  var lastBlock = null;
+  function put(node, force) {
+    if (emptyEl && emptyEl.parentNode) emptyEl.parentNode.removeChild(emptyEl);
+    logEl.insertBefore(node, working);
+    lastBlock = node;
+    hasMsgs = true;
+    if (force) stick = true;
+    if (stick) toBottom();
+    refreshStatus();
+    return node;
+  }
+  function resetLog() {
+    endTurn();
+    while (logEl.firstChild) logEl.removeChild(logEl.firstChild);
+    logEl.appendChild(emptyEl); logEl.appendChild(working);
+    lastBlock = null; hasMsgs = false; curTool = null; stick = true;
+    $('jump').classList.remove('show');
+    refreshStatus();
+  }
+
+  $('clear').addEventListener('click', function () { if (running) return; resetLog(); send('olclear'); msg.focus(); });
+
+  // ---------------------------------------------------------------- markdown (DOM-built: model output is never parsed as HTML)
+  var INL = [
+    { re: /\\([\\`*_{}\[\]()#+\-.!|~>])/, build: function (m, p) { p.appendChild(document.createTextNode(m[1])); return m[0].length; } },
+    { re: /`([^`\n]+)`/, build: function (m, p) { p.appendChild(el('code', null, m[1])); return m[0].length; } },
+    { re: /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/, build: function (m, p) { var a = link(m[2]); inline(m[1], a); p.appendChild(a); return m[0].length; } },
+    { re: /\*\*(?=\S)([\s\S]*?\S)\*\*/, build: function (m, p) { var s = el('strong'); inline(m[1], s); p.appendChild(s); return m[0].length; } },
+    { re: /__(?=\S)([\s\S]*?\S)__/, build: function (m, p) { var s = el('strong'); inline(m[1], s); p.appendChild(s); return m[0].length; } },
+    { re: /~~(?=\S)([\s\S]*?\S)~~/, build: function (m, p) { var s = el('del'); inline(m[1], s); p.appendChild(s); return m[0].length; } },
+    { re: /\*(?=[^\s*])([^*\n]*?[^\s*])\*/, build: function (m, p) { var s = el('em'); inline(m[1], s); p.appendChild(s); return m[0].length; } },
+    { re: /(^|\W)_(?=[^\s_])([^_\n]*?[^\s_])_(?!\w)/, pre: true, build: function (m, p) { var s = el('em'); inline(m[2], s); p.appendChild(s); return m[0].length - m[1].length; } },
+    { re: /https?:\/\/[^\s<>]+/, build: function (m, p) {
+        var u = m[0].replace(/[.,;:!?)\]'"]+$/, ''); var a = link(u); a.textContent = u; p.appendChild(a); return u.length; } },
+  ];
+  function link(url) { var a = el('a'); a.setAttribute('href', url); a.title = url; a.rel = 'noreferrer'; return a; }
+  function inline(text, parent) {
+    var rest = text;
+    while (rest) {
+      var best = null;
+      for (var k = 0; k < INL.length; k++) {
+        var m = INL[k].re.exec(rest);
+        if (!m) continue;
+        var idx = m.index + (INL[k].pre ? m[1].length : 0);
+        if (!best || idx < best.idx) best = { rule: INL[k], m: m, idx: idx };
+      }
+      if (!best) { parent.appendChild(document.createTextNode(rest)); return; }
+      if (best.idx > 0) parent.appendChild(document.createTextNode(rest.slice(0, best.idx)));
+      var used = best.rule.build(best.m, parent);
+      rest = rest.slice(best.idx + used);
+    }
+  }
+  function inlineLines(lines, parent) {
+    lines.forEach(function (l, i) { if (i) parent.appendChild(el('br')); inline(l, parent); });
+  }
+  function codeBlock(code, lang) {
+    var w = el('div', 'code'), h = el('div', 'code-h');
+    h.appendChild(el('span', null, lang || 'code'));
+    var b = el('button', 'abtn cp'); b.type = 'button'; b.title = 'Copy code';
+    b.appendChild(ico('copy')); b.appendChild(document.createTextNode('Copy'));
+    h.appendChild(b); w.appendChild(h);
+    var pre = el('pre'), c = el('code', null, code); pre.appendChild(c); w.appendChild(pre);
+    return w;
+  }
+  var RE = {
+    fence: /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)[^`]*$/,
+    head: /^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/,
+    hr: /^ {0,3}([-*_])( *\1){2,} *$/,
+    quote: /^ {0,3}>/,
+    item: /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/,
+    sep: /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/,
+    blank: /^\s*$/
   };
-
-  function setRunning(r) {
-    running = r;
-    $('send').style.display = r ? 'none' : '';
-    $('stop').style.display = r ? '' : 'none';
+  function isTableAt(lines, i) { return i + 1 < lines.length && lines[i].indexOf('|') >= 0 && lines[i + 1].indexOf('|') >= 0 && RE.sep.test(lines[i + 1]); }
+  function startsBlock(lines, i) {
+    var l = lines[i];
+    var it = RE.item.exec(l);
+    // like CommonMark, only a bullet or "1." may interrupt a paragraph ("In 2024. we" must stay prose)
+    return RE.fence.test(l) || RE.head.test(l) || RE.hr.test(l) || RE.quote.test(l) || (it && (!/\d/.test(it[2]) || parseInt(it[2], 10) === 1)) || isTableAt(lines, i);
+  }
+  function cells(row) { return row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(function (c) { return c.trim(); }); }
+  function table(lines, i, root) {
+    var head = cells(lines[i]), al = cells(lines[i + 1]).map(function (c) { return /^:-+:$/.test(c) ? 'center' : /-:$/.test(c) ? 'right' : ''; });
+    var tw = el('div', 'tw'), t = el('table'), th = el('thead'), tb = el('tbody'), tr = el('tr');
+    head.forEach(function (c, k) { var x = el('th'); inline(c, x); if (al[k]) x.style.textAlign = al[k]; tr.appendChild(x); });
+    th.appendChild(tr); t.appendChild(th);
+    i += 2;
+    while (i < lines.length && !RE.blank.test(lines[i]) && lines[i].indexOf('|') >= 0) {
+      var r = el('tr');
+      cells(lines[i]).forEach(function (c, k) { var x = el('td'); inline(c, x); if (al[k]) x.style.textAlign = al[k]; r.appendChild(x); });
+      tb.appendChild(r); i++;
+    }
+    t.appendChild(tb); tw.appendChild(t); root.appendChild(tw);
+    return i;
+  }
+  function list(lines, i, root) {
+    var first = RE.item.exec(lines[i]), base = first[1].length, ordered = /\d/.test(first[2]);
+    var ul = el(ordered ? 'ol' : 'ul');
+    if (ordered && parseInt(first[2], 10) !== 1) ul.setAttribute('start', parseInt(first[2], 10));
+    var items = [], n = lines.length;
+    while (i < n) {
+      var ln = lines[i];
+      if (RE.blank.test(ln)) {
+        var j = i + 1; while (j < n && RE.blank.test(lines[j])) j++;
+        if (j >= n) { i = n; break; }
+        var nx = lines[j], mi = RE.item.exec(nx);
+        var cont = mi ? (mi[1].length > base || (mi[1].length === base && /\d/.test(mi[2]) === ordered)) : /^\s/.test(nx) && nx.search(/\S/) > base;
+        if (!cont || !items.length) break;
+        items[items.length - 1].sub.push(''); i++; continue;
+      }
+      var m = RE.item.exec(ln);
+      if (m && m[1].length === base) {
+        if (/\d/.test(m[2]) !== ordered) break;
+        items.push({ text: m[3], sub: [] }); i++; continue;
+      }
+      if (m && m[1].length < base) break;
+      if (items.length && ln.search(/\S/) > base) { items[items.length - 1].sub.push(ln); i++; continue; }
+      break;
+    }
+    items.forEach(function (it) {
+      var li = el('li'); inline(it.text, li);
+      if (it.sub.length) {
+        var ind = Math.min.apply(null, it.sub.filter(function (s) { return s; }).map(function (s) { return s.search(/\S/); }));
+        blocks(it.sub.map(function (s) { return s.slice(ind); }), li);
+      }
+      ul.appendChild(li);
+    });
+    root.appendChild(ul);
+    return i;
+  }
+  function blocks(lines, root) {
+    var i = 0, n = lines.length;
+    while (i < n) {
+      var ln = lines[i], m;
+      if (RE.blank.test(ln)) { i++; continue; }
+      if ((m = RE.fence.exec(ln))) {
+        var ch = m[1][0], close = new RegExp('^ {0,3}' + (ch === '`' ? '`' : '~') + '{' + m[1].length + ',}\\s*$'), code = [];
+        i++;
+        while (i < n && !close.test(lines[i])) { code.push(lines[i]); i++; }
+        i++; // the closing fence, or past the end while the answer is still streaming
+        root.appendChild(codeBlock(code.join('\n'), m[2]));
+        continue;
+      }
+      if ((m = RE.head.exec(ln))) { var h = el('div', 'h h' + Math.min(m[1].length, 3)); inline(m[2], h); root.appendChild(h); i++; continue; }
+      if (RE.hr.test(ln)) { root.appendChild(el('hr')); i++; continue; }
+      if (RE.quote.test(ln)) {
+        var q = [];
+        while (i < n && RE.quote.test(lines[i])) { q.push(lines[i].replace(/^ {0,3}> ?/, '')); i++; }
+        var bq = el('blockquote'); blocks(q, bq); root.appendChild(bq); continue;
+      }
+      if (isTableAt(lines, i)) { i = table(lines, i, root); continue; }
+      if (RE.item.test(ln)) { i = list(lines, i, root); continue; }
+      var para = [ln]; i++;
+      while (i < n && !RE.blank.test(lines[i]) && !startsBlock(lines, i)) { para.push(lines[i]); i++; }
+      var p = el('p'); inlineLines(para, p); root.appendChild(p);
+    }
+  }
+  function renderMd(src, root, live) {
+    root.textContent = '';
+    root.classList.remove('caret'); // the caret may sit on the root itself (answer ending in a table / code block / rule)
+    blocks(src.replace(/\r\n?/g, '\n').split('\n'), root);
+    if (live) { // blinking caret at the end of the last text block
+      var t = root;
+      while (t.lastElementChild && /^(P|UL|OL|LI|BLOCKQUOTE|DIV|STRONG|EM|DEL|A)$/.test(t.lastElementChild.tagName) && !/\b(code|tw)\b/.test(t.lastElementChild.className)) t = t.lastElementChild;
+      t.classList.add('caret');
+    }
   }
 
-  function submit() {
-    var t = $('msg').value.trim();
-    if (!t || running) return;
-    if (!$('model').value) { log.add('m error', 'Pick a model first (is Ollama running?).'); return; }
-    saveCfg();
-    $('msg').value = ''; $('msg').style.height = '46px';
-    send('olsend:' + t);
-  }
-  $('send').addEventListener('click', submit);
-  $('stop').addEventListener('click', function () { send('olstop'); });
-  $('msg').addEventListener('keydown', function (e) {
-    // Enter or Cmd+Enter (macOS) / Ctrl+Enter (Windows) sends; Shift+Enter inserts a newline.
-    if (e.key === 'Enter' && (!e.shiftKey || e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
-  });
-  $('msg').addEventListener('input', function () {
-    this.style.height = '46px'; this.style.height = Math.min(160, this.scrollHeight) + 'px';
-  });
-  // The browser chrome listens for shortcuts on the document — typing in fields must not trigger them.
-  document.addEventListener('keydown', function (e) {
-    var t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) e.stopPropagation();
-  }, true);
+  // ---------------------------------------------------------------- messages
+  var curThink = null, curAnswer = null, curTool = null, steps = null, renderTimer = 0;
 
-  var lastTool = null, curThink = null, curAnswer = null;
+  function userMsg(text) { return put(el('div', 'm user', text), true); }
+  function textMsg(cls, text) { return put(el('div', 'm ' + cls, text)); }
+  function errorMsg(text) {
+    var d = el('div', 'm error'); d.appendChild(ico('alert')); d.appendChild(el('span', null, text)); return put(d);
+  }
+  function copyBtn(label) {
+    var b = el('button', 'abtn'); b.type = 'button'; b.setAttribute('data-act', 'copy'); b.title = 'Copy';
+    b.appendChild(ico('copy')); b.appendChild(document.createTextNode(label || 'Copy')); return b;
+  }
+  function newAnswer(live) {
+    var d = el('div', 'm assistant'), md = el('div', 'md');
+    d.appendChild(md); d._md = md; d._src = '';
+    return put(d);
+  }
+  function scheduleRender() {
+    if (renderTimer) return;
+    renderTimer = setTimeout(function () {
+      renderTimer = 0;
+      if (curAnswer) { renderMd(curAnswer._src, curAnswer._md, true); if (stick) toBottom(); }
+    }, 40);
+  }
+  function finishAnswer(a) {
+    renderMd(a._src, a._md, false);
+    a.classList.remove('live');
+    if (a._src.trim() && !a.querySelector('.acts')) { var acts = el('div', 'acts'); acts.appendChild(copyBtn()); a.appendChild(acts); }
+  }
   function endTurn() {
-    if (curThink) curThink.classList.add('done');
-    if (curAnswer) curAnswer.classList.remove('live');
-    curThink = curAnswer = null;
+    if (renderTimer) { clearTimeout(renderTimer); renderTimer = 0; }
+    if (curThink) {
+      var t = curThink; curThink = null;
+      t.classList.remove('live');
+      if (!t._user) t.classList.remove('open');
+      var s = Math.round((Date.now() - t._t0) / 1000);
+      t._tt.textContent = s < 1 ? 'Thought for a moment' : 'Thought for ' + (s >= 60 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : s + 's');
+    }
+    if (curAnswer) { var a = curAnswer; curAnswer = null; finishAnswer(a); if (stick) toBottom(); }
+    refreshStatus();
   }
   function stream(kind, text) {
-    var box = $('log'), pinned = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
     if (kind === 'think') {
       if (!curThink) {
-        curThink = log.add('think', '');
-        curThink.addEventListener('click', function () { this.classList.toggle('open'); });
+        var t = el('div', 'think open live'), h = el('button', 'think-h'), tt = el('span', 'think-t', 'Thinking…'), b = el('div', 'think-b');
+        h.type = 'button'; h.appendChild(ico('chev')); h.appendChild(tt);
+        h.addEventListener('click', function () { t._user = true; t.classList.toggle('open'); });
+        t.appendChild(h); t.appendChild(b); t._b = b; t._tt = tt; t._t0 = Date.now();
+        curThink = put(t);
       }
-      curThink.textContent += text;
+      curThink._b.textContent += text;
+      curThink._b.scrollTop = curThink._b.scrollHeight;
+      if (stick) toBottom();
     } else {
-      if (curThink) curThink.classList.add('done');
-      if (!curAnswer) curAnswer = log.add('m assistant live', '');
-      curAnswer.textContent += text;
+      if (curThink) { endTurnThinkOnly(); }
+      if (!curAnswer) { curAnswer = newAnswer(true); curAnswer.classList.add('live'); }
+      curAnswer._src += text;
+      scheduleRender();
     }
-    if (pinned) box.scrollTop = box.scrollHeight;
+    refreshStatus();
+  }
+  function endTurnThinkOnly() {
+    var a = curAnswer; curAnswer = null; // finish only the thinking block
+    endTurn(); curAnswer = a;
+  }
+
+  // ---------------------------------------------------------------- tool steps
+  var TOOLS = {
+    browser_navigate: ['Open', 'url'], browser_back: ['Go back'], browser_snapshot: ['Read page structure'], browser_text: ['Read page text'],
+    browser_find: ['Find', 'selector'], browser_click: ['Click', 'element'], browser_type: ['Type', 'text'], browser_press_key: ['Press key', 'key'],
+    browser_select_option: ['Select option', 'element'], browser_scroll: ['Scroll', 'direction'], browser_wait_for: ['Wait'], browser_tabs: ['List tabs'],
+    browser_new_tab: ['New tab', 'url'], browser_switch_tab: ['Switch tab', 'id'], browser_ask_human: ['Ask you', 'message']
+  };
+  function humanize(n) { n = String(n || 'tool').replace(/^browser_/, '').replace(/_/g, ' '); return n.charAt(0).toUpperCase() + n.slice(1); }
+  function summarize(args, key) {
+    var v = key ? args[key] : null;
+    if (v == null || v === '') {
+      var ks = Object.keys(args);
+      for (var i = 0; i < ks.length; i++) { var x = args[ks[i]]; if (typeof x === 'string' || typeof x === 'number') { v = x; break; } }
+    }
+    return v == null ? '' : String(v).replace(/\s+/g, ' ').slice(0, 160);
+  }
+  function fmtMs(ms) { return ms < 950 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'; }
+  function startTool(j) {
+    var args = {};
+    try { args = JSON.parse(j.extra || '{}') || {}; } catch (e) { }
+    var meta = TOOLS[j.text] || [humanize(j.text)];
+    var row = el('div', 'tool run'), head = el('button', 'tool-h'), ti = el('span', 'ti'), tt = el('span', 'tt');
+    head.type = 'button'; ti.appendChild(el('i', 'spin'));
+    head.appendChild(ti); head.appendChild(el('span', 'tn', meta[0])); head.appendChild(el('span', 'ta', summarize(args, meta[1]))); head.appendChild(tt);
+    var body = el('div', 'tool-b');
+    row.appendChild(head); row.appendChild(body);
+    head.addEventListener('click', function () { row.classList.toggle('open'); });
+    row._t0 = Date.now(); row._args = args; row._ti = ti; row._tt = tt; row._body = body;
+    if (!steps || lastBlock !== steps) { steps = el('div', 'steps'); put(steps); }
+    steps.appendChild(row);
+    curTool = row;
+    if (stick) toBottom();
+  }
+  function finishTool(ok, text, stopped) {
+    var row = curTool; if (!row) return; curTool = null;
+    row.classList.remove('run');
+    row.classList.add(stopped ? 'stopped' : ok ? 'ok' : 'fail');
+    row._ti.textContent = ''; row._ti.appendChild(ico(stopped || !ok ? 'x' : 'check'));
+    row._tt.textContent = stopped ? 'stopped' : fmtMs(Date.now() - row._t0);
+    var b = row._body; b.textContent = '';
+    if (Object.keys(row._args).length) { b.appendChild(el('div', 'k', 'Arguments')); b.appendChild(el('pre', null, JSON.stringify(row._args, null, 2))); }
+    b.appendChild(el('div', 'k', 'Result')); b.appendChild(el('pre', null, text || '(empty)'));
+    if (stick) toBottom();
+  }
+
+  // ---------------------------------------------------------------- host events
+  function onEvent(j) {
+    switch (j.ev) {
+      case 'state':
+        sending = false;
+        if (j.text !== 'running') { endTurn(); if (curTool) finishTool(false, 'Cancelled before it finished.', true); }
+        setRunning(j.text === 'running');
+        break;
+      case 'user': sending = false; userMsg(j.text); break;
+      case 'assistant': endTurn(); var a = newAnswer(false); a._src = j.text || ''; finishAnswer(a); break;
+      case 'think': stream('think', j.text); break;
+      case 'delta': stream('delta', j.text); break;
+      case 'turn_end': endTurn(); break;
+      case 'note': textMsg('note', j.text); break;
+      case 'error': errorMsg(j.text); break;
+      case 'tool': endTurn(); startTool(j); break;
+      case 'result': finishTool(!!j.ok, j.extra || ''); break;
+    }
   }
   document.addEventListener('brain-msg', function (e) {
     var j = e.detail; if (!j) return;
-    if (j.b === 96) {
-      var st = $('status'), help = $('help');
-      if (j.ok) {
-        connected = true; st.textContent = 'connected'; st.className = 'pill ok'; help.style.display = j.models.length ? 'none' : '';
-        if (!j.models.length) help.innerHTML = 'Connected, but no models are installed. Run <code>ollama pull qwen3</code> (or any tool-capable model).';
-      } else {
-        connected = false; st.textContent = 'offline'; st.className = 'pill bad'; help.style.display = '';
-        help.textContent = j.err || 'Cannot reach Ollama.';
-      }
-      if (document.activeElement !== $('url')) $('url').value = j.url;
-      if (document.activeElement !== $('ctx')) $('ctx').value = j.numCtx;
-      fillModels(j.models || [], j.model || '');
-      setRunning(!!j.running);
-    } else if (j.b === 95) {
-      switch (j.ev) {
-        case 'state': if (j.text !== 'running') endTurn(); setRunning(j.text === 'running'); break;
-        case 'user': log.add('m user', j.text); break;
-        case 'assistant': log.add('m assistant', j.text); break;
-        case 'think': stream('think', j.text); break;
-        case 'delta': stream('delta', j.text); break;
-        case 'turn_end': endTurn(); break;
-        case 'note': log.add('m note', j.text); break;
-        case 'error': log.add('m error', j.text); break;
-        case 'tool':
-          endTurn();
-          lastTool = log.add('tool', '');
-          var b = document.createElement('b'); b.textContent = j.text;
-          lastTool.appendChild(b); lastTool.appendChild(document.createTextNode(' ' + (j.extra || '')));
-          break;
-        case 'result':
-          if (lastTool) {
-            if (!j.ok) lastTool.className = 'tool fail';
-            var r = document.createElement('span'); r.className = 'res'; r.textContent = j.extra || '';
-            lastTool.appendChild(r);
-            $('log').scrollTop = $('log').scrollHeight;
-          }
-          break;
-      }
-    }
+    if (j.b === 96) applyState(j);
+    else if (j.b === 95) onEvent(j);
   });
 
+  // ---------------------------------------------------------------- composer
+  var hist = [], hi = -1, draft = '';
+  function autosize() { msg.style.height = 'auto'; msg.style.height = Math.min(190, msg.scrollHeight) + 'px'; }
+  function nudge(c) {
+    c = c || $('composer'); c.classList.remove('nudge'); void c.offsetWidth; c.classList.add('nudge');
+    setTimeout(function () { c.classList.remove('nudge'); }, 450);
+  }
+  function submit() {
+    var t = msg.value.trim();
+    if (!t) return;
+    if (running || sending) { nudge(); return; }
+    if (connected === false) { nudge(); nudge($('banner')); return; }
+    if (!$('model').value) { toggleDrawer(true); errorMsg('Pick a model first (is Ollama running, and does it have a model installed?).'); return; }
+    saveCfg();
+    hist.push(t); if (hist.length > 50) hist.shift();
+    hi = -1;
+    msg.value = ''; autosize();
+    sending = true; setTimeout(function () { sending = false; }, 1500);
+    stick = true;
+    refreshStatus();
+    send('olsend:' + t);
+  }
+  $('go').addEventListener('click', function () { if (running) send('olstop'); else submit(); msg.focus(); });
+  msg.addEventListener('input', function () { hi = -1; autosize(); refreshStatus(); });
+  msg.addEventListener('keydown', function (e) {
+    // Never act on the Enter that confirms an IME candidate (Safari reports keyCode 229 for it).
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') {
+      // Enter, or Cmd/Ctrl+Enter, sends. Shift+Enter is left alone: the textarea inserts the newline itself.
+      if (e.shiftKey && !e.metaKey && !e.ctrlKey) return;
+      e.preventDefault(); submit(); return;
+    }
+    // Arrow up/down walks through earlier prompts, like a shell (only from the very start / end of the text).
+    if (e.key === 'ArrowUp' && !e.shiftKey && msg.selectionStart === 0 && msg.selectionEnd === 0 && hist.length) {
+      if (hi === -1) { draft = msg.value; hi = hist.length; }
+      if (hi > 0) { hi--; msg.value = hist[hi]; msg.setSelectionRange(0, 0); autosize(); refreshStatus(); }
+      e.preventDefault();
+    } else if (e.key === 'ArrowDown' && !e.shiftKey && hi !== -1 && msg.selectionStart === msg.value.length) {
+      hi++;
+      msg.value = hi >= hist.length ? (hi = -1, draft) : hist[hi];
+      msg.setSelectionRange(msg.value.length, msg.value.length); autosize(); refreshStatus();
+      e.preventDefault();
+    }
+  });
+  // The browser chrome listens for shortcuts on the window — typing in fields must not trigger them.
+  // Bubble phase on purpose: the field's own handlers (Enter to send) have already run by the time it gets here.
+  document.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) e.stopPropagation();
+  }, false);
+
+  // Suggestions fill the composer instead of firing: the agent drives the real browser, so running is a deliberate Enter.
+  [
+    'Summarize the page I\'m on',
+    'List the main links on this page',
+    'Open news.ycombinator.com and read me the top 5 stories',
+    'Find the price on this page and tell me what it costs'
+  ].forEach(function (s) {
+    var b = el('button'); b.type = 'button'; b.appendChild(el('span', null, s)); b.appendChild(ico('arrow'));
+    b.addEventListener('click', function () { msg.value = s; autosize(); refreshStatus(); msg.focus(); msg.setSelectionRange(s.length, s.length); });
+    $('sugg').appendChild(b);
+  });
+
+  // ---------------------------------------------------------------- copy + links (delegated)
+  function copyText(text, btn) {
+    function flash(ok) {
+      if (!btn) return;
+      var old = btn.lastChild && btn.lastChild.nodeType === 3 ? btn.lastChild : null;
+      var was = old ? old.nodeValue : null;
+      btn.classList.add('done'); if (old) old.nodeValue = ok ? 'Copied' : 'Failed';
+      setTimeout(function () { btn.classList.remove('done'); if (old) old.nodeValue = was; }, 1400);
+    }
+    function fallback() {
+      var ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      document.body.appendChild(ta); ta.select();
+      var ok = false; try { ok = document.execCommand('copy'); } catch (e) { }
+      document.body.removeChild(ta); flash(ok); msg.focus();
+    }
+    try { navigator.clipboard.writeText(text).then(function () { flash(true); }, fallback); } catch (e) { fallback(); }
+  }
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest ? e.target.closest('a[href],.cp,[data-act="copy"],[data-copy-text]') : null;
+    if (!t) return;
+    if (t.tagName === 'A') { // never let the panel itself navigate: open links as browser tabs
+      e.preventDefault();
+      var u = t.getAttribute('href') || '';
+      if (/^https?:\/\//i.test(u)) send('newtab:' + u);
+    } else if (t.classList.contains('cp')) {
+      copyText(t.closest('.code').querySelector('code').textContent, t);
+    } else if (t.getAttribute('data-act') === 'copy') {
+      var m = t.closest('.m'); copyText(m ? m._src : '', t);
+    } else {
+      var was = t.textContent; copyText(t.getAttribute('data-copy-text'), null);
+      t.textContent = 'Copied!'; setTimeout(function () { t.textContent = was; }, 1200);
+    }
+  });
+  document.addEventListener('auxclick', function (e) { if (e.target.closest && e.target.closest('a')) e.preventDefault(); });
+
+  // ---------------------------------------------------------------- focus + polling
+  function fieldFocused() { var a = document.activeElement; return a && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(a.tagName) && a !== document.body; }
+  function focusSoon() { if (!fieldFocused() && document.hasFocus()) msg.focus(); }
+  window.addEventListener('focus', function () { focusSoon(); if (!running) send('olget'); });
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') { focusSoon(); if (!running) send('olget'); } });
+
+  refreshStatus();
+  autosize();
   send('olget');
-  // Keep looking until the server answers (Ollama may start after the page opens), and re-check on focus.
-  var connected = false;
-  setInterval(function () { if (!connected && !running) send('olget'); }, 3000);
-  window.addEventListener('focus', function () { if (!running) send('olget'); });
+  msg.focus();
+  // Keep looking until the server answers (Ollama may start after the page opens).
+  setInterval(function () { if (connected !== true && !running) send('olget'); }, 3000);
+})();
 </script>
 </body>
 </html>
