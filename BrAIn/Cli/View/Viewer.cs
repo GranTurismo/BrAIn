@@ -15,7 +15,7 @@ internal sealed class Viewer
     private readonly Term _t = new();
     private TermCaps _caps = null!;
     private Painter _p = null!;
-    private readonly X11 _cap, _inp;
+    private readonly IScreen _scr;
     private readonly ControlClient.Info _info;
     private int _pageWidth;
     private readonly InputParser _parser = new();
@@ -30,9 +30,9 @@ internal sealed class Viewer
     private Reader? _reader;
     private bool _clip;
 
-    private Viewer(X11 cap, X11 inp, ControlClient.Info info, int pageWidth)
+    private Viewer(IScreen scr, ControlClient.Info info, int pageWidth)
     {
-        _cap = cap; _inp = inp; _info = info; _pageWidth = pageWidth;
+        _scr = scr; _info = info; _pageWidth = pageWidth;
     }
 
     internal static int Run(List<string> a)
@@ -50,16 +50,35 @@ internal sealed class Viewer
                 Console.WriteLine("  Ctrl+O  reader: the page as text, links numbered   Ctrl+Q  leave (the browser keeps running)");
                 Console.WriteLine("  --gfx text: the page's text as real characters over colour blocks (the default where pictures cannot be shown)");
                 Console.WriteLine("  Copying in the browser (Ctrl+C) also copies to this terminal's clipboard; pasting here types into the browser.");
+                if (OperatingSystem.IsMacOS())
+                    Console.WriteLine("  On a Mac: it starts a BrAIn without a window if none runs; Ctrl+letter is ⌘+letter (Ctrl+L address bar, Ctrl+T tab).");
                 return 0;
             }
         }
-        if (!OperatingSystem.IsLinux())
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
         {
-            Console.Error.WriteLine("brain view shows a BrAIn that runs without a display on Linux (a server, a container, an SSH login).");
-            Console.Error.WriteLine("Here BrAIn has its own window, which is the view. The other brain commands (open, read, snap, click …) work.");
+            Console.Error.WriteLine("brain view is available on Linux and macOS.");
             return 1;
         }
         if (!Posix.IsTty(0) || !Posix.IsTty(1)) { Console.Error.WriteLine("brain view needs a terminal (it was given a pipe or a file)."); return 1; }
+        if (OperatingSystem.IsMacOS())
+        {
+            // a Mac always has a screen: the terminal mode is a BrAIn started without a visible window
+            var mi = ControlClient.GetInfo();
+            if (mi is null)
+            {
+                if (ControlClient.StartDaemon(headless: true, url: null, quiet: false) != 0) return 2;
+                mi = ControlClient.GetInfo();
+            }
+            if (mi is null) { Console.Error.WriteLine("brain view: BrAIn is not answering"); return 2; }
+            if (!mi.Headless)
+            {
+                Console.Error.WriteLine("brain view: BrAIn is open with its window. The terminal view uses a BrAIn that runs without one:");
+                Console.Error.WriteLine("quit BrAIn (⌘Q), then run brain view again — it starts one for the terminal.");
+                return 1;
+            }
+            return new Viewer(new MacScreen(), mi, pageWidth).Loop(gfx);
+        }
         if (!ControlClient.EnsureRunning()) return 2;
         var info = ControlClient.GetInfo();
         if (info is null) { Console.Error.WriteLine("brain view: BrAIn is not answering"); return 2; }
@@ -73,7 +92,7 @@ internal sealed class Viewer
         var inp = cap is null ? null : X11.Open(info.Display, info.XAuthority, out why);
         if (cap is null || inp is null) { Console.Error.WriteLine("brain view: " + why); return 2; }
         if (!inp.HasXTest()) { Console.Error.WriteLine("brain view: the browser's screen has no XTEST extension, so input cannot be sent (libXtst.so.6 missing?)."); return 2; }
-        return new Viewer(cap, inp, info, pageWidth).Loop(gfx);
+        return new Viewer(new X11Screen(cap, inp), info, pageWidth).Loop(gfx);
     }
 
     private int Loop(string? gfx)
@@ -97,7 +116,7 @@ internal sealed class Viewer
             term = PosixSignalRegistration.Create(PosixSignal.SIGTERM, c => { c.Cancel = true; _quit = true; _wake.Set(); });
             hup = PosixSignalRegistration.Create(PosixSignal.SIGHUP, c => { c.Cancel = true; _quit = true; _wake.Set(); });
             Relayout();
-            _clip = _cap.WatchClipboard();
+            _clip = _scr.WatchClipboard();
             if (leftover.Count > 0) Handle(_parser.Feed(leftover.ToArray()));
             new Thread(InputLoop) { IsBackground = true, Name = "view-input" }.Start();
             Flash(_caps.Gfx switch
@@ -105,7 +124,7 @@ internal sealed class Viewer
                 Gfx.Text => "Text mode: this terminal shows no pictures · Ctrl+O reader",
                 Gfx.Blocks => "No pictures in this terminal: coloured blocks · Ctrl+O reader",
                 _ => $"{_caps.Describe()} · mouse and keys go to the browser",
-            }, 6000);
+            } + (OperatingSystem.IsMacOS() ? " · Ctrl+letter = ⌘+letter" : ""), 6000);
             Main();
         }
         catch (Exception ex)
@@ -140,7 +159,7 @@ internal sealed class Viewer
         }
         catch { }
         _t.LeaveRaw();
-        try { _inp.Dispose(); } catch { }
+        try { _scr.Dispose(); } catch { }
     }
 
     private void Relayout()
@@ -188,19 +207,20 @@ internal sealed class Viewer
                     _url = o.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
                 }
             }
-            if (_textMode)
+            if (_pick is not null) DrivePicker();
+            else if (_textMode)
             {
                 while (_textModeEvents.TryDequeue(out var ev)) _reader!.Handle(ev, this);
                 _reader!.Render(_t);
             }
             else if (_caps.Gfx == Gfx.Text && _frame is not null) PaintTextFrame();
-            else if (_frame is not null && _cap.Capture(_frame, 0, 0))
+            else if (_frame is not null && _scr.Capture(_frame))
             {
                 if (_p.Paint(_frame)) _lastChange = Environment.TickCount64;
             }
-            if (_clip && _cap.ClipboardChanged() && Environment.TickCount64 - _copyIntent < 4000)
+            if (_clip && _scr.ClipboardChanged() && Environment.TickCount64 - _copyIntent < 4000)
             {
-                var text = _cap.ReadClipboard();
+                var text = _scr.ReadClipboard();
                 if (!string.IsNullOrEmpty(text) && text.Length <= 100_000)
                 {
                     _t.Put("\e]52;c;" + Convert.ToBase64String(Encoding.UTF8.GetBytes(text)) + "\a");
@@ -228,7 +248,7 @@ internal sealed class Viewer
     /// is, then capture the picture that goes with it, and draw both.</summary>
     private void PaintTextFrame()
     {
-        if (!_cap.Capture(_frame!, 0, 0)) return;
+        if (!_scr.Capture(_frame!)) return;
         var now = Environment.TickCount64;
         var changed = _prev is null || _prev.W != _frame!.W || !_frame!.Px.AsSpan().SequenceEqual(_prev.Px);
         if (changed || _layer is null || now - _layerAt > 1500)
@@ -245,7 +265,7 @@ internal sealed class Viewer
             _gridUsed = true;
             _layer = layer;
             _layerAt = now;
-            _cap.Capture(_frame!, 0, 0); // the picture as it is now, with the text where the layer says
+            _scr.Capture(_frame!); // the picture as it is now, with the text where the layer says
         }
         if (_prev is null || _prev.W != _frame!.W || _prev.H != _frame.H) _prev = new Frame(_frame!.W, _frame.H);
         Buffer.BlockCopy(_frame!.Px, 0, _prev.Px, 0, _frame.Px.Length);
@@ -341,8 +361,8 @@ internal sealed class Viewer
             _lastInput = Environment.TickCount64;
             if (ev is KeyEv { Mods: Mods.Ctrl } k && k.Keysym == 'q') { _quit = true; _wake.Set(); return; }
             if (ev is KeyEv { Mods: Mods.Ctrl } k2 && k2.Keysym == 'o') { _toggleMode = true; _wake.Set(); continue; }
-            if (ev is MouseEv sm && StatusClick(sm)) continue;
-            if (_textMode) { _textModeEvents.Enqueue(ev); _wake.Set(); continue; }
+            if (ev is MouseEv sm && _pick is null && StatusClick(sm)) continue;
+            if (_textMode || _pick is not null) { _textModeEvents.Enqueue(ev); _wake.Set(); continue; }
             Inject(ev);
         }
         _wake.Set();
@@ -391,27 +411,26 @@ internal sealed class Viewer
                     var (x, y) = ScreenPoint(m);
                     if (m.Button is >= 4 and <= 7)
                     {
-                        if (m.Press) _inp.Wheel(x, y, (uint)m.Button, 1);
+                        if (m.Press) _scr.Wheel(x, y, (uint)m.Button, 1);
                     }
                     else if (m.Motion)
                     {
-                        if (x != _mx || y != _my) { _inp.Move(x, y); _mx = x; _my = y; }
+                        if (x != _mx || y != _my) { _scr.Move(x, y); _mx = x; _my = y; }
                     }
                     else if (m.Button is >= 1 and <= 3 or 8 or 9)
                     {
                         // terminals report the release of any button as "no button"; X needs the one that went down
                         var btn = (uint)(m.Button >= 8 ? m.Button : m.Button);
-                        // no window manager on that screen: the window under the click (a popup, the browser) gets the keyboard
-                        if (m.Press) ControlClient.Ask($"focusat {x} {y}", TimeSpan.FromSeconds(2));
                         if (m.Press) _down = btn;
                         else btn = _down != 0 ? _down : btn;
-                        _inp.Button(x, y, btn, m.Press);
+                        var answer = _scr.Button(x, y, btn, m.Press);
+                        if (answer is not null) OpenPicker(answer); // macOS: a drop-down list is chosen here
                         if (!m.Press) _down = 0;
                         if (m.Press && btn == 3) _copyIntent = Environment.TickCount64 + 6000; // a context menu may copy
                     }
                     else if (m.Button == 0 && !m.Press && _down != 0)
                     {
-                        _inp.Button(x, y, _down, false);
+                        _scr.Button(x, y, _down, false);
                         _down = 0;
                     }
                     break;
@@ -420,16 +439,101 @@ internal sealed class Viewer
                 {
                     var key = k.Keysym;
                     if (k.Mods.HasFlag(Mods.Ctrl) && key is 'c' or 'x' or 'C' or 'X' or InputParser.Insert) _copyIntent = Environment.TickCount64;
-                    _inp.Key(key, k.Mods.HasFlag(Mods.Ctrl), k.Mods.HasFlag(Mods.Alt), k.Mods.HasFlag(Mods.Shift), k.Mods.HasFlag(Mods.Super));
+                    _scr.Key(key, k.Mods.HasFlag(Mods.Ctrl), k.Mods.HasFlag(Mods.Alt), k.Mods.HasFlag(Mods.Shift), k.Mods.HasFlag(Mods.Super));
                     break;
                 }
             case TextEv t:
-                _inp.Type(t.Text);
+                _scr.Type(t.Text);
                 break;
         }
     }
 
     private uint _down;
+
+    // ---------------------------------------------------------------- picking in a drop-down list (macOS)
+
+    private sealed class Pick { public long Id; public string[] Options = []; public int Index, Top; public bool Dirty = true; }
+    private volatile Pick? _pick;
+
+    /// <summary>The browser answered a click on a drop-down list with its options (a native menu would open on the real
+    /// screen): choose here, the browser sets it.</summary>
+    private void OpenPicker(string json)
+    {
+        try
+        {
+            var sel = System.Text.Json.JsonDocument.Parse(json).RootElement.GetProperty("select");
+            var opts = sel.GetProperty("options").EnumerateArray().Select(o => o.GetString() ?? "").ToArray();
+            if (opts.Length == 0) return;
+            _pick = new Pick { Id = sel.GetProperty("id").GetInt64(), Options = opts, Index = Math.Max(0, sel.GetProperty("index").GetInt32()) };
+            _wake.Set();
+        }
+        catch { }
+    }
+
+    private void DrivePicker()
+    {
+        var pk = _pick!;
+        int? chosen = null; var cancel = false;
+        var visible = Math.Max(3, _p.Rows - 6);
+        var width = Math.Min(_p.Cols - 4, Math.Max(24, pk.Options.Max(o => Reader.Width(o)) + 6));
+        var left = Math.Max(1, (_p.Cols - width) / 2 + 1);
+        var top = Math.Max(1, (_p.Rows - Math.Min(visible, pk.Options.Length) - 2) / 2 + 1);
+        while (_textModeEvents.TryDequeue(out var ev))
+        {
+            switch (ev)
+            {
+                case KeyEv { Keysym: InputParser.Up }: pk.Index = Math.Max(0, pk.Index - 1); break;
+                case KeyEv { Keysym: InputParser.Down }: pk.Index = Math.Min(pk.Options.Length - 1, pk.Index + 1); break;
+                case KeyEv { Keysym: InputParser.PageUp }: pk.Index = Math.Max(0, pk.Index - visible); break;
+                case KeyEv { Keysym: InputParser.PageDown }: pk.Index = Math.Min(pk.Options.Length - 1, pk.Index + visible); break;
+                case KeyEv { Keysym: InputParser.Home }: pk.Index = 0; break;
+                case KeyEv { Keysym: InputParser.End }: pk.Index = pk.Options.Length - 1; break;
+                case KeyEv { Keysym: InputParser.Return }: chosen = pk.Index; break;
+                case KeyEv { Keysym: InputParser.Escape }: cancel = true; break;
+                case MouseEv { Button: 4, Press: true }: pk.Index = Math.Max(0, pk.Index - 1); break;
+                case MouseEv { Button: 5, Press: true }: pk.Index = Math.Min(pk.Options.Length - 1, pk.Index + 1); break;
+                case MouseEv { Button: 1, Press: true, Motion: false } m:
+                    {
+                        var (cx, cy) = Cell(m);
+                        var row = cy - (top + 1);
+                        if (cx >= left && cx < left + width && row >= 0 && row < Math.Min(visible, pk.Options.Length)) chosen = pk.Top + row;
+                        else cancel = true;
+                        break;
+                    }
+            }
+            pk.Dirty = true;
+        }
+        if (chosen is { } c)
+        {
+            var id = pk.Id;
+            _ = Task.Run(() => MacScreen.PickOption(id, c));
+            Flash("Chosen: " + pk.Options[c], 2500);
+        }
+        if (chosen is not null || cancel)
+        {
+            _pick = null;
+            _p.Clear();
+            _lastStatus = "";
+            return;
+        }
+        if (!pk.Dirty) return;
+        pk.Dirty = false;
+        if (pk.Index < pk.Top) pk.Top = pk.Index;
+        if (pk.Index >= pk.Top + visible) pk.Top = pk.Index - visible + 1;
+        var sb = new StringBuilder("\e[0m\e[2J");
+        void Row(int r, string text, string sgr) => sb.Append($"\e[{r};{left}H{sgr}{text.PadRight(width)[..width]}\e[0m");
+        Row(top, " Choose an option", "\e[1;7m");
+        var shown = Math.Min(visible, pk.Options.Length);
+        for (var i = 0; i < shown; i++)
+        {
+            var idx = pk.Top + i;
+            var label = (idx == pk.Index ? " ▸ " : "   ") + pk.Options[idx];
+            Row(top + 1 + i, label, idx == pk.Index ? "\e[1;48;5;24;97m" : "\e[48;5;236;37m");
+        }
+        Row(top + 1 + shown, " ↑↓ move · Enter choose · Esc cancel", "\e[2;7m");
+        _t.Put(sb.ToString());
+        _lastStatus = "";
+    }
 
     // ---------------------------------------------------------------- for the text view
 

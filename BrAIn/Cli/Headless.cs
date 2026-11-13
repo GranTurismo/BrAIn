@@ -134,6 +134,9 @@ internal static class Headless
         return psi;
     }
 
+    /// <summary>macOS terminal mode: headless without a screen of our own (the window is invisible instead).</summary>
+    internal static void MarkActive() => Active = true;
+
     internal static void Stop()
     {
         try { if (_xvfb is { HasExited: false }) _xvfb.Kill(); } catch { }

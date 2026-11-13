@@ -40,6 +40,8 @@ internal static class ControlPaths
 ///   <c>view W H</c>       headless only: size the window to W×H at the screen's top-left corner (the terminal viewer)
 ///   <c>warm</c>           wait until the page answers evaluations (right after a start)
 ///   <c>grid K M CSS</c>   headless only: the text layer for a terminal without pictures (TextGridJs)
+///   <c>frame</c>          macOS headless: a JSON line {w,h,len} and the window's pixels (BGRx)
+///   <c>input JSON</c>     macOS headless: one mouse / key / text event for the invisible window
 ///   <c>quit</c>           close the browser
 ///
 /// Only the account that runs the browser can connect: the folder is private (0700), the socket is 0600 and the peer's uid is
@@ -149,6 +151,23 @@ internal sealed class ControlServer : IDisposable
                 case "focusat" when parts.Length >= 3 && int.TryParse(parts[1], out var fx) && int.TryParse(parts[2], out var fy):
                     await Reply(ns, _browser.FocusAt(fx, fy));
                     break;
+                case "frame":
+                    {
+                        // macOS terminal mode: one JSON line {w,h,len}, then the BGRx pixels
+                        var (fw, fh, px) = await _browser.MacFrameAsync();
+                        await Reply(ns, JsonSerializer.Serialize(new { w = fw, h = fh, len = px?.Length ?? 0 }));
+                        if (px is not null) { await ns.WriteAsync(px); await ns.FlushAsync(); }
+                        break;
+                    }
+                case "input" when parts.Length >= 2:
+                    {
+                        var json = line.Trim()[6..];
+                        string res;
+                        try { res = await _browser.MacInputAsync(JsonDocument.Parse(json).RootElement); }
+                        catch (Exception ex) { res = JsonSerializer.Serialize(new { error = ex.Message }); }
+                        await Reply(ns, res);
+                        break;
+                    }
                 case "warm":
                     await Reply(ns, await _browser.WarmUpAsync());
                     break;
@@ -196,7 +215,7 @@ internal sealed class ControlServer : IDisposable
         using var cts = new CancellationTokenSource(timeout);
         var buf = new List<byte>(64);
         var one = new byte[1];
-        while (buf.Count < 256)
+        while (buf.Count < 1 << 20) // an input line can carry a paste
         {
             int n;
             try { n = await s.ReadAsync(one, cts.Token); }

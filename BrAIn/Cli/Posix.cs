@@ -20,6 +20,12 @@ internal static partial class Posix
     [LibraryImport("libc", SetLastError = true)] private static partial int tcsetattr(int fd, int when, byte[] termios);
     [LibraryImport("libc")] private static partial void cfmakeraw(byte[] termios);
     [LibraryImport("libc", SetLastError = true)] private static partial int ioctl(int fd, nuint request, ref WinSize ws);
+
+    // ioctl is variadic. Apple's arm64 convention passes variadic arguments on the stack, not in registers, so a plain
+    // three-argument call hands it garbage (and it writes the size somewhere random). Filling the eight argument registers
+    // first puts the pointer exactly where ioctl reads its first variadic argument.
+    [LibraryImport("libc", EntryPoint = "ioctl", SetLastError = true)]
+    private static partial int ioctl_AppleArm64(int fd, nuint request, nint r2, nint r3, nint r4, nint r5, nint r6, nint r7, ref WinSize ws);
     [LibraryImport("libc", SetLastError = true)] internal static partial int kill(int pid, int sig);
 
     /// <summary>Sets a variable in BOTH the managed and the native environment (null removes it).</summary>
@@ -58,7 +64,10 @@ internal static partial class Posix
         try
         {
             nuint req = OperatingSystem.IsMacOS() ? 0x40087468u : 0x5413u; // TIOCGWINSZ
-            return ioctl(fd, req, ref ws) == 0 && ws.Cols > 0 && ws.Rows > 0;
+            var rc = OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+                ? ioctl_AppleArm64(fd, req, 0, 0, 0, 0, 0, 0, ref ws)
+                : ioctl(fd, req, ref ws);
+            return rc == 0 && ws.Cols > 0 && ws.Rows > 0;
         }
         catch { return false; }
     }

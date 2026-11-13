@@ -394,7 +394,9 @@ internal static class CliMain
     {
         var info = ControlClient.GetInfo();
         if (info is null) { Console.WriteLine("BrAIn is not running."); return 3; }
-        Console.WriteLine($"BrAIn {info.Version} is running (pid {info.Pid}, {(info.Headless ? $"headless, invisible screen {info.Display}" : "with a window")}).");
+        var how = !info.Headless ? "with a window"
+            : string.IsNullOrEmpty(info.Display) ? "without a window, for the terminal: brain view" : $"headless, invisible screen {info.Display}";
+        Console.WriteLine($"BrAIn {info.Version} is running (pid {info.Pid}, {how}).");
         using var s = McpSession.Open();
         if (s is not null) PrintTabs(s);
         return 0;
@@ -437,10 +439,10 @@ internal static class CliMain
     private static readonly (string Cmd, string Args, string Text)[] HelpRows =
     [
         ("", "", "The browser"),
-        ("start", "[--headless|--visible] [flags] [url]", "start BrAIn in the background (Linux without a display: on an invisible screen)"),
+        ("start", "[--headless|--visible] [flags] [url]", "start BrAIn in the background (--headless: without a window, for view)"),
         ("stop", "", "close it"),
         ("status", "", "is it running, and its tabs"),
-        ("view", "", "the browser live in this terminal: mouse, keyboard, tabs, address bar (Linux, headless)"),
+        ("view", "", "the browser live in this terminal: mouse, keyboard, tabs, address bar (a BrAIn without a window)"),
         ("", "", "Pages"),
         ("open", "<url|words> [-n] [--private]", "go there (-n: in a new tab)"),
         ("back / forward / reload", "[--hard]", ""),

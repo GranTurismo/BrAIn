@@ -88,7 +88,7 @@ internal static class ControlClient
         psi.ArgumentList.Add("exec \"$0\" \"$@\" </dev/null >>\"$BRAIN_DAEMON_LOG\" 2>&1");
         psi.ArgumentList.Add(exe);
         psi.ArgumentList.Add("--daemon");
-        if (headless == true && OperatingSystem.IsLinux()) psi.ArgumentList.Add("--headless");
+        if (headless == true && (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())) psi.ArgumentList.Add("--headless");
         foreach (var x in extra ?? []) if (x is not "--daemon") psi.ArgumentList.Add(x);
         if (!string.IsNullOrWhiteSpace(url)) psi.ArgumentList.Add(url);
         psi.Environment["BRAIN_DAEMON_LOG"] = log;

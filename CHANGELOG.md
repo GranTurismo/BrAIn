@@ -2,6 +2,27 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.10.0 — 2026-11-13
+
+**Scope:** new on **macOS** (`brain view` and the automatic `brain` command). **Linux and Windows:** nothing new, only the version number.
+
+### Added
+- **`brain view` on a Mac** — BrAIn runs without a window (nothing on your screen, no Dock icon) and the terminal
+  shows it: pictures in iTerm2, Ghostty, kitty and WezTerm, real-text mode in the macOS Terminal. Mouse, keyboard and
+  wheel go into the browser; the terminal's `Ctrl`+letter is `⌘`+letter (`Ctrl+L` address bar, `Ctrl+T` new tab,
+  `Ctrl+C` copy). A drop-down list opens as a list in the terminal instead of a menu on your screen, and sign-in
+  popups appear over the page with a title bar and a close box. `brain view` starts that BrAIn when none is running;
+  `brain start --headless` starts it without showing it.
+- **The `brain` command sets itself up on macOS** — an app that is dragged into Applications or updated in place never
+  runs an installer, so BrAIn now links `brain` itself, a few seconds after it starts, in a folder on your PATH
+  (`~/.local/bin`, `~/bin`, `/usr/local/bin` or `/opt/homebrew/bin`, whichever your shell uses and you can write to).
+  It never replaces a different program called `brain`, keeps its link pointing at BrAIn when the app is moved, and
+  does not put the link back if you delete it.
+
+### Fixed
+- `brain shot` without a file name could crash on Apple Silicon Macs: the terminal's size was read with the wrong
+  calling convention.
+
 ## 1.9.0 — 2026-11-13
 
 **Scope:** the `brain` command and the headless mode are new on **Linux**; the `brain` command (without `view`) also

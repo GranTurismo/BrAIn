@@ -9,7 +9,10 @@ cell grid) and sends keys and mouse reports the way a real terminal does.
 """
 import base64, fcntl, io, os, re, select, signal, struct, subprocess, termios, threading, time
 
-import cairo
+try:
+    import cairo   # only for composite(); the rest works without it (e.g. on a Mac)
+except ImportError:
+    cairo = None
 
 
 class Shot:

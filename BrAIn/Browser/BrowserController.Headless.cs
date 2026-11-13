@@ -11,7 +11,7 @@ public sealed partial class BrowserController
     public bool Headless
     {
         get => _headless;
-        set { _headless = value; if (IsLinux) Linux.LinuxPopup.Headless = value; }
+        set { _headless = value; if (IsLinux) Linux.LinuxPopup.Headless = value; if (IsMac) Mac.MacView.Headless = value; }
     }
     private bool _headless;
 
@@ -49,6 +49,7 @@ public sealed partial class BrowserController
     /// grid, 0 takes that away, -1 leaves it. JSON: { bar, page, barH (the toolbar view's height), strip (its own strip) }.</summary>
     internal async Task<string> TextGridAsync(int k, int m, int css)
     {
+        if (Headless && IsMac) return await MacTextGridAsync(Math.Clamp(k, 2, 64), Math.Clamp(m, 2, 128), css);
         if (!Headless || !IsLinux || !Linux.LinuxEval.Available) return "{\"error\":\"the text layer needs a headless BrAIn on Linux\"}";
         k = Math.Clamp(k, 2, 64); m = Math.Clamp(m, 2, 128);
         Task<string?> barTask = Task.FromResult<string?>(null), pageTask = Task.FromResult<string?>(null);
@@ -130,6 +131,7 @@ public sealed partial class BrowserController
     /// (where it captures). Returns the size the window was asked to take, as JSON.</summary>
     internal string SetHeadlessViewSize(int w, int h)
     {
+        if (Headless && IsMac) return MacSetViewSize(w, h);
         if (!Headless || !IsLinux) return "{\"error\":\"this BrAIn is not headless\"}";
         w = Math.Clamp(w, 320, Cli.Headless.ScreenW);
         h = Math.Clamp(h, 240, Cli.Headless.ScreenH);

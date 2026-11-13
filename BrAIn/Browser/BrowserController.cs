@@ -647,6 +647,12 @@ public sealed partial class BrowserController : IAsyncDisposable
             // macOS opens straight into fullscreen: the window is invisible from now until fullscreen is
             // reached (MacOpenFullScreen), then fades in already full screen — instead of sitting there at
             // 1440×900 first. The watchdog makes sure it can never stay invisible whatever goes wrong.
+            // macOS terminal mode (brain view): the window is never shown — transparent from its first moment
+            if (IsMac && Headless)
+            {
+                try { Mac.WkLaunch.Hide(); }
+                catch (Exception ex) { Log("hiding the window for terminal mode failed: " + ex.Message); }
+            }
             if (IsMac && !_noFullscreen)
             {
                 try { Mac.WkLaunch.Hide(); }
@@ -892,7 +898,7 @@ public sealed partial class BrowserController : IAsyncDisposable
     /// <summary>Fade the launch window in (idempotent) and let anything that waited for it go ahead.</summary>
     private void MacRevealWindow()
     {
-        if (!IsMac || !Mac.WkLaunch.Hidden) return;
+        if (!IsMac || !Mac.WkLaunch.Hidden || Headless) return; // terminal mode: the window stays invisible
         try { InvokeOnUi(() => Mac.WkLaunch.Reveal()); }
         catch (Exception ex) { Log("revealing the window failed: " + ex.Message); }
         Mark("window revealed");
@@ -964,6 +970,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                     try { StartSplitBar(first); }
                     catch (Exception ex) { Log("split bar failed: " + ex.Message); }
                     Mac.WkTabs.HideBootstrap();
+                    if (Headless) Mac.MacView.MakeHeadless(nsWin);
                 }
                 else
                 {

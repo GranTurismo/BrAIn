@@ -106,6 +106,13 @@ public static class Program
             headless = true;
             BrowserController.Log($"headless: invisible screen {Cli.Headless.Display}");
         }
+        // macOS: there is always a screen, but `brain view` wants BrAIn without a window (an invisible one, Mac/MacView.cs)
+        if (OperatingSystem.IsMacOS() && args.Contains("--headless"))
+        {
+            headless = true;
+            Cli.Headless.MarkActive();
+            BrowserController.Log("headless: no visible window (terminal mode)");
+        }
 
         var selfTest = args.Contains("--selftest-tabs");
         if (selfTest && args.Contains("--selftest-evict")) Environment.SetEnvironmentVariable("BRAIN_MAXLIVE", "3"); // opt-in cap to exercise eviction
@@ -116,6 +123,8 @@ public static class Program
             Headless = headless,
         };
         BrowserController.Mark("controller ready");
+        // macOS: an updated or dragged-in app has no installer step, so it links its own `brain` command (Cli/CommandLink.cs)
+        if (!selfTest) Cli.CommandLink.EnsureLater();
         var selfTestFails = 0;
         if (selfTest)
             _ = Task.Run(async () =>

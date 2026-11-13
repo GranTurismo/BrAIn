@@ -165,7 +165,14 @@ Each command is one MCP tool call over a private Unix socket in BrAIn's data fol
 it has exactly the abilities, safety checks and activity log of an AI agent. `brain tools` lists every tool and
 `brain call <tool> key=value …` calls any of them. Exit status is 0 on success and 1 when the page said no (an
 element that is not there, a `wait` that timed out). `brain start` / `brain stop` / `brain status` manage the
-background browser; on macOS it is the normal app with its window.
+background browser; on macOS `brain start` opens the normal app with its window, and `brain start --headless` one
+without a window, for `brain view`.
+
+**On a Mac** the app sets the command up itself: a few seconds after BrAIn starts it links `brain` in a folder on
+your PATH (`~/.local/bin`, `~/bin`, `/usr/local/bin` or `/opt/homebrew/bin`, whichever your shell uses and you can
+write to). It never replaces a different program called `brain`, keeps the link pointing at BrAIn when you move the
+app, and does not put it back if you delete it. To make it by hand:
+`ln -s /Applications/BrAIn.app/Contents/MacOS/BrAIn ~/.local/bin/brain`.
 
 **On a Linux server** (no display): `brain start` gives BrAIn an invisible screen of its own — an Xvfb on a free
 display number, locked with a cookie only your account can read, plus a private session bus — so the same WebKit
@@ -192,6 +199,13 @@ types into the browser. `Ctrl+Q` leaves the view; the browser keeps running. `br
 overrides the detection, and `--width 1024` lays pages out narrower. In text mode the page is laid out in a monospace
 font sized to the terminal's cells while you watch (what the browsh project does), so every letter lands on a cell; it
 gets its own fonts back when you leave.
+
+**`brain view` on a Mac** works the same way with a BrAIn that has no window: nothing appears on your screen or in
+the Dock, and the terminal is its only view. `brain view` starts it when no BrAIn is running (if BrAIn is open with its
+window, quit it first). The terminal's `Ctrl`+letter is `⌘`+letter there (`Ctrl+L` address bar, `Ctrl+T` new tab,
+`Ctrl+C` copy — the clipboard is your Mac's own). A drop-down list opens as a list in the terminal (arrows and Enter,
+or click) instead of a menu on your screen, sign-in popups appear over the page with a title bar and a close box, and a
+right click does nothing (it would open a menu on the real screen).
 
 **Sharing with an AI agent**: point the agent's MCP client at `brain mcp` (instead of the program itself). It then
 drives the same browser you see in `brain view`, and when it hits a CAPTCHA or a login it can hand over with

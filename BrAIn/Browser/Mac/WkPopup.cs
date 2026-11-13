@@ -182,13 +182,34 @@ internal static partial class WkPopup
         ObjC.Send(wv, ObjC.Sel("release")); // the window now holds the only reference
         ObjC.Send(win, ObjC.Sel("center"));
         ObjC.Send(win, ObjC.Sel("makeKeyAndOrderFront:"), IntPtr.Zero);
+        if (MacView.Headless)
+        {
+            // terminal mode: invisible like the main window; the viewer draws it over the page and types into it
+            MacView.HideWindow(win);
+            MacView.KeepRendering(win);
+            MacView.KeyTarget = win;
+        }
 
         lock (_popupWindow) _popupWindow[wv] = win;
         return wv;
     }
 
-    private static void OnClose(IntPtr self, IntPtr sel, IntPtr webView)
+    private static void OnClose(IntPtr self, IntPtr sel, IntPtr webView) => Close(webView);
+
+    /// <summary>The open popup windows (web view, window), oldest first. Main thread.</summary>
+    internal static List<(IntPtr View, IntPtr Window)> OpenWindows()
     {
+        lock (_popupWindow) return _popupWindow.Select(kv => (kv.Key, kv.Value)).ToList();
+    }
+
+    /// <summary>Closes a popup the way the page's window.close() does (terminal mode: its close box). Main thread.</summary>
+    internal static void Close(IntPtr webView)
+    {
+        try
+        {
+            lock (_popupWindow) { if (_popupWindow.TryGetValue(webView, out var w) && MacView.KeyTarget == w) MacView.KeyTarget = IntPtr.Zero; }
+        }
+        catch { }
         try
         {
             IntPtr win;
