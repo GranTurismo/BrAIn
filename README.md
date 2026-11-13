@@ -259,6 +259,12 @@ Linux (after `install.sh`):
 
 To open on a specific page at startup, add `"args": ["https://example.com"]`.
 
+**Without a window** (macOS, and Linux on a machine without a display): add `"args": ["--headless"]`. It is the same
+browser and the same tools — DOM, JavaScript, screenshots, clicks, cookies — with nothing on screen; on a Mac not even
+a Dock icon. Pages still count as visible and animate at full speed, as in a normal tab. To share that browser between
+an agent and yourself instead, start it once with `brain start --headless` and give the agent `brain` with
+`"args": ["mcp"]`; `brain view` then shows what the agent is doing.
+
 ### Typical agent loop
 
 1. `browser_navigate` — go to a URL

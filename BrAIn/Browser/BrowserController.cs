@@ -51,6 +51,9 @@ public sealed partial class BrowserController : IAsyncDisposable
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _driverReady =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // the startup's own first page load (start page or the URL it was given) has returned
+    private readonly TaskCompletionSource _firstLoad =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _closed =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -987,7 +990,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             });
             Mark("window dressed + bar view");
 
-            await EnsureTabViewAsync(first);
+            await EnsureTabViewAsync(first, startup: true);
             Mark("first tab view created");
             ShowTabView(first); // views are created hidden; the first tab's must be shown explicitly
             _driverTab = first;
@@ -1001,6 +1004,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             {
                 try { Mark("first navigate start"); await NavigateAsync(first.LastUrl, first); Mark("first navigate returned"); }
                 catch (Exception ex) { Log("first load failed: " + ex.Message); }
+                finally { _firstLoad.TrySetResult(); }
             });
 
             if (IsLinux) { if (!_noFullscreen) OpenFullScreenLinux(first); else RevealLinuxWindow(); }
@@ -1090,7 +1094,7 @@ public sealed partial class BrowserController : IAsyncDisposable
 
             _cdpBrowser = await Cdp.CdpClient.ConnectAsync(ws.Port, CancellationToken.None);
             Log("per-tab startup: CDP connected, creating first view");
-            await EnsureTabViewAsync(first);
+            await EnsureTabViewAsync(first, startup: true);
             ShowTabView(first);
             _driverTab = first;
             first.Bound.TrySetResult();
@@ -1101,6 +1105,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             {
                 try { await NavigateAsync(first.LastUrl, first); Log("per-tab startup: first page loaded"); }
                 catch (Exception ex) { Log("first load failed: " + ex.Message); }
+                finally { _firstLoad.TrySetResult(); }
                 // diagnostics for "window stays blank" reports: where the views sit and what the page sees
                 try
                 {
@@ -1320,12 +1325,26 @@ public sealed partial class BrowserController : IAsyncDisposable
 
     /// <summary>Gives a tab its own web view and driver (idempotent; concurrent
     /// callers share one creation).</summary>
-    private Task<IBrowserDriver> EnsureTabViewAsync(BrowserTab tab)
+    private Task<IBrowserDriver> EnsureTabViewAsync(BrowserTab tab, bool startup = false)
     {
+        // A call that comes in while the window is still being set up (an MCP client may send its first tool call a few hundred
+        // milliseconds after launch) waits until the startup has made the first view. Starting that view itself raced the
+        // startup, which shares the creation task: the task waited for "driver ready", i.e. for itself, and the whole session
+        // was left without a browser after 25 s.
+        if (!startup && !_driverReady.Task.IsCompleted) return AfterStartupAsync(tab);
         // a tab that was open before Ghost mode: its original (logged-in) view is replaced first
         if (_ghost && PerTab && tab.GhostFrom is { Moved: false }) return RehomeThenEnsureAsync(tab);
         if (tab.Driver is { } existing && tab.HasView) return Task.FromResult(existing);
         return _viewTasks.GetOrAdd(tab.Id, _ => WinPerTab ? CreateWinTabViewAsync(tab) : CreateTabViewAsync(tab));
+    }
+
+    private async Task<IBrowserDriver> AfterStartupAsync(BrowserTab tab)
+    {
+        await _driverReady.Task.WaitAsync(TimeSpan.FromSeconds(60));
+        // ...and until the startup's own first page load has returned, or it would land after this call's navigation and
+        // replace it with the start page
+        await Task.WhenAny(_firstLoad.Task, Task.Delay(TimeSpan.FromSeconds(15)));
+        return await EnsureTabViewAsync(tab);
     }
 
     private async Task<IBrowserDriver> CreateTabViewAsync(BrowserTab tab)

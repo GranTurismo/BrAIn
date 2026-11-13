@@ -2,6 +2,17 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.10.1 — 2026-11-13
+
+### Fixed
+- An MCP client that called a tool within the first fraction of a second after launching BrAIn got a browser that never
+  worked: the startup and that call each waited for the other, and after 25 s every tool failed for the rest of the
+  session. Such a call now waits until the browser is ready, and its navigation is no longer replaced by the start page
+  loading at the same moment. (All platforms: the code is shared; reproduced and fixed on macOS, with and without a window.)
+
+### Docs
+- README: running BrAIn as an MCP server without a window (`"args": ["--headless"]`).
+
 ## 1.10.0 — 2026-11-13
 
 **Scope:** new on **macOS** (`brain view` and the automatic `brain` command). **Linux and Windows:** nothing new, only the version number.
