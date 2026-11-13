@@ -86,8 +86,9 @@ session, because BrAIn is a window):
 { "mcpServers": { "brain": { "command": "/home/you/.local/bin/brain" } } }
 ```
 
-On a machine with no display (a server, a container), run it under a virtual X server and a light window manager,
-e.g. `xvfb-run -a bash -c 'openbox & exec brain'` — that is how the Linux tests run it.
+On a machine with no display (a server, a container, an SSH login) BrAIn starts on an invisible screen of its own:
+install `xvfb` as well, then use it through [the `brain` command](#the-brain-command--brain-in-a-terminal-and-on-servers)
+(`brain open`, `brain read`, `brain view`, …) or point an MCP client at `brain mcp`.
 
 ### What works
 
@@ -142,6 +143,63 @@ of the same code. Reports from real desktops and other distributions are welcome
 
 For contributors: `scripts/linux/test.sh` runs the Linux checks in Docker (the tab self-test, the installer and
 the self-updater; see `scripts/linux/README.md`), and `.github/workflows/linux-selftest.yml` runs them on a CI runner.
+
+## The `brain` command — BrAIn in a terminal and on servers
+
+The same program is a command line. Each command drives the running browser (and starts one in the background when
+none is running), so it works the same in a script, over SSH, or next to an AI agent:
+
+```bash
+brain open news.ycombinator.com      # go somewhere (words instead of an address search the web)
+brain read                           # the page as Markdown
+brain snap                           # what is on it; interactive parts are numbered
+brain click 12                       # …click one of them (or: brain click "Sign in", brain click css:#submit)
+brain type 7 "hello" --enter         # fill a field and press Enter
+brain shot page.png                  # screenshot (no file: shown right in the terminal if it can show pictures)
+brain tabs / brain tab 2 / brain new / brain close
+brain view                           # the whole browser, live, in this terminal (see below)
+brain help                           # everything else: wait, select, check, scroll, upload, eval, cookies, call …
+```
+
+Each command is one MCP tool call over a private Unix socket in BrAIn's data folder (only your account can open it), so
+it has exactly the abilities, safety checks and activity log of an AI agent. `brain tools` lists every tool and
+`brain call <tool> key=value …` calls any of them. Exit status is 0 on success and 1 when the page said no (an
+element that is not there, a `wait` that timed out). `brain start` / `brain stop` / `brain status` manage the
+background browser; on macOS it is the normal app with its window.
+
+**On a Linux server** (no display): `brain start` gives BrAIn an invisible screen of its own — an Xvfb on a free
+display number, locked with a cookie only your account can read, plus a private session bus — so the same WebKit
+engine and the same toolbar run there and sites see an ordinary desktop browser. It keeps running after you log out,
+until `brain stop` (or `kill`, or a shutdown). Install `xvfb` for it (`sudo apt install xvfb`; Fedora
+`xorg-x11-server-Xvfb`).
+
+**`brain view`** mirrors that browser into the terminal and plays your mouse and keyboard into it as real input, so
+everything works as on a desktop: the page, the tab strip, the address bar, menus and dialogs, and BrAIn's shortcuts
+(`Ctrl+L` address bar, `Ctrl+T` / `Ctrl+W` tabs, `Ctrl+K` palette). The window is sized to the terminal, and after
+the first picture only the parts that changed are sent again, so it is quick over SSH.
+
+| Terminal | Pictures |
+| --- | --- |
+| kitty, Ghostty, WezTerm | full-resolution pictures (kitty graphics) |
+| iTerm2 | full-resolution pictures (iTerm2 inline images) |
+| xterm, foot, Windows Terminal, mlterm (sixel) | pictures at the terminal's pixel size |
+| anything else (macOS Terminal, GNOME Terminal, inside tmux/screen) | **text mode**: the page's text as real, sharp characters (its colours, bold, links) laid out on a character grid, pictures and backgrounds as coloured blocks |
+
+`Ctrl+O` switches to the **reader** (the Markdown of `brain read`, links numbered: type a number and Enter, or click
+one; `o` types an address, Backspace goes back) and back. Copying in the browser (`Ctrl+C`) also
+copies to your own computer's clipboard (OSC 52; iTerm2 asks you to allow it once), and pasting into the terminal
+types into the browser. `Ctrl+Q` leaves the view; the browser keeps running. `brain view --gfx text|blocks|sixel|iterm|kitty`
+overrides the detection, and `--width 1024` lays pages out narrower. In text mode the page is laid out in a monospace
+font sized to the terminal's cells while you watch (what the browsh project does), so every letter lands on a cell; it
+gets its own fonts back when you leave.
+
+**Sharing with an AI agent**: point the agent's MCP client at `brain mcp` (instead of the program itself). It then
+drives the same browser you see in `brain view`, and when it hits a CAPTCHA or a login it can hand over with
+`browser_ask_human`: you do that step in the view and press Done.
+
+```json
+{ "mcpServers": { "brain": { "command": "/home/you/.local/bin/brain", "args": ["mcp"] } } }
+```
 
 ## Using it as an MCP server
 

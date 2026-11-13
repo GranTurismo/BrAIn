@@ -20,8 +20,14 @@ Needs (Debian / Ubuntu names; install.sh prints the right ones for your distribu
     sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0
     Fedora: sudo dnf install webkit2gtk4.1 gtk3 libnotify libsecret
 
+From a terminal, also over SSH on a server without a display (needs xvfb there: sudo apt install xvfb):
+    brain open example.com       brain read       brain snap       brain click 12
+    brain view                   the whole browser live in the terminal (Ctrl+O text view, Ctrl+Q leave)
+    brain help                   all commands
+
 Let an AI agent drive it (any MCP client, e.g. Claude Desktop / Claude Code):
     { "mcpServers": { "brain": { "command": "/home/YOU/.local/share/brain-browser/BrAIn" } } }
+    On a server, use "args": ["mcp"]: the agent then shares the browser you see in `brain view`.
 
 Files
 -----

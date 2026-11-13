@@ -2816,7 +2816,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             bm = isBm,
             zoom = _zoom,
             topmost = _topmost,
-            wc = Chromeless,
+            wc = Chromeless && !Headless, // headless: no window manager on its screen, so no min/max/close (brain stop closes it)
             // macOS: real traffic lights float over the toolbar's left inset
             // (FullSizeContentView + transparent titlebar) — the bar pads for
             // them and empty bar space starts a native window drag.
@@ -3221,7 +3221,7 @@ public sealed partial class BrowserController : IAsyncDisposable
 
     private void MaybeShowWelcome()
     {
-        if (_welcomed || _welcomeShown || _noToolbar) return;
+        if (_welcomed || _welcomeShown || _noToolbar || Headless) return;
         if ((IsMac && Mac.WkLaunch.Hidden) || (IsLinux && Linux.LinuxLaunch.Hidden)) { _welcomeWaiting = true; return; } // the first scene should play where it can be seen
         _welcomeShown = true;
         ShowWelcome();

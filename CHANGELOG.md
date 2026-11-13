@@ -2,6 +2,39 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.9.0 — 2026-11-13
+
+**Scope:** the `brain` command and the headless mode are new on **Linux**; the `brain` command (without `view`) also
+works on **macOS**. **Windows** is unchanged (it has no `brain` command yet).
+
+### Added
+- **The `brain` command: BrAIn from a terminal** — `brain open`, `read`, `snap`, `click`, `type`, `shot`, `tabs`,
+  `wait`, `eval`, `call` (any tool) and more drive the running browser, and start one in the background when none
+  is running. Each command is one MCP tool call over a private Unix socket, with the same safety checks and activity
+  log as an AI agent. `brain help` lists them.
+- **Linux servers without a display** — BrAIn starts on an invisible screen of its own (Xvfb, locked with a cookie
+  only your account can read, plus a private session bus) and keeps running after you log out, until `brain stop`.
+  Needs `xvfb` (`install.sh` says so when it is missing).
+- **`brain view`: the browser live in a terminal** — the whole window mirrored as pictures (kitty, Ghostty, WezTerm,
+  iTerm2, sixel terminals), with your mouse and keyboard played into it as real input: tabs, address bar, menus,
+  dialogs and BrAIn's shortcuts work. Only what changed is sent again. Copying in the browser lands on your own
+  clipboard; `Ctrl+Q` leaves.
+- **Text mode for terminals without pictures** (macOS Terminal, GNOME Terminal, tmux, any SSH app) — the page's and
+  the toolbar's text drawn as real, sharp characters with their colours, bold and links, on the colour really behind
+  them, and pictures as coloured blocks. While you watch, the page is laid out on a character grid (a monospace font
+  sized to the cells); it gets its own fonts back when you leave. Text that is clipped, covered or only for screen
+  readers is left out; the focused field's caret is the terminal's cursor. `Ctrl+O` opens the reader: the page as
+  Markdown with numbered links.
+- **Sign-in popups on a server** — a sized popup ("Continue with Google", payment pages) opens over the browser window
+  where `brain view` shows it, with a title bar and close button of its own, takes the keyboard, and gives it back when it
+  closes; text mode draws its text on top. Clicking a window in the view gives it the keyboard.
+- **`brain mcp`** — an MCP server on stdio that is the running browser, so an AI agent and you (in `brain view`)
+  share one browser on a server. An agent on another machine can use it through SSH (`ssh server brain mcp`).
+
+### Changed
+- A BrAIn started without an MCP client (from the desktop, Finder or a terminal) no longer runs an MCP session on
+  stdin that ends at once; SIGTERM and Ctrl+C now close the browser properly instead of leaving its window behind.
+
 ## 1.8.8 — 2026-11-10
 
 **Scope:** **all platforms** (the MCP tool is shared code). Nothing else changes.

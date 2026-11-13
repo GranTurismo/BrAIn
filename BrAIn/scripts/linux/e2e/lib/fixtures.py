@@ -4,6 +4,17 @@ import base64, http.server, socketserver, threading
 PNG_5X5 = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==')
 
 HTML = {
+    '/signin.html': """<!doctype html><title>Sign-in test</title><body style="font:18px sans-serif;margin:8px">
+<h1>Shop</h1><button id=go onclick="window.open('/signin-popup.html','signin','width=480,height=420')">Continue with Test Accounts</button>
+<p id=out>signed out</p><input id=after placeholder="after the popup">
+<script>addEventListener('message',e=>{document.title=e.data;document.getElementById('out').textContent=e.data})</script></body>""",
+    '/signin-popup.html': """<!doctype html><title>Sign in - Test Accounts</title><body style="font:18px sans-serif;margin:12px">
+<h2>Choose an account</h2><input id=u autofocus placeholder="Email or phone">
+<button id=ok onclick="opener.postMessage('user:'+document.getElementById('u').value,'*');window.close()">Next step</button></body>""",
+    '/view.html': """<!doctype html><title>View test</title><body style="font:18px sans-serif;margin:8px;background:#fff">
+<h1>Terminal view test</h1><p>A link to the <a href="/two.html" id=l>second page</a>.</p>
+<button id=big style="width:320px;height:110px;font-size:28px" onclick="this.textContent='clicked '+(window.n=(window.n||0)+1)">Big button</button>
+<textarea id=ta style="width:420px;height:90px;font-size:18px"></textarea></body>""",
     '/index.html': """<!doctype html><title>Site One</title><body style="font:20px sans-serif;background:#eef;margin:0">
 <h1 id=h>Hello from site one</h1><button id=b onclick="document.title='clicked';this.textContent='CLICKED'">Click me</button>
 <input id=i placeholder=type> <select id=s><option value=a>A</option><option value=b>B</option></select>

@@ -84,6 +84,18 @@ if [ -n "$hard$soft" ]; then
   esac
 fi
 
+# without a display (a server, a container) BrAIn starts its own invisible screen: that needs Xvfb (a note, not a warning)
+if ! command -v Xvfb >/dev/null 2>&1; then
+  ID=; LIKE=
+  [ -r /etc/os-release ] && { ID=$(. /etc/os-release; echo "${ID:-}"); LIKE=$(. /etc/os-release; echo "${ID_LIKE:-}"); }
+  case " $ID $LIKE " in
+    *" fedora "*|*" rhel "*|*" suse "*|*" opensuse "*) x=xorg-x11-server-Xvfb ;;
+    *" arch "*) x=xorg-server-xvfb ;;
+    *) x=xvfb ;;
+  esac
+  echo "note: to use BrAIn on a machine without a display (brain start / brain view over SSH), also install $x"
+fi
+
 # ---------------------------------------------------------------- the program folder
 HERE=$(cd -- "$PROG" 2>/dev/null && pwd -P || true)
 if [ "$HERE" = "$SRC" ]; then

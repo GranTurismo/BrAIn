@@ -11,8 +11,28 @@ namespace BrAIn.Browser.Linux;
 ///     stays wired); once the engine says it is ready to show, a sized popup (OAuth/payment flows carry
 ///     width/height) becomes a real window and a plain one becomes a browser tab.
 /// </summary>
-internal static unsafe class LinuxPopup
+internal static unsafe partial class LinuxPopup
 {
+    /// <summary>BrAIn runs on its own invisible screen (no window manager there): popups are placed over the browser window,
+    /// where the terminal viewer shows them, get a title bar of their own with a close button, and take the keyboard.</summary>
+    internal static bool Headless;
+
+    [LibraryImport("libgtk-3.so.0")] private static partial IntPtr gtk_header_bar_new();
+    [LibraryImport("libgtk-3.so.0")] private static partial void gtk_header_bar_set_show_close_button(IntPtr bar, int show);
+    [LibraryImport("libgtk-3.so.0", StringMarshalling = StringMarshalling.Utf8)] private static partial void gtk_header_bar_set_title(IntPtr bar, string title);
+    [LibraryImport("libgtk-3.so.0")] private static partial void gtk_window_set_titlebar(IntPtr win, IntPtr bar);
+
+    private static readonly Dictionary<IntPtr, IntPtr> _headerOf = new(); // popup window → its header bar (headless)
+
+    /// <summary>The open popup windows: (web view, window, title), oldest first. Main thread only.</summary>
+    internal static List<(IntPtr View, IntPtr Window, string Title)> OpenWindows()
+    {
+        var list = new List<(IntPtr, IntPtr, string)>();
+        lock (_windowOf)
+            foreach (var (view, win) in _windowOf)
+                list.Add((view, win, GLib.Str(WebKit.webkit_web_view_get_title(view)) ?? ""));
+        return list;
+    }
     /// <summary>A plain new-window request wants a tab. Main-thread only.</summary>
     internal static Action<string>? OnNewTab;
     /// <summary>Quick controls: (opener view, opener URL, popup URL) → true drops the request because
@@ -106,16 +126,35 @@ internal static unsafe class LinuxPopup
     private static void ShowWindow(IntPtr popup, int w, int h, IntPtr opener)
     {
         var win = Gtk.gtk_window_new(0 /* GTK_WINDOW_TOPLEVEL */);
-        Gtk.gtk_window_set_default_size(win, w, h);
-        Gtk.gtk_window_set_position(win, 1 /* GTK_WIN_POS_CENTER */);
         var main = LinuxWindow.Window;
+        int x = 0, y = 0;
+        if (Headless && main != IntPtr.Zero)
+        {
+            // over the browser window (at the screen's corner, where the viewer looks), fitted inside it, with a title bar
+            // GTK draws itself (there is no window manager to): the page's title and a close button
+            Gtk.gtk_window_get_size(main, out var mw, out var mh);
+            w = Math.Min(w, Math.Max(200, mw - 40));
+            h = Math.Min(h, Math.Max(120, mh - 80));
+            x = Math.Max(0, (mw - w) / 2);
+            y = Math.Max(0, (mh - h - 40) / 2);
+            var bar = gtk_header_bar_new();
+            gtk_header_bar_set_show_close_button(bar, 1);
+            gtk_header_bar_set_title(bar, "Loading…");
+            gtk_window_set_titlebar(win, bar);
+            lock (_windowOf) _headerOf[win] = bar;
+        }
+        Gtk.gtk_window_set_default_size(win, w, h);
+        if (Headless) Gtk.gtk_window_move(win, x, y);
+        else Gtk.gtk_window_set_position(win, 1 /* GTK_WIN_POS_CENTER */);
         if (main != IntPtr.Zero) Gtk.gtk_window_set_transient_for(win, main);
         Gtk.gtk_container_add(win, popup);
         GLib.g_object_unref(popup); // the window owns it now
         lock (_windowOf) _windowOf[popup] = win;
         GLib.Connect(popup, "close", (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)&OnClose);
         GLib.Connect(popup, "notify::title", (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, void>)&OnTitle, win);
+        if (Headless) GLib.Connect(win, "destroy", (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)&OnWindowGone);
         Gtk.gtk_widget_show_all(win);
+        if (Headless) Gtk.gtk_window_present(win); // the keyboard goes to the popup (the sign-in field)
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
@@ -130,13 +169,37 @@ internal static unsafe class LinuxPopup
         catch { }
     }
 
+    /// <summary>Headless: a popup window went away (the page closed it, or its close button): forget it and give the keyboard
+    /// back to the browser window (without a window manager nobody else would).</summary>
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
+    private static void OnWindowGone(IntPtr win, IntPtr data)
+    {
+        try
+        {
+            lock (_windowOf)
+            {
+                _headerOf.Remove(win);
+                foreach (var kv in _windowOf.Where(kv => kv.Value == win).ToList()) _windowOf.Remove(kv.Key);
+            }
+            var main = LinuxWindow.Window;
+            if (main != IntPtr.Zero) GLib.RunOnMainLoop(() => LinuxWindow.Activate(main));
+        }
+        catch { }
+    }
+
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
     private static void OnTitle(IntPtr popup, IntPtr pspec, IntPtr win)
     {
         try
         {
             var t = GLib.Str(WebKit.webkit_web_view_get_title(popup));
-            if (!string.IsNullOrEmpty(t)) Gtk.gtk_window_set_title(win, t);
+            if (!string.IsNullOrEmpty(t))
+            {
+                Gtk.gtk_window_set_title(win, t);
+                IntPtr bar;
+                lock (_windowOf) _headerOf.TryGetValue(win, out bar);
+                if (bar != IntPtr.Zero) gtk_header_bar_set_title(bar, t);
+            }
         }
         catch { }
     }
