@@ -466,7 +466,7 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
   };
   const label = g => show(g).join(plat === 'mac' ? '' : '+');
   function render() {
-    $$('button', seg).forEach(b => b.classList.toggle('on', b.dataset.p === plat));
+    $$('button', seg).forEach(b => { b.classList.toggle('on', b.dataset.p === plat); b.setAttribute('aria-pressed', String(b.dataset.p === plat)); });
     list.innerHTML = defs.map(d => {
       const edited = d.id in over, g = eff(d.id);
       return `<div class="krow${edited ? ' edited' : ''}${cap === d.id ? ' cap' : ''}" data-id="${d.id}" tabindex="0" role="button" aria-label="Rebind ${d.n}">
