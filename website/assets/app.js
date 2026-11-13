@@ -160,7 +160,7 @@ void main(){
 
 /* ------------------------------------------------------------------ side dot navigation */
 (function dotnav() {
-  const secs = [['top', 'Intro'], ['features', 'Features'], ['rewind', 'Rewind'], ['agent', 'Agent'], ['speed', 'Benchmarks'], ['download', 'Download']];
+  const secs = [['top', 'Intro'], ['features', 'Features'], ['rewind', 'Rewind'], ['agent', 'Agent'], ['speed', 'Benchmarks'], ['terminal', 'Terminal'], ['download', 'Download']];
   const nav = document.createElement('nav'); nav.className = 'dotnav'; nav.setAttribute('aria-label', 'Sections');
   nav.innerHTML = secs.map(([id, l]) => `<a href="#${id}" data-l="${l}" data-s="${id}" aria-label="${l}"></a>`).join('');
   document.body.appendChild(nav);
@@ -376,6 +376,75 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
   const io = new IntersectionObserver(es => { if (es[0].isIntersecting) { io.disconnect(); play(); } }, { threshold: .35 }); io.observe(term);
 })();
 
+/* ------------------------------------------------------------------ terminal & servers demo: a short SSH session, then brain view in text mode */
+(function cli() {
+  const term = $('#cli'); if (!term) return;
+  const st = $('#cliSt'), mode = $('#cliMode'), bar = $('#clibar');
+  const steps = [
+    { c: 'brain open news.example' },
+    { o: 'Navigated to https://news.example/\nTitle: Example News' },
+    { c: 'brain snap | head -3' },
+    { o: '- [ref=e1] link "Example News"\n- [ref=e7] link "A browser your AI can actually use"\n- [ref=e9] link "128 comments"' },
+    { c: 'brain click 7' },
+    { o: 'click e7: ok (real input), the page changed' },
+    { c: 'brain view' },
+  ];
+  const line = html => { const d = document.createElement('div'); d.className = 'ln'; d.innerHTML = html; term.appendChild(d); term.scrollTop = term.scrollHeight; return d; };
+  async function type(el, text, speed) { for (let i = 1; i <= text.length; i++) { el.textContent = text.slice(0, i); await sleep(reduce ? 0 : speed); } }
+  // what a plain terminal (macOS Terminal, GNOME Terminal…) shows: the page's own text as real characters, with its colours,
+  // and a picture as coloured half blocks (▀: upper half = text colour, lower half = background)
+  const px = (top, bot) => `<span style="color:${top};background:${bot}">▀</span>`;
+  const art = [['#ffb36b', '#ff9a7a', '#ff8a8f', '#ff7a9c'], ['#ff9a7a', '#ff8a8f', '#ff7a9c', '#e86a92'], ['#ff8a8f', '#ff7a9c', '#e86a92', '#c95d8a']];
+  const pic = r => art[r].map((c, i) => px(c, art[Math.min(2, r + 1)][i])).join('') + art[r].map((c, i) => px(art[r][3 - i], c)).join('');
+  function view(query) {
+    const q = query.padEnd(22, ' ');
+    // [html, visible width] per line, padded so the pictures line up in one column
+    const L = (html, p) => html + ' '.repeat(Math.max(1, 60 - html.replace(/<[^>]+>/g, '').length)) + pic(p);
+    const lines = [
+      L(` 1. <a>A browser your AI can actually use</a> <span class="tv-mu">(brain.gtgroup.dev)</span>`, 0),
+      L(`    <span class="tv-mu">412 points · 2 hours ago · <a>128 comments</a></span>`, 1),
+      L(` 2. <a>Show HN: Rewind for web pages</a> <span class="tv-mu">(example.org)</span>`, 2),
+      `    <span class="tv-mu">97 points · 4 hours ago · <a>31 comments</a></span>`,
+      ` 3. <a>Ask: what do you run on your headless boxes?</a>`,
+      `    <span class="tv-mu">55 points · 6 hours ago · <a>80 comments</a></span>`,
+      '',
+      ` Search <span class="tv-fld">${esc(q)}</span>`,
+    ];
+    return `<div class="tv" role="img" aria-label="BrAIn in a terminal, text mode: a news page drawn as real text">` +
+      `<div class="tv-tb"> ‹ › ⟳  <span class="tv-tab">Example News</span>  +   <span class="tv-url">news.example/</span></div>` +
+      `<div class="tv-pg"><div class="tv-hd tv-ends"><span><b>Example News</b>  new | past | comments | ask</span><span>login</span></div>` +
+      lines.join('\n') + `</div>` +
+      `<div class="tv-sb tv-ends"><span>BrAIn  Example News</span><span>^O reader  ^Q quit</span></div></div>`;
+  }
+  let run = 0;
+  async function play() {
+    const my = ++run; term.innerHTML = ''; term.classList.remove('viewing'); mode.textContent = 'a plain terminal'; st.textContent = 'Connected · no display on this machine';
+    bar.querySelector('.led').style.animation = '';
+    await sleep(reduce ? 0 : 400);
+    for (const s of steps) {
+      if (my !== run) return;
+      if (s.c) { const l = line('<span class="p">you@server:~$</span> <span class="u"></span>'); await type(l.querySelector('.u'), s.c, 38); await sleep(reduce ? 0 : 380); continue; }
+      line('<span class="dim">' + esc(s.o).replace(/\n/g, '<br>') + '</span>'); await sleep(reduce ? 0 : 650);
+    }
+    if (my !== run) return;
+    await sleep(reduce ? 0 : 450);
+    term.innerHTML = view(''); term.classList.add('viewing');
+    mode.textContent = 'brain view · text mode'; st.textContent = 'Mouse and keyboard go to the browser';
+    const fld = () => $('.tv-fld', term);
+    const q = 'terminal browsers';
+    for (let i = 0; i <= q.length; i++) {
+      if (my !== run) return;
+      const v = q.slice(0, i), f = fld(); if (!f) return;
+      f.innerHTML = esc(v) + '<span class="tv-cur"> </span>' + ' '.repeat(Math.max(0, 21 - v.length));
+      await sleep(reduce ? 0 : (i ? 90 : 900));
+    }
+    st.textContent = 'In kitty, Ghostty, WezTerm or iTerm2: full-resolution pictures';
+    bar.querySelector('.led').style.animation = 'none';
+  }
+  $('#cliReplay').addEventListener('click', play);
+  const io = new IntersectionObserver(es => { if (es[0].isIntersecting) { io.disconnect(); play(); } }, { threshold: .35 }); io.observe(term);
+})();
+
 /* ------------------------------------------------------------------ shortcut editor demo */
 (function shortcuts() {
   const list = $('#keyList'); if (!list) return;
@@ -465,9 +534,10 @@ function Scrubber(track, fill, thumb, ticksEl, onChange) {
     mac: { raw: '{\n  "mcpServers": {\n    "brain": {\n      "command": "/Applications/BrAIn.app/Contents/MacOS/BrAIn"\n    }\n  }\n}', },
     win: { raw: '{\n  "mcpServers": {\n    "brain": {\n      "command": "C:\\\\Program Files\\\\BrAIn\\\\BrAIn.exe"\n    }\n  }\n}' },
     linux: { raw: '{\n  "mcpServers": {\n    "brain": {\n      "command": "/home/you/.local/bin/brain"\n    }\n  }\n}' },
+    ssh: { raw: '{\n  "mcpServers": {\n    "brain": {\n      "command": "ssh",\n      "args": ["you@server", "brain", "mcp"]\n    }\n  }\n}' },
     args: { raw: '{\n  "mcpServers": {\n    "brain": {\n      "command": "/Applications/BrAIn.app/Contents/MacOS/BrAIn",\n      "args": ["https://example.com"]\n    }\n  }\n}' },
   };
-  const colour = raw => esc(raw).replace(/(&quot;)([^&]*?)(&quot;)(\s*:)/g, '<span class="n">"$2"</span>$4').replace(/:\s*(&quot;)([^&]*?)(&quot;)/g, ': <span class="s">"$2"</span>').replace(/\[(&quot;)([^&]*?)(&quot;)\]/g, '[<span class="s">"$2"</span>]');
+  const colour = raw => esc(raw).replace(/(&quot;)([^&]*?)(&quot;)(\s*:)/g, '<span class="n">"$2"</span>$4').replace(/:\s*(&quot;)([^&]*?)(&quot;)/g, ': <span class="s">"$2"</span>').replace(/(&quot;)([^&]*?)(&quot;)/g, '<span class="s">"$2"</span>');
   let cur = /Windows/.test(navigator.userAgent) ? 'win' : /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) ? 'linux' : 'mac';
   const set = c => { cur = c; $$('button', tabs).forEach(b => b.classList.toggle('on', b.dataset.c === c)); code.innerHTML = colour(cfg[c].raw); };
   tabs.addEventListener('click', e => { const b = e.target.closest('button'); if (b) set(b.dataset.c); });

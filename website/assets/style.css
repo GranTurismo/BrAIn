@@ -381,6 +381,25 @@ body.past-hero .scroll-hint { opacity: 0; }
 .term .ok { color: var(--good); } .term .bl { color: var(--bad); font-weight: 600; } .term .dim { color: var(--dim); }
 .term .caret { display: inline-block; width: 8px; height: 15px; background: var(--mint); vertical-align: -2px; animation: blink 1s steps(2) infinite; }
 .agentbar { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--line); background: rgba(255, 255, 255, .03); }
+
+/* terminal & servers: an SSH session, then `brain view` in text mode (the page's real text over colour blocks) */
+.term.cli { height: 380px; }
+.term.cli.viewing { padding: 14px; display: flex; align-items: center; overflow: hidden; }
+.tv { width: 100%; font: clamp(9px, 1.02vw, 12.5px)/1.6 var(--mono); border-radius: 8px; overflow: hidden; border: 1px solid rgba(255, 255, 255, .1);
+  box-shadow: 0 20px 50px -24px rgba(0, 0, 0, .9); animation: pop .45s var(--ease); }
+.tv > div { white-space: pre; overflow: hidden; }
+.tv-tb { background: #1d1916; color: #b9b0a7; padding: 3px 8px; }
+.tv-tab { background: #2c2520; color: #f5f2ef; padding: 0 6px; border-radius: 4px; }
+.tv-url { color: #e8e0d8; }
+.tv-pg { background: #f6f3ee; color: #26211d; padding: 0 10px 8px; }
+.tv-hd { background: linear-gradient(90deg, #ff9a5c, #ff7a9c); color: #1c1410; margin: 0 -10px 6px; padding: 1px 10px; }
+.tv-pg a { color: #1f55d6; text-decoration: underline; text-underline-offset: 2px; }
+.tv-mu, .tv-mu a { color: #857c74; }
+.tv-fld { background: #fff; border: 1px solid #c9c1b8; border-radius: 3px; color: #26211d; }
+.tv-cur { background: #26211d; animation: blink 1s steps(2) infinite; }
+.tv-sb { background: #d8d2cb; color: #1c1814; padding: 0 8px; }
+.tv-ends { display: flex; justify-content: space-between; gap: 2ch; }
+.tv-ends > span { overflow: hidden; text-overflow: clip; }
 .agentbar .st { flex: 1; font-size: 13px; color: var(--mut); display: flex; align-items: center; gap: 9px; }
 .agentbar .led { width: 9px; height: 9px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 10px var(--mint); animation: ledp 1.4s infinite; }
 .agentbar.paused .led { background: var(--warn); box-shadow: 0 0 10px var(--warn); animation: none; }

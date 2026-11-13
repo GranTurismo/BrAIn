@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BrAIn — the browser your AI can actually use</title>
-<meta name="description" content="A desktop browser with an MCP server built in — Rewind page time-travel, a one-keystroke agent kill switch, dev-grade tooling. macOS, Windows &amp; Linux.">
+<meta name="description" content="A desktop browser with an MCP server built in — Rewind page time-travel, a one-keystroke agent kill switch, dev-grade tooling, and a command line that runs it on servers and in any terminal. macOS, Windows &amp; Linux.">
 <meta name="theme-color" content="#0d0b0a">
 <meta name="robots" content="index,follow,max-image-preview:large">
 <meta name="author" content="BrAIn">
@@ -27,7 +27,7 @@
 <meta name="twitter:image:alt" content="BrAIn — a desktop browser with a built-in AI agent, Rewind page time-travel and a human kill switch.">
 <link rel="icon" type="image/png" href="assets/favicon.png?v=2">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=2">
-<link rel="stylesheet" href="assets/style.css?v=4">
+<link rel="stylesheet" href="assets/style.css?v=5">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -75,6 +75,7 @@
     <a href="#agent">Agent</a>
     <a href="#speed">Benchmarks</a>
     <a href="#connect">Connect</a>
+    <a href="#terminal">Terminal</a>
     <a href="#faq">FAQ</a>
     <a href="https://github.com/GranTurismo/BrAIn" rel="noopener">GitHub</a>
   </div>
@@ -415,8 +416,34 @@
       </ul>
     </div>
     <div class="rv" style="--d:.1s">
-      <div class="tabsrow" id="cfgTabs"><button data-c="mac" class="on">macOS</button><button data-c="win">Windows</button><button data-c="linux">Linux</button><button data-c="args">With a start page</button></div>
+      <div class="tabsrow" id="cfgTabs"><button data-c="mac" class="on">macOS</button><button data-c="win">Windows</button><button data-c="linux">Linux</button><button data-c="ssh">Over SSH</button><button data-c="args">With a start page</button></div>
       <div class="snip"><button class="copy" id="cfgCopy">Copy</button><div class="code" id="cfgCode"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TERMINAL & SERVERS ============ -->
+<section id="terminal">
+  <div class="wrap split rev">
+    <div class="card demo rv">
+      <div class="dh"><span class="dots"><i></i><i></i><i></i></span><span>ssh you@server</span><span class="sp"></span><span id="cliMode">a plain terminal</span></div>
+      <div class="term cli" id="cli" aria-live="polite"></div>
+      <div class="agentbar" id="clibar">
+        <span class="st"><span class="led"></span><span id="cliSt">Connected · no display on this machine</span></span>
+        <button class="btn sm" id="cliReplay" title="Replay the session">↻</button>
+      </div>
+    </div>
+    <div class="txt">
+      <span class="eyebrow rv">Terminal &amp; servers</span>
+      <h2 class="rv">No screen? <span class="grad">Still a real browser.</span></h2>
+      <p class="lead rv">The same program is a command line. On a Linux server with no display, BrAIn brings an invisible screen of its own, so the same engine and the same toolbar run there, and <code>brain view</code> puts the whole browser in your terminal over SSH.</p>
+      <ul class="rv">
+        <li><span><b>Every command is a tool call.</b> <code>brain open</code>, <code>read</code>, <code>snap</code>, <code>click 12</code>, <code>type 7 "hi" --enter</code>, <code>shot</code>: the same safety checks and activity log as an agent, with exit codes for your scripts.</span></li>
+        <li><span><b>The whole window, live.</b> Your mouse and keyboard go in as real input, so tabs, the address bar and sign-in popups all work. Only the cells that changed travel over the wire.</span></li>
+        <li><span><b>Pictures where your terminal can, sharp text where it can't.</b> kitty, Ghostty, WezTerm and iTerm2 show the page at full resolution; every other terminal gets the page's own text as real characters over colour blocks.</span></li>
+        <li><span><b>Share it with your agent.</b> Point an MCP client at <code>brain mcp</code> and it drives the browser you are watching, even from your laptop: <code>ssh server brain mcp</code>.</span></li>
+      </ul>
+      <p class="note rv">On the server: install the Linux archive and <code>xvfb</code>, then <code>brain help</code>.</p>
     </div>
   </div>
 </section>
@@ -431,7 +458,7 @@
     <div class="status card rv">
       <div><b><span class="k" style="background:var(--good)"></span>macOS · Apple Silicon</b>Tested every release — per-tab views, Rewind, MCP tools and the benchmark ran here.</div>
       <div><b><span class="k" style="background:var(--warn)"></span>Windows · x64</b>First public build. Per-tab WebView2 views are new — expect rough edges and please report them. Logs: <code>%LOCALAPPDATA%\BrAIn\brain.log</code></div>
-      <div><b><span class="k" style="background:var(--warn)"></span>Linux · x64 &amp; arm64</b>New: the same toolbar, tabs and MCP tools as macOS in a GTK&nbsp;3 window, installed per user with <code>install.sh</code>, self-updating. Tested on Ubuntu 24.04 in a virtual desktop (X11 and Wayland) — real-desktop reports welcome. Logs: <code>BRAIN_LOG=1</code> → <code>~/.local/share/BrAIn/brain.log</code></div>
+      <div><b><span class="k" style="background:var(--warn)"></span>Linux · x64 &amp; arm64</b>New: the same toolbar, tabs and MCP tools as macOS in a GTK&nbsp;3 window, installed per user with <code>install.sh</code>, self-updating. Tested on Ubuntu 24.04 in a virtual desktop (X11 and Wayland) — real-desktop reports welcome. Also runs on servers without a display: <a href="#terminal">from the terminal</a>. Logs: <code>BRAIN_LOG=1</code> → <code>~/.local/share/BrAIn/brain.log</code></div>
       <div><b><span class="k" style="background:var(--dim)"></span>Not yet</b>Intel Macs and ARM Windows. macOS and Windows builds are <b style="color:var(--ink)">unsigned</b> for now (see steps above).</div>
     </div>
   </div>
@@ -448,6 +475,7 @@
       <details><summary>Does BrAIn send data anywhere?</summary><div class="ans"><p>There is no telemetry or analytics. The only call BrAIn makes on its own is the self-updater asking GitHub for the latest release (and downloading it, SHA-256 verified, when you accept). Otherwise it talks to the sites you visit, to your MCP client over stdio, and to a local Ollama server if you use the built-in agent. Whatever your AI client does with tool results is governed by that client.</p></div></details>
       <details><summary>Why does my OS warn me about the installer?</summary><div class="ans"><p>The builds are not code-signed yet (that needs a paid certificate on each platform). Verify the SHA-256 on this page, then: on macOS right-click the app → Open (or <code>xattr -dr com.apple.quarantine /Applications/BrAIn.app</code>); on Windows choose <b>More info → Run anyway</b> in SmartScreen. Linux has no such warning: unpack the archive and run <code>install.sh</code>.</p></div></details>
       <details><summary>Can I use it as my daily browser?</summary><div class="ans"><p>It has the daily-driver basics — tabs, bookmarks, history, autocomplete, downloads, private tabs, password vault, import, PiP, find, zoom, print, session restore. It does not have an extension store or sync. Try it for a week and tell us what's missing.</p></div></details>
+      <details><summary>Can I use it on a server, or from a terminal?</summary><div class="ans"><p>Yes. The program is also a command line: <code>brain open</code>, <code>read</code>, <code>snap</code>, <code>click</code>, <code>type</code>, <code>shot</code> and more drive the running browser and start one when none is running. On a Linux server without a display it brings its own invisible screen (install <code>xvfb</code>), keeps running after you log out, and <code>brain view</code> shows it live in your terminal: full pictures in kitty, Ghostty, WezTerm and iTerm2, the page's text as real characters everywhere else. On macOS the commands work against the app (everything but <code>view</code>). Sites that challenge data-centre addresses still do; you solve those yourself in the view.</p></div></details>
       <details><summary>Does it run on Linux — and what if the window is blank?</summary><div class="ans"><p>Yes: x64 and arm64, on X11 and Wayland, with the same toolbar, tabs and MCP tools as on macOS. It needs GTK&nbsp;3 and WebKitGTK&nbsp;4.1 (<code>libwebkit2gtk-4.1-0 libgtk-3-0 libnotify4 libsecret-1-0</code> on Debian and Ubuntu). <code>install.sh</code> in the archive installs it for you alone, without root, and the app then updates itself. If the window comes up blank or black (seen with some NVIDIA setups), start it with <code>WEBKIT_DISABLE_DMABUF_RENDERER=1 brain</code>; if something misbehaves on Wayland, <code>GDK_BACKEND=x11 brain</code> runs it through XWayland. Linux is new, so please report what you find.</p></div></details>
     </div>
   </div>
@@ -466,6 +494,6 @@
   </div>
 </footer>
 <div id="toast" role="status"></div>
-<script src="assets/app.js?v=5"></script>
+<script src="assets/app.js?v=6"></script>
 </body>
 </html>
