@@ -488,6 +488,8 @@ public sealed partial class BrowserController : IAsyncDisposable
                 _rwAgent = root.TryGetProperty("rwa", out var rwa) && rwa.ValueKind == JsonValueKind.True;
                 // Ghost mode itself is never remembered; this preference (cookies & logins in ghost tabs) is.
                 _ghostLogins = root.TryGetProperty("ghl", out var ghl) && ghl.ValueKind == JsonValueKind.True;
+                // Full control is remembered only when the user chose "never" in its warning.
+                LoadFullControlPref(root);
                 if (root.TryGetProperty("rwk", out var rwk) && rwk.ValueKind == JsonValueKind.Number) _rwKeepMin = rwk.GetInt32();
                 if (root.TryGetProperty("rwm", out var rwm) && rwm.ValueKind == JsonValueKind.Number) _rwMaxMb = rwm.GetInt32();
                 if (root.TryGetProperty("rws", out var rws) && rws.ValueKind == JsonValueKind.Array)
@@ -3187,6 +3189,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             tbh = _tbHide, tbx = _tbExtra,
             rw = _rwOn, rwa = _rwAgent, rwk = _rwKeepMin, rwm = _rwMaxMb, rws = RwSkipList(),
             ghl = _ghostLogins,
+            fcr = _fcRemember,
             keys = _keyBinds,
             welcomed = _welcomed,
             qca = qc.All, qcs = qc.Sites,

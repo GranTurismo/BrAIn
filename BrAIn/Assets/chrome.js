@@ -1545,7 +1545,7 @@
     var beltAskId = '', beltAsked = false;
     var BELT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 8.3-8 9-4.8-.7-8-4.5-8-9V6z"/><path d="M12 8v5"/><circle cx="12" cy="16" r=".6"/></svg>';
     function beltLabel() {
-        if (state.fc && state.fc.on) return 'Agent asks before risky actions: off (full control)';
+        if (state.fc && state.fc.on) return 'Agent asks before risky actions: off (full control' + (state.fc.always ? ', always' : '') + ')';
         return 'Agent asks before risky actions: ' + ((state.belt && state.belt.mode === 'auto') ? 'off' : 'on');
     }
     function toggleBelt() { send('beltmode:' + ((state.belt && state.belt.mode === 'auto') ? 'ask' : 'auto')); }
@@ -1976,8 +1976,11 @@
     // scripts and flows active at once, Ghost mode switchable). Turning it on goes through this
     // warning; while it is on a red pill in the toolbar counts down and turns it off in one click.
     // {fc:{on, until}} rides the b:9 state (until: unix ms, 0 = when BrAIn closes).
+    // fcMins: minutes until it turns off, 0 = when BrAIn closes, 'always' = never (remembered across launches)
     var fcMins = 60;
     function fcOn() { return !!(state.fc && state.fc.on); }
+    function fcAlways() { return !!(state.fc && state.fc.on && state.fc.always); }
+    function fcMenuLabel() { return fcAlways() ? 'Turn off full control (always on)' : fcOn() ? 'Turn off full control' : 'Full control mode\u2026'; }
     // "Every website becomes an API": learn the site in the active tab, review what was learned in about:apis.
     function apiLearnLabel() {
         var a = state.api;
@@ -2004,15 +2007,17 @@
         bar.classList.toggle('fc', fcOn());
         if (fcOn()) closeFc(sh);
         var left = fcLeft(), t = sh.getElementById('fcleft');
-        if (t) t.textContent = left ? '· ' + left : '';
-        pill.title = 'Full control is on' + (left ? ' (' + left + ' left)' : ' until BrAIn closes') +
-            ' — an AI agent can act without asking. Click to turn it off.';
+        if (t) t.textContent = fcAlways() ? '\u00b7 always' : left ? '\u00b7 ' + left : '';
+        pill.title = fcAlways()
+            ? 'Full control is always on (it starts on every time BrAIn opens) \u2014 an AI agent can act without asking. Click to turn it off and stop remembering it.'
+            : 'Full control is on' + (left ? ' (' + left + ' left)' : ' until BrAIn closes') +
+              ' \u2014 an AI agent can act without asking. Click to turn it off.';
     }
     function fcHtml() {
-        var seg = [[15, 'after 15 min'], [60, 'after 1 hour'], [0, 'when BrAIn closes']].map(function (d) {
+        var seg = [[15, 'after 15 min'], [60, 'after 1 hour'], [0, 'when BrAIn closes'], ['always', 'never']].map(function (d) {
             return '<span data-m="' + d[0] + '"' + (d[0] === fcMins ? ' class="on"' : '') + '>' + d[1] + '</span>';
         }).join('');
-        return '<div class="fcbox" role="alertdialog" aria-modal="true" aria-labelledby="fct" aria-describedby="fcd">' +
+        return '<div class="fcbox' + (fcMins === 'always' ? ' alw' : '') + '" role="alertdialog" aria-modal="true" aria-labelledby="fct" aria-describedby="fcd">' +
             '<div class="fchd"><span class="fcic">' + SVG.warn + '</span><div><h3 id="fct">Give the AI agent full control?</h3>' +
             '<p id="fcd">Any AI agent connected to BrAIn over MCP will act as you &mdash; <b>without asking first</b>.</p></div></div>' +
             '<ul class="fcl">' +
@@ -2025,6 +2030,8 @@
             'Only turn this on for a task you started, with an agent you trust.</div>' +
             '<div class="fcsafe">' + SVG.lock + '<span>Still protected: saved passwords are never shared with agents. You can pause or stop the agent from the toolbar at any time, and every action is recorded in Flows &amp; activity.</span></div>' +
             '<div class="fcdur"><span>Turn it off</span><div class="fcseg">' + seg + '</div></div>' +
+            '<div class="fcalw"><b>Never</b> means it is remembered: full control is on again every time BrAIn starts, and an agent can act without asking from the first moment. ' +
+            'You can still turn it off any time from the red pill in the toolbar or the \u22ee menu, and that also forgets it.</div>' +
             '<label class="fcok"><input type="checkbox" id="fcchk"> I understand the agent can act as me without asking</label>' +
             '<div class="fcerr" role="alert"></div>' +
             '<div class="fcbtns"><button class="fcno" type="button">Cancel</button><button class="fcgo" type="button" disabled>Turn on full control</button></div></div>';
@@ -2078,8 +2085,10 @@
             var t = e.target; if (!t || !t.closest) return;
             var seg = t.closest('[data-m]');
             if (seg) {
-                fcMins = +seg.getAttribute('data-m');
+                var mv = seg.getAttribute('data-m');
+                fcMins = mv === 'always' ? 'always' : +mv;
                 Array.prototype.forEach.call(d.querySelectorAll('[data-m]'), function (x) { x.classList.toggle('on', x === seg); });
+                var fb = d.querySelector('.fcbox'); if (fb) fb.classList.toggle('alw', fcMins === 'always');
                 return;
             }
             if (t.closest('.fcno')) { closeFc(sh); return; }
@@ -2363,7 +2372,7 @@
                 ['apis', 'Site APIs', apiBadge()],
                 ['belt', beltLabel(), ''],
                 ['uploadscope', uploadLabel(), ''],
-                ['fullctl', fcOn() ? 'Turn off full control' : 'Full control mode\u2026', ''],
+                ['fullctl', fcMenuLabel(), ''],
             ]],
             ['Library', [
                 ['history', 'History', 'Ctrl+H'],
@@ -2766,7 +2775,7 @@
             ['closeothers', 'Close other tabs', 'close all tabs except this one', IS_MAC ? '\u2303\u2325W' : 'Ctrl+Alt+W'],
             ['personality', 'Personality', 'personality breaking features site scripts mcp labs', ''],
             ['roadmap', 'Planned features', 'planned features roadmap coming soon future upcoming session hub swarm bodyguard goals', ''],
-            ['fullctl', fcOn() ? 'Turn off full control' : 'Full control mode\u2026', 'full control ai agent mcp autonomous no confirmation seatbelt off drive', ''],
+            ['fullctl', fcMenuLabel(), 'full control ai agent mcp autonomous no confirmation seatbelt off drive always remember', ''],
             ['agcancel', 'Cancel AI agent (stop and discard)', 'cancel stop kill abort ai agent task reject', ''],
             ['ollama', 'Ollama agent', 'ollama local llm ai agent chat model', ''],
             ['history', 'Open history', 'browsing history visited', IS_MAC ? '\u2318H' : 'Ctrl+H'],
@@ -6660,6 +6669,8 @@
             '#fcdlg .fcseg span{padding:5px 10px;border-radius:7px;color:#b0a9a2;font-weight:600;font-size:12px;cursor:pointer;white-space:nowrap}' +
             '#fcdlg .fcseg span:hover{color:#fff}' +
             '#fcdlg .fcseg span.on{background:rgba(255,255,255,.1);color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}' +
+            '#fcdlg .fcalw{display:none;padding:9px 12px;border-radius:11px;background:rgba(255,77,90,.09);border:1px solid rgba(255,107,107,.25);color:#e6c9c5;font-size:12px;margin:-2px 0 12px}' +
+            '#fcdlg .fcalw b{color:#ffb4ae}#fcdlg .fcbox.alw .fcalw{display:block}' +
             '#fcdlg .fcok{display:flex;gap:9px;align-items:center;color:#e4ded9;font-weight:500;cursor:pointer;margin-bottom:16px;user-select:none}' +
             '#fcdlg .fcok input{width:16px;height:16px;accent-color:#ff4d5a;margin:0;cursor:pointer}' +
             '#fcdlg .fcerr{color:#ff9d97;font-size:12px;margin:-6px 0 12px}#fcdlg .fcerr:empty{display:none}' +

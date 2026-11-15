@@ -2,6 +2,17 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.11.0 — 2026-11-15
+
+**Scope:** new on **every platform** (macOS, Windows, Linux): the toolbar and the code behind it are shared.
+
+### Added
+- **Full control can be remembered** — the warning's *Turn it off* row has a new choice, **never**. Pick it and full
+  control is on again every time BrAIn starts, until you turn it off: the red toolbar pill then says *always*, and
+  turning full control off (the pill or ⋮ → AI agent → *Turn off full control*) forgets it. Only you can choose it, from
+  the toolbar warning; no MCP tool can switch full control on or make it stay on. The other three choices behave as
+  before and are still not remembered.
+
 ## 1.10.1 — 2026-11-13
 
 ### Fixed
