@@ -112,6 +112,9 @@ internal static partial class WkTabs
 
     internal static bool Has(IntPtr view) => view != IntPtr.Zero && _views.ContainsKey(view);
 
+    /// <summary>A private or Ghost view: it neither reads nor writes remembered site permissions.</summary>
+    internal static bool IsPrivateView(IntPtr view) => _views.TryGetValue(view, out var i) && i.Private;
+
     // ------------------------------------------------------------------ messages
 
     private static void OnScriptMessage(IntPtr self, IntPtr sel, IntPtr controller, IntPtr message)

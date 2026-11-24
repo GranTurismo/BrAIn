@@ -2,6 +2,38 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.12.0 — 2026-11-24
+
+**Scope:** **macOS** and **Linux** get the camera / microphone memory; **every platform** (macOS, Windows, Linux) gets the
+autofill menu and the login + password suggestions, because the toolbar code is shared. **Windows:** its web engine already
+keeps camera / microphone answers, so nothing changes there for that part.
+
+### Fixed
+- **Camera and microphone are asked once per site, not at every call.** On macOS the web engine's own question came
+  back at every page load, so a video-call site asked again for each call. BrAIn now asks itself — *Allow* or
+  *Don't Allow*, with **Remember my choice for this site** ticked — and the same site gets the same answer, also after
+  a restart, without a question. Quick controls (the sliders button) shows the remembered answer for the current site
+  with a **Reset** link that makes it ask again. Private tabs and Ghost mode always ask and remember nothing.
+  On Linux an *Allow* is now remembered across restarts too (a *Block* still holds until BrAIn closes).
+  macOS' own camera / microphone switch (System Settings → Privacy & Security) still applies on top.
+
+### Added
+- **Autofill on right-click.** Right-click a login form's username / e-mail / phone box or its password box (or the page
+  itself) and the menu lists **Autofill as …** for every login saved for that site; the page menu does the same when it
+  has a login form. It goes through the same unlock (Touch ID / account password) as the dropdown. With nothing saved
+  the menu says so instead of staying silent.
+- **Strong password suggestion.** Clicking a *new password* field (sign-up, change password, `autocomplete="new-password"`,
+  password + confirm) offers **Suggest strong password** with the password it will fill in, shown in the dropdown; one
+  click fills it (and the confirmation box), and BrAIn then offers to save it when the form is sent. Login fields keep
+  showing the saved logins instead.
+- **Login + password suggestions on sign-up forms.** The empty login box of a sign-up form offers **Suggest email &
+  strong password** (or *phone number*, or *username*, to match the box). One click lists the logins you already use
+  elsewhere that fit — e-mail addresses for an e-mail box, phone numbers for a phone box, usernames first for a
+  username box — and picking one fills the login and the password (and its confirmation) together. BrAIn never invents
+  an address or a number: with nothing saved of that kind it says so and offers the strong password alone. The web page
+  is only shown a masked label for each suggestion (`a•••@example.com`, `+••• ••• •• 34 56`) and learns the full value
+  of the one you pick, nothing else. Not offered in private tabs or Ghost mode, and never into a search box.
+
 ## 1.11.0 — 2026-11-15
 
 **Scope:** new on **every platform** (macOS, Windows, Linux): the toolbar and the code behind it are shared.

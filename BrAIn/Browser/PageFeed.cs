@@ -13,9 +13,9 @@ namespace BrAIn.Browser;
 internal static class PageFeed
 {
     /// <summary>The push kinds ({"b":N,...}) the page-side copy of chrome.js consumes for a web page: the DevTools panel (10-15), field and
-    /// password helpers (22-26), the agent and recorder overlays (40, 48), commands for the page UI (60), Rewind (71-74), quick controls (97),
+    /// password helpers (22-26, 28), the agent and recorder overlays (40, 48), commands for the page UI (60), Rewind (71-74), quick controls (97),
     /// toasts (98, 102), and the reduced state (9).</summary>
-    private static readonly HashSet<int> Allowed = new() { 9, 10, 11, 12, 13, 14, 15, 22, 23, 24, 26, 40, 48, 60, 71, 72, 73, 74, 97, 98, 102 };
+    private static readonly HashSet<int> Allowed = new() { 9, 10, 11, 12, 13, 14, 15, 22, 23, 24, 26, 28, 40, 48, 60, 71, 72, 73, 74, 97, 98, 102 };
 
     /// <summary>State fields that describe the user's browsing rather than this page.</summary>
     private static readonly string[] StateDrop = { "hist", "bmarks", "sess", "keys", "sel", "rws", "tbh", "tbx", "us", "api" };

@@ -1107,6 +1107,8 @@
             items.push(null);
         }
         if (hasSel) { items.push(['copy', 'Copy']); items.push(['mdsel', 'Copy as Markdown']); items.push(null); }
+        var afForm = pwFields()[0] || null;   // a login form on the page: its saved logins are one click away
+        if (afForm && pwCreds && pwCreds.length) { pwAutofillItems().forEach(function (it) { items.push(it); }); items.push(null); }
         items.push(['back', 'Back']);
         items.push(['forward', 'Forward']);
         items.push(['reload', 'Reload']);
@@ -1146,6 +1148,7 @@
                 else if (c === 'help') send('newtab:about:help');
                 else if (c === 'newprivtab') openNewTab(true);
                 else if (c === 'inspect') inspectEl(sh, pgMenuTarget);
+                else if (c.indexOf('af:') === 0) pwAutofill(afForm, +c.slice(3));
                 else send(c); // back/forward/reload
             });
         });
@@ -1245,13 +1248,38 @@
         }).catch(function () { mdToast('Couldn\u2019t read that image', true); });
     }
 
-    // Right-click menu for password fields — generated-password fill plus
-    // the editing essentials the native menu would have shown.
+    // Menu rows that fill a saved login: one per saved username for this site (ids are indexes into pwCreds — the
+    // password itself only travels after the unlock prompt, see pwAutofill).
+    function pwAutofillItems() {
+        var out = [];
+        if (!pwCreds || !pwCreds.length) { out.push(['afnone', 'Autofill \u2014 no saved logins for this site', 'dis']); return out; }
+        for (var i = 0; i < pwCreds.length && i < 6; i++)
+            out.push(['af:' + i, pwCreds.length === 1 && !pwCreds[i].u ? 'Autofill saved login' : 'Autofill as ' + (pwCreds[i].u || '(no username)'), 'ac']);
+        return out;
+    }
+    function pwAutofill(field, i) {
+        var c = pwCreds && pwCreds[i];
+        if (!field || !c) return;
+        pwFillField = field;
+        send('pwfill:' + c.id);
+    }
+    // a username / e-mail box that belongs to a login form (its password field sits in the same form)
+    function pwIsLoginUser(f) {
+        if (!f || !f.matches || !f.matches(PW_USER_SEL) || f.matches(PW_SEL)) return false;
+        var pw = pwPartnerFor(f);
+        return !!pw && pwUserFor(pw) === f;
+    }
+
+    // Right-click menu for login fields (password, and the username beside it) — autofill, generated-password fill
+    // plus the editing essentials the native menu would have shown.
     function showPwMenu(sh, x, y, el) {
         var m = sh.getElementById('pmenu');
         pgMenuTarget = el;
-        var items = [
-            ['genpw', 'Insert generated password', 'ac'],
+        hidePwDrop(sh); // right-clicking the field focused it: its login list must not sit under (and steal clicks from) this menu
+        var isPw = el.matches && el.matches(PW_SEL);
+        var items = pwAutofillItems();
+        if (isPw) items.push(['genpw', 'Insert generated password', 'ac']);
+        items = items.concat([
             null,
             ['cut', 'Cut'],
             ['copy', 'Copy'],
@@ -1259,7 +1287,7 @@
             null,
             ['pwmgr', 'Manage passwords…'],
             ['inspect', 'Inspect element', 'ac'],
-        ];
+        ]);
         var html = '';
         for (var i = 0; i < items.length; i++)
             html += items[i] === null ? '<div class="msep"></div>' :
@@ -1274,7 +1302,9 @@
                 e.preventDefault(); e.stopPropagation();
                 m.style.display = 'none';
                 var c = it.getAttribute('data-c');
-                if (c === 'genpw') fillGeneratedPassword(el);
+                if (c === 'afnone') return;
+                if (c.indexOf('af:') === 0) pwAutofill(el, +c.slice(3));
+                else if (c === 'genpw') fillGeneratedPassword(el);
                 else if (c === 'cut' || c === 'copy') { el.focus(); try { document.execCommand(c); } catch (e2) { } }
                 else if (c === 'paste') { el.focus(); send('clipread'); }
                 else if (c === 'pwmgr') send('navigate:about:passwords');
@@ -1316,9 +1346,9 @@
         try { el.setSelectionRange(s + txt.length, s + txt.length); } catch (e3) { }
     }
 
-    function fillGeneratedPassword(el) {
+    function fillGeneratedPassword(el, suggested) {
         if (!el) return;
-        var pw = genPassword();
+        var pw = suggested || genPassword();
         setFieldValue(el, pw);
         // A single sibling password field is almost always "confirm".
         var f = el.form;
@@ -1417,7 +1447,8 @@
     }
 
     var PW_USER_SEL = 'input[type="text"],input[type="email"],input[type="tel"],' +
-        'input:not([type]),input[autocomplete~="username"],input[autocomplete~="email"]';
+        'input:not([type]),input[autocomplete~="username"],input[autocomplete~="email"],' +
+        'input[autocomplete~="tel"],input[autocomplete~="tel-national"]';
 
     // Username partner = the closest visible text-ish input before the
     // password field inside its form (or the document when formless).
@@ -1486,8 +1517,53 @@
         d.style.display = 'block';
     }
 
+    // A field where the user is choosing a password (sign-up, change password) rather than entering one.
+    function pwIsNewField(t) {
+        if (!t || !t.matches || !t.matches(PW_SEL) || t.matches('[autocomplete~="current-password"]')) return false;
+        if (t.matches('[autocomplete~="new-password"]')) return true;
+        var hint = ((t.name || '') + ' ' + (t.id || '') + ' ' + (t.placeholder || '') + ' ' + (t.getAttribute('aria-label') || '')).toLowerCase();
+        if (/current|old|existing/.test(hint)) return false;
+        if (/new|create|choose|confirm|repeat|retype|re-?enter|sign.?up|regist/.test(hint)) return true;
+        if (!t.form) return false;
+        var all = [].slice.call(t.form.querySelectorAll(PW_SEL)).filter(pwVisible);
+        var at = all.indexOf(t);
+        // password + confirmation, or current + new + confirmation (the first one is the current password)
+        return at >= 0 && all.length >= 2 && !(all.length >= 3 && at === 0);
+    }
+
+    // What a sign-up form's login box wants: an e-mail address, a phone number or a plain username. The host offers the
+    // logins the user already has that fit.
+    function pwKind(f) {
+        var h = ((f.type || '') + ' ' + (f.name || '') + ' ' + (f.id || '') + ' ' + (f.placeholder || '') + ' ' +
+            (f.getAttribute('aria-label') || '') + ' ' + (f.getAttribute('autocomplete') || '') + ' ' + (f.getAttribute('inputmode') || '')).toLowerCase();
+        if (f.type === 'email' || /e-?mail/.test(h)) return 'email';
+        if (f.type === 'tel' || /\btel\b|tel-|phone|mobile|msisdn/.test(h)) return 'phone';
+        return 'username';
+    }
+    var PW_KIND_LABEL = { email: 'email', phone: 'phone number', username: 'username' };
+    // The login box that belongs to a password field: the same <form>, or — on pages without forms — a box sharing a small
+    // container with it. A search box never counts: suggestions must not land in the wrong field.
+    function pwLoginBox(pw) {
+        var uf = pwUserFor(pw);
+        if (!uf || uf.type === 'search' ||
+            /search|query|find/i.test((uf.name || '') + ' ' + (uf.id || '') + ' ' + (uf.placeholder || '') + ' ' + (uf.getAttribute('aria-label') || ''))) return null;
+        if (pw.form || uf.form) return pw.form === uf.form ? uf : null;
+        for (var a = pw.parentElement, n = 0; a && n < 5; a = a.parentElement, n++)
+            if (a.contains(uf)) return a.querySelectorAll('input').length <= 8 ? uf : null;
+        return null;
+    }
+    // The login box of a SIGN-UP form (the box beside a new-password field) — returns that password field.
+    function pwSignupUser(f) {
+        if (!f || !f.matches || f.matches(PW_SEL) || !f.matches(PW_USER_SEL)) return null;
+        var pw = pwPartnerFor(f);
+        return pw && pwLoginBox(pw) === f && pwIsNewField(pw) ? pw : null;
+    }
+
+    var pwSuggestion = '', pwSuggestFor = null, pwSuggestOn = false, pwIdentCtx = null;
     function showPwDrop(sh, field) {
         var d = sh.getElementById('pwfill');
+        if (pwIsNewField(field) || pwSignupUser(field)) { showPwSuggest(sh, d, field); return; }
+        pwSuggestOn = false;
         if (!pwCreds || !pwCreds.length || !pwPartnerFor(field)) { hidePwDrop(sh); return; }
         pwDropFor = field;
         var html = '';
@@ -1509,6 +1585,86 @@
                 if (mgr) { send('navigate:about:passwords'); return; }
                 // Pick → host authenticates (Touch ID / PIN) then b:26 fills.
                 if (c) { pwFillField = field; send('pwfill:' + c.id); }
+            });
+        });
+    }
+
+    // "Suggest strong password": what is shown is exactly what gets filled in (and, when the form is sent, offered for saving).
+    function showPwSuggest(sh, d, field) {
+        var isPw = field.matches(PW_SEL);
+        var pw = isPw ? field : pwSignupUser(field);
+        var uf = pw ? (isPw ? pwLoginBox(pw) : field) : null;
+        var both = !!(uf && !uf.value);   // an empty login box beside it: a login can be suggested too
+        if (!pw || (!isPw && !both) || (isPw && field.value)) { hidePwDrop(sh); return; }   // nothing to suggest into a filled box
+        if (pwSuggestFor !== pw || !pwSuggestion) pwSuggestion = genPassword();
+        pwSuggestFor = pw;
+        pwSuggestOn = true;
+        pwDropFor = field;
+        var kind = both ? pwKind(uf) : '';
+        var html = '';
+        if (both) html += '<div class="mi" data-both="1"><span class="u">' + SVG.key + 'Suggest ' + PW_KIND_LABEL[kind] + ' &amp; strong password</span>' +
+            '<span class="h">' + esc(pwSuggestion) + '</span></div>';
+        if (isPw) html += '<div class="mi" data-gen="1"><span class="u">' + SVG.key + 'Suggest strong password</span>' +
+            '<span class="h">' + esc(pwSuggestion) + '</span></div>';
+        html += '<div class="mi mft" data-mgr="1"><span class="u">Manage passwords\u2026</span></div>';
+        d.innerHTML = H(html);
+        d.style.minWidth = Math.min(280, Math.max(210, field.getBoundingClientRect().width)) + 'px';
+        positionPwDrop(sh);
+        d.querySelectorAll('.mi').forEach(function (it) {
+            it.addEventListener('mousedown', function (e) {
+                e.preventDefault(); e.stopPropagation();
+                hidePwDrop(sh);
+                if (it.getAttribute('data-mgr')) { send('navigate:about:passwords'); return; }
+                if (it.getAttribute('data-both')) {
+                    // a real click asks the host for logins that fit this box; it answers with masked labels (b:28)
+                    pwIdentCtx = { uf: uf, pw: pw, sug: pwSuggestion, kind: kind, listed: false };
+                    send('pwident:' + kind);
+                    var ctx = pwIdentCtx;
+                    setTimeout(function () { if (pwIdentCtx === ctx && !ctx.listed) onPwIdent(sh0(), { kind: kind, items: [] }); }, 1500);
+                    return;
+                }
+                fillGeneratedPassword(pw, pwSuggestion);
+                pwSuggestion = '';
+            });
+        });
+    }
+
+    // b:28 — the host's answer to "pwident": a list of MASKED suggestions (the page is never sent the others in full), then,
+    // for the one that was clicked, its real value to fill in.
+    function onPwIdent(sh, j) {
+        var c = pwIdentCtx;
+        if (!sh || !c || !c.uf || !c.uf.isConnected || !c.pw || !c.pw.isConnected) { pwIdentCtx = null; return; }
+        if (typeof j.u === 'string') {
+            pwIdentCtx = null;
+            setFieldValue(c.uf, j.u);
+            fillGeneratedPassword(c.pw, c.sug);
+            pwSuggestion = '';
+            return;
+        }
+        if (c.listed || j.kind !== c.kind) return;
+        c.listed = true;
+        var items = j.items || [], d = sh.getElementById('pwfill');
+        pwSuggestOn = true;
+        pwDropFor = c.uf;
+        var html = '';
+        for (var i = 0; i < items.length; i++)
+            html += '<div class="mi" data-pick="' + i + '"><span class="u">' + SVG.key + esc(items[i]) + '</span>' +
+                '<span class="h">with the strong password</span></div>';
+        if (!items.length) html += '<div class="mi dis"><span class="u">No saved ' + PW_KIND_LABEL[c.kind] + ' to suggest</span></div>';
+        html += '<div class="mi mft" data-gen="1"><span class="u">Strong password only</span></div>';
+        d.innerHTML = H(html);
+        d.style.minWidth = Math.min(280, Math.max(210, c.uf.getBoundingClientRect().width)) + 'px';
+        positionPwDrop(sh);
+        d.querySelectorAll('.mi').forEach(function (it) {
+            it.addEventListener('mousedown', function (e) {
+                e.preventDefault(); e.stopPropagation();
+                if (it.classList.contains('dis')) return;
+                hidePwDrop(sh);
+                var pick = it.getAttribute('data-pick');
+                if (pick !== null) { send('pwidentpick:' + pick); return; }   // the host answers with the full value
+                pwIdentCtx = null;
+                fillGeneratedPassword(c.pw, c.sug);
+                pwSuggestion = '';
             });
         });
     }
@@ -1728,7 +1884,9 @@
             if (!t || !t.matches) { hidePwDrop(sh); return; }
             var isPw = t.matches(PW_SEL);
             if (isPw) maybePwFetch();
-            if ((isPw || t.matches(PW_USER_SEL)) && pwCreds && pwCreds.length && pwPartnerFor(t))
+            if (isPw && pwIsNewField(t)) showPwDrop(sh, t);
+            else if (!isPw && pwSignupUser(t)) showPwDrop(sh, t);
+            else if ((isPw || t.matches(PW_USER_SEL)) && pwCreds && pwCreds.length && pwPartnerFor(t))
                 showPwDrop(sh, t);
             else hidePwDrop(sh);
         }, true);
@@ -1747,6 +1905,9 @@
         });
         rawOn(document, 'keydown', function (e) {
             if (e.key === 'Escape') { var sh = sh0(); if (sh) hidePwDrop(sh); }
+        }, true);
+        rawOn(document, 'input', function (e) {
+            if (pwSuggestOn && e.isTrusted && e.target === pwDropFor) { var sh = sh0(); if (sh) hidePwDrop(sh); }
         }, true);
         rawOn(document, 'mousedown', function (e) {
             var t = e.target;
@@ -1798,7 +1959,14 @@
             showPwMenu(sh, e.clientX, e.clientY, pw);
             return;
         }
-        // editable fields keep the native editing menu
+        // the username / e-mail box of a login form gets the same menu, so autofill is one right-click away there too
+        var uf = t && t.closest ? t.closest(PW_USER_SEL) : null;
+        if (uf && pwIsLoginUser(uf)) {
+            e.preventDefault(); e.stopPropagation();
+            showPwMenu(sh, e.clientX, e.clientY, uf);
+            return;
+        }
+        // other editable fields keep the native editing menu
         if (t && t.closest && t.closest('input,textarea,[contenteditable="true"],[contenteditable=""]')) return;
         e.preventDefault(); e.stopPropagation();
         var a = t && t.closest ? t.closest('a[href]') : null;
@@ -2163,6 +2331,9 @@
                 (reset ? ' · <u data-qx="' + id + '">Reset</u>' : '') +
                 (pop ? ' · <u data-qpop="1">Open last</u>' : '') + '</span></div><i class="qsw"></i></div>';
         });
+        if (q.perm && q.site)   // a remembered camera / microphone answer for this site
+            html += '<div class="qperm"><i class="qi"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="4" width="9" height="8" rx="2"/><path d="M10.5 7 14.5 5v6l-4-2"/></svg></i><div class="qt"><b>Camera &amp; microphone</b><span>' +
+                (q.perm === 'block' ? 'Blocked' : 'Allowed') + ' for ' + esc(q.site) + ' \u00b7 <u data-qpx="1">Reset</u></span></div></div>';
         var own = q[S] || {};
         if (QC.some(function (r) { return qcHas(own, r[0]); }))
             html += '<div class="qfoot"><span data-qclr="1">' + (S === 't' ? 'Reset this tab' : S === 's' ? 'Reset this site' : 'Turn all off') + '</span></div>';
@@ -2199,6 +2370,7 @@
             var S = qcScope, mine = q[S] = q[S] || {};
             // local edits are optimistic: the host's next state push confirms them
             if (t.closest('[data-qpop]')) { m.classList.remove('on'); send('qcpop'); return; }
+            if (t.closest('[data-qpx]')) { q.perm = null; send('permforget'); fillQc(sh, m); return; }
             if (t.closest('[data-qclr]')) { q[S] = {}; send('qcreset:' + S); paintQc(sh); return; }
             var x = t.closest('[data-qx]');
             if (x) { delete mine[x.getAttribute('data-qx')]; send('qcset:' + S + ':' + x.getAttribute('data-qx') + ':x'); paintQc(sh); return; }
@@ -6235,6 +6407,7 @@
             '.mi{padding:7px 12px;border-radius:8px;color:#d7d2ce;cursor:pointer;transition:background .1s,color .1s}' +
             '.mi:hover{background:hsl(var(--h) 100% 74% / .18);color:#fff}' +
             '.mi.ac{color:hsl(var(--h) 100% 83%);font-weight:600}' +
+            '.mi.dis{color:#8c857e;cursor:default;font-weight:400}.mi.dis:hover{background:none;color:#8c857e}' +
             '.mi.ac:hover{background:hsl(var(--h) 100% 70% / .3);color:#fff}' +
             '#pweye{position:fixed;display:none;place-items:center;padding:0;border:0;border-radius:50%;' +
             'background:transparent;color:#9e9892;cursor:pointer;z-index:29;' +
@@ -6710,6 +6883,7 @@
             '#qcmenu .qsw::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .16s}' +
             '#qcmenu .qr.on .qsw{background:hsl(var(--h) 80% 62%)}#qcmenu .qr.on .qsw::after{transform:translateX(12px)}' +
             '#qcmenu .qr.inh .qsw{opacity:.55}' +
+            '#qcmenu .qperm{display:flex;align-items:center;gap:10px;padding:8px 8px 4px;margin-top:4px;border-top:1px solid rgba(255,255,255,.07)}' +
             '#qcmenu .qfoot{margin-top:4px;padding:7px 8px 2px;border-top:1px solid rgba(255,255,255,.07);color:#908a84;font-size:11px;text-align:right}' +
             '#qcmenu .qfoot span{cursor:pointer}#qcmenu .qfoot span:hover{color:#fff}' +
             // dark pages: the page is inverted, so our own page-level UI is inverted back
@@ -8134,6 +8308,8 @@
                         showPwSave(sh, j.o, j.u, j.p);
                     } else if (j && j.b === 26) {
                         onPwFill(sh, j);
+                    } else if (j && j.b === 28) {
+                        onPwIdent(sh, j);
                     } else if (j && j.b === 71) {
                         onRwList(sh, j);
                     } else if (j && j.b === 72) {

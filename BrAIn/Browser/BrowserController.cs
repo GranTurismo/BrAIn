@@ -413,6 +413,7 @@ public sealed partial class BrowserController : IAsyncDisposable
         _storeDir = Path.GetDirectoryName(_userDataDir)!;
         Directory.CreateDirectory(_userDataDir);
         _pw = new PasswordStore(_storeDir);
+        SitePermissions.Init(_storeDir);
         Activity = new BrAIn.Mcp.ActivityLog(_storeDir);
         _favicons = new FaviconCache(_storeDir);
         _favicons.Changed += () => { try { PushChromeStateAll(); } catch { } };
@@ -941,6 +942,7 @@ public sealed partial class BrowserController : IAsyncDisposable
             first.MacWindowNumber = number;
             NativeShell.PopupOnNewTab = url => _ = Task.Run(() => NewTabAsync(url, default));
             NativeShell.PopupLog = Log;
+            if (OperatingSystem.IsMacOS()) { Mac.WkPermissions.GrantAll = _grantPermissions; Mac.WkPermissions.Log = Log; }
             NativeShell.PopupBlocks = (view, openerUrl, url) => QcBlocksPopup(
                 view == IntPtr.Zero ? null : Tabs.All.FirstOrDefault(t => t.NativeView == view) ?? (PerTab ? null : DocTab),
                 openerUrl, url);
@@ -2441,6 +2443,7 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "qcset": QcSet(active, arg); break;
                         case "qcreset": QcReset(active, arg); break;
                         case "qcpop": await QcOpenPopupAsync(active); break;
+                        case "permforget": PermForget(active); break;
                         case "qcdoc": QcDocStart(docTab, qcHad); break;
                         case "audible": SetPageAudible(arg == "1"); break;
                         case "restoresession":
@@ -2632,6 +2635,8 @@ public sealed partial class BrowserController : IAsyncDisposable
                         case "pwdismiss": _pwPending.Remove(tab.Id); break;
                         case "pwget": PushPwAll(tab); break;
                         case "pwfill": await PwFillAsync(tab, arg); break;
+                        case "pwident": PushPwIdents(tab, arg); break;
+                        case "pwidentpick": PushPwIdentPick(tab, arg); break;
                         case "pwreveal": await PwRevealAsync(tab, arg); break;
                         case "pwdel": await PwDeleteAsync(tab, arg); break;
                         case "dtget": await PushDevTools(tab); break;
@@ -3849,6 +3854,34 @@ public sealed partial class BrowserController : IAsyncDisposable
         }
         if (!NoTrace(tab)) _pw.Upsert(e.Origin, e.User, e.Pass); // bump last-used without altering (not in Ghost mode: that would be a trace)
         PushJson(tab, JsonSerializer.Serialize(new { b = 26, id = e.Id, u = e.User, p = e.Pass }));
+    }
+
+    // "Suggest email & strong password": the logins the user already has, offered for a sign-up form's login box. The page is only
+    // ever sent a masked label per suggestion; the full value goes out for the one that is picked (see PwIdentity). What was offered
+    // to a tab is kept here so a pick can only name one of those, by position.
+    private readonly Dictionary<Guid, List<string>> _pwIdents = new();
+
+    /// <summary>pwident:&lt;email|phone|username&gt; — the field's kind. Answers b:28 {kind, items:[masked...]}. Never in a private or
+    /// Ghost tab (they have no vault), and only for a real web page.</summary>
+    private void PushPwIdents(BrowserTab tab, string kindArg)
+    {
+        if (_noToolbar || tab.IsClosed || _pw is null || PwIdentity.ParseKind(kindArg) is not { } kind) return;
+        var list = NoFill(tab) || OriginOf(tab.LastUrl) is null ? new List<string>() : PwIdentity.Pick(_pw.All(), kind);
+        lock (_pwIdents) _pwIdents[tab.Id] = list;
+        PushJson(tab, JsonSerializer.Serialize(new { b = 28, kind = kindArg, items = list.Select(PwIdentity.Mask).ToArray() }));
+    }
+
+    /// <summary>pwidentpick:&lt;n&gt; — the n-th suggestion of the last list this tab was sent. Answers b:28 {u}.</summary>
+    private void PushPwIdentPick(BrowserTab tab, string arg)
+    {
+        if (_noToolbar || tab.IsClosed || !int.TryParse(arg, out var i)) return;
+        string? u = null;
+        lock (_pwIdents)
+        {
+            if (_pwIdents.Remove(tab.Id, out var list) && i >= 0 && i < list.Count) u = list[i];
+        }
+        if (u is null || NoFill(tab)) return;
+        PushJson(tab, JsonSerializer.Serialize(new { b = 28, u }));
     }
 
     /// <summary>pwreveal:&lt;id&gt; — the manager's eye/copy. Authenticates, then

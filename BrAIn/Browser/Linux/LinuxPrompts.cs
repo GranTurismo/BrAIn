@@ -20,7 +20,20 @@ internal static unsafe class LinuxPrompts
     {
         public IntPtr Request, Dialog, UserEntry, PassEntry;
         public string Key = "";
+        public string? Site;   // origin the answer is remembered under (null: private tab, nothing is written)
+        public Kind Kind;
     }
+
+    private static string[] StoredKinds(Kind k) => k switch
+    {
+        Kind.Camera => [SitePermissions.Camera],
+        Kind.Microphone => [SitePermissions.Microphone],
+        Kind.CameraAndMic => [SitePermissions.Camera, SitePermissions.Microphone],
+        Kind.Location => [SitePermissions.Location],
+        Kind.Notifications => [SitePermissions.Notifications],
+        Kind.Clipboard => [SitePermissions.Clipboard],
+        _ => [],
+    };
 
     internal static void Connect(IntPtr view)
     {
@@ -69,8 +82,15 @@ internal static unsafe class LinuxPrompts
             if (kind == Kind.Unknown) { WebKit.webkit_permission_request_deny(request); return 1; }
 
             var host = "This page";
-            try { var u = new Uri(GLib.Str(WebKit.webkit_web_view_get_uri(view)) ?? ""); if (u.Host.Length > 0) host = u.Host; } catch { }
+            string? uri = null;
+            try { uri = GLib.Str(WebKit.webkit_web_view_get_uri(view)); var u = new Uri(uri ?? ""); if (u.Host.Length > 0) host = u.Host; } catch { }
             var key = host + "|" + kind;
+            // A site that was allowed before is not asked again — also after a restart. Private tabs never read or
+            // write that list; a refusal is only remembered until BrAIn closes (so a mis-click is not forever).
+            var priv = LinuxTabs.IsPrivate(view);
+            var site = priv ? null : SitePermissions.OriginOf(uri);
+            var stored = site is null ? null : StoredKinds(kind).Select(k => SitePermissions.Get(site, k)).ToList();
+            if (stored is { Count: > 0 } && stored.All(v => v == true)) { WebKit.webkit_permission_request_allow(request); return 1; }
             if (_decided.TryGetValue(key, out var allowed))
             {
                 if (allowed) WebKit.webkit_permission_request_allow(request); else WebKit.webkit_permission_request_deny(request);
@@ -78,7 +98,7 @@ internal static unsafe class LinuxPrompts
             }
 
             GLib.g_object_ref(request);
-            ShowQuestion(view, $"{host} wants to {What(kind)}.", "Allow", "Block", new Ask { Request = request, Key = key });
+            ShowQuestion(view, $"{host} wants to {What(kind)}.", "Allow", "Block", new Ask { Request = request, Key = key, Site = site, Kind = kind });
             return 1; // answered later, from the dialog
         }
         catch { return 0; }
@@ -130,6 +150,7 @@ internal static unsafe class LinuxPrompts
             {
                 var allow = response == Gtk.ResponseAccept;
                 _decided[ask.Key] = allow;
+                if (allow && ask.Site is not null) SitePermissions.Set(ask.Site, true, StoredKinds(ask.Kind));
                 if (allow) WebKit.webkit_permission_request_allow(ask.Request); else WebKit.webkit_permission_request_deny(ask.Request);
                 GLib.g_object_unref(ask.Request);
             }

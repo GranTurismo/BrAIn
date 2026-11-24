@@ -14,6 +14,7 @@ namespace BrAIn.Browser.Mac;
 ///     stays wired and the flow can post back to its parent;
 ///   - pop-ups blocked by the quick controls → nil, nothing opens;
 ///   - webViewDidClose → closes a popup window it created;
+///   - camera / microphone requests → WkPermissions (asked once per site, then remembered);
 ///   - every other selector → forwardingTargetForSelector: to the original delegate
 ///     (JS alerts, permission prompts, file pickers keep working).
 ///
@@ -40,11 +41,14 @@ internal static partial class WkPopup
     private delegate byte RespImp(IntPtr self, IntPtr sel, IntPtr aSel);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void CloseImp(IntPtr self, IntPtr sel, IntPtr webView);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void MediaImp(IntPtr self, IntPtr sel, IntPtr webView, IntPtr origin, IntPtr frame, nint type, IntPtr handler);
 
     private static readonly CreateImp _create = OnCreate;
     private static readonly FwdImp _fwd = OnForward;
     private static readonly RespImp _resp = OnResp;
     private static readonly CloseImp _close = OnClose;
+    private static readonly MediaImp _media = OnMedia;
 
     /// <summary>A plain new-window request wants a tab. Main-thread only.</summary>
     internal static Action<string>? OnNewTab;
@@ -68,6 +72,8 @@ internal static partial class WkPopup
                 Marshal.GetFunctionPointerForDelegate(_create), "@@:@@@@");
             ClassAddMethod(cls, ObjC.Sel("webViewDidClose:"),
                 Marshal.GetFunctionPointerForDelegate(_close), "v@:@");
+            ClassAddMethod(cls, WkPermissions.SelRequest,
+                Marshal.GetFunctionPointerForDelegate(_media), "v@:@@@q@?");
             ClassAddMethod(cls, ObjC.Sel("forwardingTargetForSelector:"),
                 Marshal.GetFunctionPointerForDelegate(_fwd), "@@::");
             ClassAddMethod(cls, ObjC.Sel("respondsToSelector:"),
@@ -94,6 +100,7 @@ internal static partial class WkPopup
     private static bool SelectorIsOurs(IntPtr aSel)
         => aSel == ObjC.Sel("webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:")
         || aSel == ObjC.Sel("webViewDidClose:")
+        || aSel == WkPermissions.SelRequest
         || aSel == ObjC.Sel("forwardingTargetForSelector:")
         || aSel == ObjC.Sel("respondsToSelector:");
 
@@ -107,6 +114,10 @@ internal static partial class WkPopup
 
     private static IntPtr OnForward(IntPtr self, IntPtr sel, IntPtr aSel)
         => SelectorIsOurs(aSel) || _orig == IntPtr.Zero ? IntPtr.Zero : _orig;
+
+    // camera / microphone: remembered per site instead of asked again at every page load (see WkPermissions)
+    private static void OnMedia(IntPtr self, IntPtr sel, IntPtr webView, IntPtr origin, IntPtr frame, nint type, IntPtr handler)
+        => WkPermissions.OnRequest(_orig, webView, origin, frame, type, handler);
 
     private static IntPtr OnCreate(IntPtr self, IntPtr sel, IntPtr webView, IntPtr cfg, IntPtr action, IntPtr feats)
     {

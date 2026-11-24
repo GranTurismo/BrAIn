@@ -60,7 +60,28 @@ public sealed partial class BrowserController
                 site = QcSite(tab),
                 n = tab.PopupsBlocked,
                 lp = tab.LastBlockedPopup,
+                perm = PermState(tab),
             };
+    }
+
+    /// <summary>What this site was told about the camera and microphone and may have been remembered:
+    /// "allow", "block", or null (never decided, or a private tab, which remembers nothing).</summary>
+    private static string? PermState(BrowserTab tab)
+    {
+        if (tab.IsPrivate || SitePermissions.OriginOf(tab.LastUrl) is not { } o) return null;
+        var c = SitePermissions.Get(o, SitePermissions.Camera);
+        var m = SitePermissions.Get(o, SitePermissions.Microphone);
+        if (c is null && m is null) return null;
+        return c == false || m == false ? "block" : "allow";
+    }
+
+    /// <summary>permforget — the Quick controls "Reset" next to a remembered camera / microphone choice: the site asks again.</summary>
+    private void PermForget(BrowserTab tab)
+    {
+        if (tab.IsPrivate || SitePermissions.OriginOf(tab.LastUrl) is not { } o) return;
+        SitePermissions.Forget(o, SitePermissions.Camera);
+        SitePermissions.Forget(o, SitePermissions.Microphone);
+        PushChromeStateAll();
     }
 
     /// <summary>qcset:&lt;t|s|a&gt;:&lt;id&gt;:&lt;1|0|x&gt; — set (or clear, x) one switch for the

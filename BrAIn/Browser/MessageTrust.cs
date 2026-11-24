@@ -33,7 +33,7 @@ internal static class MessageTrust
         "usget", "ussave", "usdel", "ustoggle", "usrun", "ustest", "usexclude", "usclrerr",
     };
 
-    private static readonly HashSet<string> BarOnly = new(StringComparer.Ordinal) { "askok", "beltmode", "uploadreset", "agcancel", "handoff", "olside", "updateapply", "updatecancel", "ghostlogins", "apilearn", "qcset", "qcreset", "qcpop", "fullctl" };
+    private static readonly HashSet<string> BarOnly = new(StringComparer.Ordinal) { "askok", "beltmode", "uploadreset", "agcancel", "handoff", "olside", "updateapply", "updatecancel", "ghostlogins", "apilearn", "qcset", "qcreset", "qcpop", "permforget", "fullctl" };
 
     // History search: the toolbar's address bar and BrAIn's own pages (the new-tab search box).
     private static readonly HashSet<string> BarOrInternal = new(StringComparer.Ordinal) { "histq" };
