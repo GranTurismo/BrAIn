@@ -33,7 +33,7 @@ public sealed class WebKitDriver : DriverBase
     public override string Name => "webkit";
     public override bool SupportsEval => true;
     public override bool SupportsScreenshot => true;
-    public override bool SupportsRealInput => true;  // genuine OS-level input events (user activation)
+    public override bool SupportsRealInput => true;  // genuine, trusted input events (user activation), delivered to the page's view only
     public override bool SupportsConsoleLog => true; // via brain.js console hook
     public override bool SupportsNetworkLog => true; // via PerformanceResourceTiming polling
     public override bool SupportsCookies => true;    // document.cookie only (no HttpOnly)
@@ -41,11 +41,12 @@ public sealed class WebKitDriver : DriverBase
     public override Task InitializeAsync(BrowserController controller, CancellationToken ct)
         => Tab.NativeView != IntPtr.Zero ? InitializePerTab() : InitializeSharedAsync(controller, ct);
 
-    // ---------------- real OS-level input (CGEvent) ----------------
+    // ---------------- real input (NSEvents into the page's own view) ----------------
     // JS-dispatched events carry no user activation, so gesture-gated features
-    // (passkeys, popups from click handlers) reject them. Posting CGEvents takes
-    // the same path as hardware input. The window is raised first: a real event
-    // lands on whatever is topmost at that screen point.
+    // (passkeys, popups from click handlers) reject them. Native mouse events handed
+    // to the page's view are genuine to WebKit (trusted, user activation) yet never
+    // leave BrAIn: no window raise, no app activation, the user's pointer stays put,
+    // and nothing lands in whatever other app is on top (see Mac/MacInput.cs).
 
     private int CgButton(MouseButton b) => b == MouseButton.Right ? 1 : b == MouseButton.Middle ? 2 : 0;
 

@@ -1,8 +1,11 @@
 # Fixed
 
 * ~~Support of Passkeys (it doesn't show passkey verification dialog)~~
-  - macOS now sends real OS-level input (CGEvent) for `browser_click` /
-    `browser_click_at`, so clicks carry user activation like a human click.
+  - macOS sends genuine (trusted) mouse events to the page's own view for
+    `browser_click` / `browser_click_at`, so clicks carry user activation like a
+    human click. (First version posted CGEvents at the HID tap, which clicked
+    whatever app was on top at that screen point and moved the user's pointer;
+    replaced by in-window delivery, see `Browser/Mac/MacInput.cs`.)
   - `BrAIn.entitlements` adds `com.apple.web-browser.public-key-credential`;
     `mac-permissions.sh` signs with it. Rebuild via `rebuild-mac.command`.
   - Note: the passkey sheet itself (Touch ID) always needs the human — the

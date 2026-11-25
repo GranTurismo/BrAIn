@@ -548,8 +548,8 @@ variance. Notable BrAIn wins: GitHub −67%, NYT −64%, Cloudflare −43%, Forb
   run with `BRAIN_PERTAB=0` to get the previous shared-view behaviour. Diagnostics
   go to `%LOCALAPPDATA%\BrAIn\brain.log`.
 - `browser_pdf` is Windows-only (CDP `Page.printToPDF`).
-- `browser_click_at` uses real OS-level input on Windows; the JS fallback on
-  macOS dispatches synthetic events. Linux delivers genuine GDK mouse events to the page's view
-  (trusted clicks; the pointer does not move).
+- Agent clicks (`browser_click`, `browser_click_at`) never touch your mouse or other apps: macOS hands genuine
+  (trusted) mouse events to the page's own view, Linux delivers GDK mouse events to it, Windows uses the web engine's
+  own input. The pointer does not move and BrAIn is not raised or clicked through.
 - Linux is new: tested on Ubuntu 24.04 in a virtual desktop (X11, and Wayland without pointer input); there is
   no Touch ID (the password vault asks for your account password instead); see [Linux](#linux) for what to try when something is off.

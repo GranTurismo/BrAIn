@@ -217,7 +217,7 @@ public sealed class BrowserTools(BrowserController browser)
 
     // ========================================================== INTERACTION
 
-    [McpServerTool(Name = "browser_click"), Description("Click an element (scrolls it into view first). Uses real OS-level input where the driver supports it, so clicks count as user activation (passkeys, popups).")]
+    [McpServerTool(Name = "browser_click"), Description("Click an element (scrolls it into view first). Delivered to the page as genuine, trusted input, so clicks count as user activation (passkeys, popups). It stays inside BrAIn: the user's mouse is not moved and no other app is clicked or raised.")]
     public async Task<string> Click(
         [Description(SelHelp)] string element,
         [Description("Tab id/prefix")] string? tab = null,
@@ -225,9 +225,10 @@ public sealed class BrowserTools(BrowserController browser)
     {
         var t = ResolveTab(tab);
         await EnsureLibAsync(t, ct);
-        // Real OS-level input when the driver has it (macOS CGEvent, WebView2 input):
+        // Real input when the driver has it (macOS NSEvents into the page's view, WebView2 input, GDK events):
         // trusted clicks carry user activation, so gesture-gated flows — passkey
         // prompts, payment sheets, popup-openers — work like a human click.
+        // None of it goes through the OS pointer: it never moves the user's mouse or lands in another app.
         var driver = await browser.DriverOrThrowAsync(t, ct);
         if (driver.SupportsRealInput)
         {
@@ -238,8 +239,8 @@ public sealed class BrowserTools(BrowserController browser)
             {
                 var cx = o.GetProperty("x").GetDouble() + w.GetDouble() / 2;
                 var cy = o.GetProperty("y").GetDouble() + h.GetDouble() / 2;
-                // The OS click can be dropped or land elsewhere without any error (missing input permission, window
-                // not frontmost, an overlay on top), so watch for it arriving and report what the page did.
+                // The click can be dropped or land elsewhere on the page without any error (a view that is not shown,
+                // an overlay on top), so watch for it arriving and report what the page did.
                 var token = (await browser.EvaluateAsync("window.__brain.clickWatch(" + Js(element) + ")", false, t, ct))?.GetString() ?? "";
                 await driver.ClickAtAsync(cx, cy, MouseButton.Left, 1, ct);
                 await Task.Delay(350, ct);
@@ -258,7 +259,7 @@ public sealed class BrowserTools(BrowserController browser)
                     catch { }
                     if (!sameDoc) return $"click {element}: ok (real input), the page navigated or reloaded. Take a new snapshot.";
                     var syn = await browser.EvaluateTextAsync($"window.__brain.click({Js(element)})", t, ct);
-                    return $"click {element}: the OS click never reached the page, so a synthetic click was used instead: {syn}";
+                    return $"click {element}: the click never reached the page, so a synthetic click was used instead: {syn}";
                 }
                 var res = after!.Value;
                 var landedOnTarget = res.GetProperty("hit").GetBoolean();
@@ -278,7 +279,7 @@ public sealed class BrowserTools(BrowserController browser)
         return $"click {element}: {r}";
     }
 
-    [McpServerTool(Name = "browser_click_at"), Description("Click at viewport coordinates (x,y). On Windows uses real OS-level input events.")]
+    [McpServerTool(Name = "browser_click_at"), Description("Click at viewport coordinates (x,y). Delivered to the page as genuine input events; stays inside BrAIn (the user's mouse is not moved, no other app is clicked).")]
     public async Task<string> ClickAt(
         [Description("X coordinate (viewport px)")] double x,
         [Description("Y coordinate (viewport px)")] double y,

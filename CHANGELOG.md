@@ -2,6 +2,19 @@
 
 All notable changes to BrAIn. Releases and installers: https://github.com/GranTurismo/BrAIn/releases
 
+## 1.12.1 — 2026-11-25
+
+**Scope:** **macOS** only has a behaviour change (agent clicks); Windows and Linux already kept agent clicks inside the
+browser and get only the new version number.
+
+### Fixed
+- **An AI agent's clicks no longer land in other apps (macOS).** `browser_click` and `browser_click_at` used to send a
+  real mouse click through the operating system at the element's place on the screen. With another app in front, the
+  click went into that app, the agent also moved your mouse pointer and pulled BrAIn forward. The click is now handed
+  straight to the page inside BrAIn's own window: the web engine still sees a genuine user click (so passkeys and
+  pop-ups opened by a click keep working), but your pointer stays where it is, BrAIn is not raised and nothing outside
+  BrAIn receives it. The tool descriptions now say so.
+
 ## 1.12.0 — 2026-11-24
 
 **Scope:** **macOS** and **Linux** get the camera / microphone memory; **every platform** (macOS, Windows, Linux) gets the

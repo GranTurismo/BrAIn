@@ -284,12 +284,9 @@ internal static class NativeShell
 
     internal static void RealClick(BrowserTab tab, IntPtr view, double x, double y, int button, int clickCount)
     {
-        if (OnMac)
-        {
-            var win = Mac.MacWindow.WindowByNumber(tab.MacWindowNumber);
-            Mac.MacWindow.Activate(win);
-            Mac.MacInput.Click(win, view, x, y, button, clickCount);
-        }
+        // macOS: events go to the page's own view; BrAIn is neither raised nor activated and the pointer of the person
+        // at the keyboard stays put (see MacInput) — an agent click must never land in whatever app they are using
+        if (OnMac) Mac.MacInput.Click(Mac.MacWindow.WindowByNumber(tab.MacWindowNumber), view, x, y, button, clickCount);
         else Linux.LinuxInput.Click(Linux.LinuxWindow.WindowByNumber(tab.MacWindowNumber), view, x, y, button, clickCount);
     }
 
